@@ -13,4 +13,7 @@ var (
 	// requestPermissionsOnStart triggers the OS permission prompts for any
 	// missing screen/input permission once at startup.
 	requestPermissionsOnStart bool
+	// restartIntoUpdate makes the service manager run the freshly installed
+	// build when this process outlived its own update. nil = nothing to do.
+	restartIntoUpdate func()
 )

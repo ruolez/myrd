@@ -122,6 +122,7 @@ func runConnected(ctx context.Context, o *Options, p *Proxy) error {
 		upd := update.New(update.Options{API: client, Token: func(c context.Context) (string, error) { return s.Token(c) },
 			Version: o.Version, DataDir: o.Settings.DataDir, Log: o.Log,
 			Busy: func() bool { return len(p.ActiveSessions()) > 0 }, EndAll: p.EndAll,
+			BeforeInstall: func() func() { return p.HoldHelper(5 * time.Second) },
 			OnStatus: func(st proto.UpdateStatus) {
 				p.SetUpdateLine(tray.UpdateLine(st))
 				if err := s.Send(proto.TypeUpdateStatus, st); err != nil {

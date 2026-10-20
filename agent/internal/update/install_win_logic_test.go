@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"testing"
+	"time"
 	"unicode/utf16"
 )
 
@@ -152,6 +153,52 @@ func TestRollbackReason(t *testing.T) {
 	for _, c := range cases {
 		if got := rollbackReason(c.m); got != c.want {
 			t.Errorf("rollbackReason(%+v) = %q, want %q", c.m, got, c.want)
+		}
+	}
+}
+
+// From the failed 0.3.0 → 0.3.1 update on a real PC (the old package's
+// uninstall tried to delete the data dir holding the running log).
+const msiLog1306 = "MSI (s) (F8:4C) [15:58:51:182]: Executing op: ActionStart(Name=StopServices,Description=Stopping services,Template=Service: [1])\r\n" +
+	"MSI (s) (F8:4C) [15:58:51:189]: Product: RemoteAgent -- Error 1306. Another application has exclusive access to the file 'C:\\ProgramData\\RemoteAgent\\updates\\msi-0.3.1.log'.  Please shut down all other applications, then click Retry.\r\n" +
+	"Error 1306. Another application has exclusive access to the file 'C:\\ProgramData\\RemoteAgent\\updates\\msi-0.3.1.log'.  Please shut down all other applications, then click Retry.\r\n" +
+	"Action ended 15:58:51: InstallFinalize. Return value 3.\r\n" +
+	"MSI (s) (F8:D8) [15:58:51:254]: MainEngineThread is returning 1603\r\n"
+
+func TestMSIFailure(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		log  []byte
+		want string
+	}{
+		{"error line from a real log", utf16le(msiLog1306, true),
+			"installer exited with 1603: Error 1306. Another application has exclusive access to the file 'C:\\ProgramData\\RemoteAgent\\updates\\msi-0.3.1.log'."},
+		{"no error line", []byte(logWith(1603, 1603, 1603)), "installer exited with 1603"},
+		{"unfinished log", []byte("MSI (s) (F8:D8) [15:58:49:814]: Command Line: REBOOT=ReallySuppress\r\n"), "installer did not finish"},
+		{"success", []byte(logWith(0, 0, 0)), ""},
+	} {
+		if got := msiFailure(c.log); got != c.want {
+			t.Errorf("%s: msiFailure = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestAwaitInstaller(t *testing.T) {
+	unfinished := []byte("MSI (s) (F8:D8) [15:58:49:814]: Command Line: REBOOT=ReallySuppress\r\n")
+	for _, c := range []struct {
+		name    string
+		log     []byte
+		haveLog bool
+		since   time.Duration
+		want    bool
+	}{
+		{"log still being written", unfinished, true, 5 * time.Second, true},
+		{"msiexec not started yet", nil, false, 5 * time.Second, true},
+		{"finished log", []byte(logWith(1603, 1603, 1603)), true, 5 * time.Second, false},
+		{"gave up waiting", unfinished, true, msiSettle, false},
+	} {
+		if got := awaitInstaller(c.log, c.haveLog, c.since); got != c.want {
+			t.Errorf("%s: awaitInstaller = %v, want %v", c.name, got, c.want)
 		}
 	}
 }

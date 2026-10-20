@@ -5,6 +5,8 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/ruolez/remotectl/agent/internal/session"
 	"github.com/ruolez/remotectl/proto"
@@ -31,6 +33,8 @@ type Proxy struct {
 	// one the attached helper reported (empty until its caps arrive).
 	deviceKey string
 	helperKey string
+
+	held atomic.Bool // an installer is replacing the exe: no helper may run
 }
 
 var _ session.Handler = (*Proxy)(nil)
@@ -264,6 +268,27 @@ func (p *Proxy) staleHelperLocked() bool {
 func (p *Proxy) restartStaleHelper() {
 	p.log().Warn("winsvc: helper holds a previous device key; restarting it")
 	p.Shutdown()
+}
+
+// HoldHelper stops the helper and keeps the supervisor from starting another
+// until release is called: msiexec cannot replace the exe while a helper runs
+// it. It waits up to wait for the helper to disconnect.
+func (p *Proxy) HoldHelper(wait time.Duration) (release func()) {
+	p.held.Store(true)
+	p.Shutdown()
+	for deadline := time.Now().Add(wait); p.attached() && time.Now().Before(deadline); {
+		time.Sleep(50 * time.Millisecond)
+	}
+	return func() { p.held.Store(false) }
+}
+
+// Held reports whether HoldHelper is in effect.
+func (p *Proxy) Held() bool { return p.held.Load() }
+
+func (p *Proxy) attached() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.w != nil
 }
 
 // Shutdown asks an attached helper to exit.

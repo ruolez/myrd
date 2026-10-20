@@ -68,6 +68,11 @@ type Options struct {
 	OnStatus    func(proto.UpdateStatus) // state changes, at most one per StatusEvery (latest kept)
 	Installer   Installer                // default per OS
 	HealthProbe func(context.Context) bool
+	// BeforeInstall runs just before the OS installer starts; release undoes
+	// it when the installer could not take over (Windows: stop the helper).
+	BeforeInstall func() (release func())
+	// OnHandedOff runs once the OS installer took the update over.
+	OnHandedOff func()
 	HTTP        *http.Client // downloads
 	IdlePoll    time.Duration
 	StatusEvery time.Duration // default StatusEvery; negative = unpaced
@@ -243,7 +248,21 @@ type errCorrupt struct{ msg string }
 
 func (e errCorrupt) Error() string { return e.msg }
 
+// errPending: the last install's outcome is not known yet, and a second
+// installer run would collide with the first (or with its rollback).
+// handoffGrace is how long BeforeInstall's effect lasts once the installer
+// took over, in case this process outlives it.
+const handoffGrace = 10 * time.Minute
+
+var errPending = errors.New("the previous install is still finishing; try again in a few minutes")
+
 func (u *Updater) attempt(ctx context.Context, t Trigger, force, supersede <-chan struct{}) error {
+	if p, ok := u.o.Installer.(interface{ Pending() bool }); ok && p.Pending() {
+		if t.Explicit {
+			u.status(proto.UpdateFailed, "", errPending)
+		}
+		return errPending
+	}
 	if t.Explicit {
 		u.status(proto.UpdateChecking, "", nil)
 	}
@@ -305,13 +324,24 @@ func (u *Updater) attempt(ctx context.Context, t Trigger, force, supersede <-cha
 	u.mu.Lock()
 	u.handedOff = true
 	u.mu.Unlock()
+	release := func() {}
+	if u.o.BeforeInstall != nil {
+		release = u.o.BeforeInstall()
+	}
 	if err := u.o.Installer.Install(ctx, payload, *m); err != nil {
+		release()
 		u.mu.Lock()
 		u.handedOff = false
 		u.mu.Unlock()
 		return fail(err, true)
 	}
 	u.o.Log.Info("update handed to the OS installer", "version", m.Version)
+	// Normally the installer replaces this process long before; if not, do
+	// not keep the device unusable.
+	time.AfterFunc(handoffGrace, release)
+	if u.o.OnHandedOff != nil {
+		u.o.OnHandedOff()
+	}
 	return nil
 }
 

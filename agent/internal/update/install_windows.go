@@ -41,6 +41,12 @@ func newDefaultInstaller(o Options) Installer {
 func (w *winInstaller) updatesDir() string { return filepath.Join(w.dataDir, "updates") }
 func (w *winInstaller) markerPath() string { return filepath.Join(w.dataDir, markerName) }
 
+// Pending reports an install whose outcome Watch has not settled yet.
+func (w *winInstaller) Pending() bool {
+	_, err := os.Stat(w.markerPath())
+	return err == nil
+}
+
 // CountServiceStart records one more start of the service for a pending
 // update (crash-loop detection); call it once per process, before connecting.
 func CountServiceStart(dataDir string) {
@@ -165,6 +171,12 @@ func (w *winInstaller) Watch(ctx context.Context, acked <-chan struct{}, report 
 		}
 		action := DecideHealth(HealthInput{Marker: m, Running: w.version, Acked: isAcked, ServerUp: up, UserPresent: true,
 			Since: now.Sub(upSince), Now: now})
+		if action == HealthReportFailed {
+			b, err := os.ReadFile(filepath.Join(w.updatesDir(), msiLogName(m.To)))
+			if awaitInstaller(b, err == nil, now.Sub(m.AppliedAt)) {
+				action = HealthWait // still the old build: msiexec may be rolling back
+			}
+		}
 		w.log.Debug("update health", "action", action, "from", m.From, "to", m.To, "starts", m.Starts)
 		switch action {
 		case HealthHealthy:
@@ -226,8 +238,8 @@ func (w *winInstaller) failedReason(version string) string {
 	if err != nil {
 		return "installer did not run"
 	}
-	if err := msiResult(parseMSILog(b)); err != nil {
-		return err.Error()
+	if reason := msiFailure(b); reason != "" {
+		return reason
 	}
 	return "installer finished but " + version + " is not running"
 }

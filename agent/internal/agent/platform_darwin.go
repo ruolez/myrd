@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,4 +28,13 @@ func init() {
 		}
 	}
 	requestPermissionsOnStart = true
+	// The pkg's scripts restart the LaunchAgent; a copy started some other
+	// way (e.g. from Finder) is left running the old build, paused for the
+	// install. kickstart -k (re)starts the job on the new bundle.
+	restartIntoUpdate = func() {
+		target := fmt.Sprintf("gui/%d/com.remotectl.agent", os.Getuid()) // LaunchAgent label = BUNDLE_ID (packaging/macos/product.env)
+		_ = exec.Command("launchctl", "kickstart", "-k", target).Run()
+		time.Sleep(5 * time.Second)
+		os.Exit(0)
+	}
 }

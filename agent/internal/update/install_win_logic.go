@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf16"
 )
 
@@ -70,6 +71,41 @@ func msiResult(exit int, ok bool) error {
 		return nil
 	}
 	return fmt.Errorf("installer exited with %d", exit)
+}
+
+// msiSettle is how long a failed-looking install may still be msiexec at
+// work: a rollback restarts the old service before msiexec finishes its log.
+const msiSettle = 10 * time.Minute
+
+// awaitInstaller reports whether msiexec may still be running an install
+// started sinceApplied ago, so its outcome should not be judged yet.
+func awaitInstaller(log []byte, haveLog bool, sinceApplied time.Duration) bool {
+	if sinceApplied >= msiSettle {
+		return false
+	}
+	if !haveLog {
+		return true
+	}
+	_, done := parseMSILog(log)
+	return !done
+}
+
+var reMSIError = regexp.MustCompile(`Error (\d+)\.\s+([^\r\n]*)`)
+
+// msiFailure explains a failed install from its log: msiResult's error plus
+// the first "Error NNNN." message, cut at its first sentence ("" on success).
+func msiFailure(b []byte) string {
+	exit, ok := parseMSILog(b)
+	err := msiResult(exit, ok)
+	if err == nil {
+		return ""
+	}
+	m := reMSIError.FindStringSubmatch(decodeLog(b))
+	if !ok || m == nil {
+		return err.Error()
+	}
+	detail, _, _ := strings.Cut(m[2], "  ") // MSI separates sentences with two spaces
+	return err.Error() + ": Error " + m[1] + ". " + strings.TrimSpace(detail)
 }
 
 var (

@@ -39,8 +39,13 @@
     <!-- Any installed version is replaced: same-version (dev builds share a version) and older
          ones, plus downgrades so the agent can reinstall its previous build after a failed update
          (the server never offers one). WiX rejects AllowSameVersionUpgrades next to AllowDowngrades;
-         the latter already covers the same version. -->
-    <MajorUpgrade Schedule="afterInstallInitialize" AllowDowngrades="yes" />
+         the latter already covers the same version.
+         afterInstallExecute: the new version is installed before the old one is removed, so the
+         components both share (same GUIDs) stay installed. The old package's uninstall therefore
+         never removes the data dir (config, device key): packages up to 0.3.1 delete it on any
+         uninstall, upgrades included. REINSTALLMODE "a" overwrites the unversioned exe. -->
+    <MajorUpgrade Schedule="afterInstallExecute" AllowDowngrades="yes" />
+    <Property Id="REINSTALLMODE" Value="amus" />
     <MediaTemplate EmbedCab="yes" />
 
     <!-- Hidden keeps the one-time token out of verbose MSI logs. -->
@@ -50,8 +55,10 @@
     <?else?>
     <Property Id="SERVER_URL" Secure="yes" />
     <?endif?>
-    <!-- Must be set before util's RemoveFoldersEx action, which runs just before CostInitialize. -->
-    <SetProperty Id="DATADIR" Value="[CommonAppDataFolder]RemoteAgent" After="AppSearch" Sequence="both" />
+    <!-- Must be set before util's RemoveFoldersEx action, which runs just before CostInitialize.
+         Only on a real uninstall: an upgrade must keep the device's identity. -->
+    <SetProperty Id="DATADIR" Value="[CommonAppDataFolder]RemoteAgent" After="AppSearch" Sequence="both"
+                 Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="$(ProductName)">

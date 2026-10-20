@@ -371,3 +371,31 @@ func TestNewerTriggerSupersedesTheWait(t *testing.T) {
 		t.Fatalf("statuses = %+v installs = %q", f.statuses, f.installs)
 	}
 }
+
+type pendingInstaller struct{ *fixture }
+
+func (pendingInstaller) Pending() bool { return true }
+
+// While the last install's outcome is unknown (msiexec may still be rolling
+// it back), no new attempt may start a second installer.
+func TestPendingInstallBlocksAttempts(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		trigger Trigger
+		want    []proto.UpdateStatus
+	}{
+		{"periodic", Trigger{}, nil},
+		{"explicit", Trigger{Explicit: true}, []proto.UpdateStatus{st("failed", "", errPending.Error())}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.offer("0.3.1", []byte("build"), nil)
+			u := f.updater("")
+			u.o.Installer = pendingInstaller{f}
+			u.CheckNow(context.Background(), c.trigger)
+			if !reflect.DeepEqual(f.statuses, c.want) || f.installs != nil || f.explicit != nil {
+				t.Fatalf("statuses = %+v installs = %q checks = %q, want %+v and no check", f.statuses, f.installs, f.explicit, c.want)
+			}
+		})
+	}
+}

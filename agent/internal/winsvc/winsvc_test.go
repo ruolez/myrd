@@ -289,3 +289,37 @@ func TestStatusKeepsTheUpdateLine(t *testing.T) {
 		t.Fatal("no status replayed to the helper")
 	}
 }
+
+// While msiexec replaces the exe the helper must be gone and stay gone:
+// a respawned helper locks the file and turns the update into a rollback.
+func TestHoldHelperStopsItUntilReleased(t *testing.T) {
+	p := &Proxy{}
+	s2hR, s2hW := io.Pipe()
+	h2sR, h2sW := io.Pipe()
+	defer h2sW.Close()
+	go p.Attach(h2sR, s2hW)
+	served := make(chan error, 1)
+	go func() {
+		err := Serve(s2hR, &fakeTarget{}, HelperEvents{})
+		s2hR.Close()
+		h2sW.Close() // the helper process exits, closing its pipe
+		served <- err
+	}()
+	waitFor(t, func() bool { return p.attached() })
+	release := p.HoldHelper(2 * time.Second)
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("helper loop returned %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("helper kept running")
+	}
+	if !p.Held() || p.attached() {
+		t.Fatalf("held = %v attached = %v, want true false", p.Held(), p.attached())
+	}
+	release()
+	if p.Held() {
+		t.Fatal("still held after release")
+	}
+}

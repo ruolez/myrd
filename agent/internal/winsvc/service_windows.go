@@ -130,6 +130,12 @@ func superviseHelper(ctx context.Context, p *Proxy, exe string, kick <-chan stru
 		}
 	}
 	for ctx.Err() == nil {
+		if p.Held() {
+			if !sleep(time.Second) {
+				return
+			}
+			continue
+		}
 		sid, ok := activeConsoleSession()
 		if !ok {
 			if !sleep(2 * time.Second) {

@@ -72,7 +72,7 @@ type Agent struct {
 
 	autoAccept atomic.Bool
 	paused     atomic.Bool
-	installing atomic.Bool // refuse new sessions while the OS installer runs
+	installing atomic.Bool // refuse new sessions while the OS installer runs (BeforeInstall)
 }
 
 func New(cfg Config) (*Agent, error) {
@@ -320,7 +320,6 @@ func (a *Agent) send(typ string, msg any) error {
 
 // onUpdateStatus reports update progress to the server and in the tray.
 func (a *Agent) onUpdateStatus(s proto.UpdateStatus) {
-	a.installing.Store(s.State == proto.UpdateInstalling)
 	line := tray.UpdateLine(s)
 	a.mu.Lock()
 	a.updLine = line
@@ -453,7 +452,21 @@ func (a *Agent) runConnected(ctx context.Context) error {
 	}
 	upd := update.New(update.Options{API: client, Token: func(c context.Context) (string, error) { return sigClient.Token(c) },
 		Version: a.cfg.Version, DataDir: a.cfg.Settings.DataDir, Log: a.log,
-		Busy: busy, EndAll: handler.EndAll, OnStatus: a.onUpdateStatus})
+		Busy: busy, EndAll: handler.EndAll, OnStatus: a.onUpdateStatus,
+		BeforeInstall: func() func() {
+			a.installing.Store(true)
+			return func() { a.installing.Store(false) }
+		},
+		OnHandedOff: func() {
+			if restartIntoUpdate == nil {
+				return
+			}
+			// The install normally stops this process within seconds.
+			time.AfterFunc(time.Minute, func() {
+				a.log.Warn("still running after the update was installed; restarting into the new build")
+				restartIntoUpdate()
+			})
+		}})
 	sigClient = signal.New(signal.Options{
 		API: client, DeviceID: st.DeviceID, Key: key, Handler: handler, Log: a.log, Hello: a.hello,
 		OnHelloAck: func(m proto.HelloAck) {
