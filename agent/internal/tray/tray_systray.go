@@ -9,10 +9,6 @@ import (
 	"fyne.io/systray"
 )
 
-// ProductName shows in the menu and tooltip; the product name is still an
-// open decision, so it is one variable.
-var ProductName = "remotectl"
-
 func iconBytes(k iconKind) []byte {
 	if runtime.GOOS == "windows" {
 		return iconICO(k)
@@ -29,6 +25,15 @@ func setIcon(k iconKind) {
 	systray.SetIcon(b)
 }
 
+// truncTip keeps the tooltip within Windows' 128-character limit.
+func truncTip(s string) string {
+	r := []rune(s)
+	if len(r) <= 127 {
+		return s
+	}
+	return string(r[:126]) + "…"
+}
+
 func run(h Hooks, ready func(update func(State))) {
 	systray.Run(func() { onReady(h, ready) }, func() {})
 }
@@ -42,6 +47,9 @@ func onReady(h Hooks, ready func(update func(State))) {
 	peer := systray.AddMenuItem("", "")
 	peer.Disable()
 	peer.Hide()
+	activity := systray.AddMenuItem("", "")
+	activity.Disable()
+	activity.Hide()
 	systray.AddSeparator()
 	pause := systray.AddMenuItemCheckbox("Pause new sessions", "Refuse incoming sessions until unpaused", false)
 	end := systray.AddMenuItem("End session", "Disconnect the controlling browser now")
@@ -95,7 +103,15 @@ func onReady(h Hooks, ready func(update func(State))) {
 			line += " (paused)"
 		}
 		status.SetTitle(ProductName + ": " + line)
-		systray.SetTooltip(ProductName + " — " + line)
+		tip := ProductName + " — " + line
+		if s.Activity != "" {
+			activity.SetTitle(s.Activity)
+			activity.Show()
+			tip += "\n" + s.Activity
+		} else {
+			activity.Hide()
+		}
+		systray.SetTooltip(truncTip(tip))
 
 		if s.InSession && s.Peer != "" {
 			peer.SetTitle("Controlled by " + s.Peer)

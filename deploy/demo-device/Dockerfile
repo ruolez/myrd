@@ -35,7 +35,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=build /out/remote-agent /usr/local/bin/remote-agent
 COPY deploy/demo-device/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY deploy/demo-device/welcome.txt /home/device/Desktop/Welcome.txt
-RUN chmod 0755 /usr/local/bin/entrypoint.sh && chown -R device:device /home/device
+RUN chmod 0755 /usr/local/bin/entrypoint.sh \
+    && mkdir -p /home/device/Downloads /home/device/Documents \
+    && chown -R device:device /home/device
 USER device
 ENV DISPLAY=:0 RC_DATA_DIR=/data RC_SCREEN=1920x1080 HOME=/home/device
 VOLUME /data

@@ -39,6 +39,34 @@ async function answer(id, a) {
 
 function alertBox(msg) { $("enroll-error").textContent = msg; }
 
+function fmtBytes(n) {
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1000 && i < u.length - 1) { n /= 1000; i++; }
+  return `${i ? n.toFixed(1) : n} ${u[i]}`;
+}
+
+const transferVerbs = {
+  upload: { active: "Receiving", ok: "Received", cancelled: "Cancelled", error: "Failed to receive" },
+  download: { active: "Sending", ok: "Sent", cancelled: "Cancelled", error: "Failed to send" },
+};
+
+function renderTransfers(list) {
+  $("transfers-card").classList.toggle("hidden", !list.length);
+  const ul = $("transfers");
+  ul.replaceChildren();
+  for (const x of list) {
+    const verb = (transferVerbs[x.direction] || {})[x.state] || x.state;
+    const pct = x.size > 0 ? Math.floor((x.bytes * 100) / x.size) : 100;
+    const amount = x.state === "active" ? `${pct}% · ${fmtBytes(x.bytes)} of ${fmtBytes(x.size)}` : fmtBytes(x.size);
+    const detail = `${x.direction === "upload" ? "to" : "from"} ${x.dir} · ${amount}${x.error && x.state !== "cancelled" ? " · " + x.error : ""}`;
+    const cls = x.state === "active" ? "pill" : x.state === "ok" ? "pill ok" : "pill bad";
+    ul.append(el("li", { className: "transfer" },
+      el("div", {}, el("div", { textContent: `${verb} ${x.name}` }), el("div", { class: "muted", textContent: detail })),
+      el("span", { class: cls, textContent: x.state === "active" ? `${pct}%` : x.state })));
+  }
+}
+
 function render(s) {
   const st = s.status;
   const live = st.session && st.session.State === "active";
@@ -61,6 +89,7 @@ function render(s) {
     const i = st.session;
     $("session-detail").textContent = `${i.Label || "browser"} · ${i.Email || ""} · ${i.State}${i.Path ? " via " + i.Path : ""}`;
   }
+  renderTransfers(st.transfers || []);
   renderPrompts(s.prompts || []);
   const ul = $("pins");
   ul.replaceChildren();

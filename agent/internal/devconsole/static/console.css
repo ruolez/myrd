@@ -37,4 +37,7 @@ dt { color: var(--muted); } dd { margin: 0; word-break: break-all; }
 .list li { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-top: 1px solid var(--outline); }
 .hidden { display: none !important; }
 .pill { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: var(--primary-light); color: var(--primary); }
+.pill.ok { background: transparent; color: var(--success); }
+.pill.bad { background: transparent; color: var(--error); }
+.transfer > div { min-width: 0; word-break: break-all; }
 @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } .banner { flex-direction: column; align-items: stretch; } }

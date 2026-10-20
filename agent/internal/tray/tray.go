@@ -4,6 +4,10 @@
 // console (internal/devconsole) plays this role.
 package tray
 
+// ProductName shows in the menu, tooltip and notifications; the product
+// name is still an open decision, so it is one variable.
+var ProductName = "remotectl"
+
 type State struct {
 	Enrolled  bool
 	Online    bool
@@ -11,6 +15,7 @@ type State struct {
 	Paused    bool   // new sessions refused while paused
 	Peer      string // "<label> (<email>)" of the controlling browser
 	Status    string // one-line human status, e.g. "Online", "Waiting for enrollment"
+	Activity  string // file transfer line, e.g. "Receiving report.pdf (42%)"; see ActivityFeed
 }
 
 type Hooks struct {

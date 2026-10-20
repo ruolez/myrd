@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ruolez/remotectl/agent/internal/files"
 	"github.com/ruolez/remotectl/agent/internal/pins"
 	"github.com/ruolez/remotectl/agent/internal/platform"
 	"github.com/ruolez/remotectl/agent/internal/session"
@@ -31,18 +32,19 @@ var staticFS embed.FS
 
 // Status is the device state the page renders.
 type Status struct {
-	Enrolled  bool          `json:"enrolled"`
-	DeviceID  string        `json:"device_id"`
-	Name      string        `json:"name"`
-	ServerURL string        `json:"server_url"`
-	Hostname  string        `json:"hostname"`
-	Version   string        `json:"version"`
-	Online    bool          `json:"online"`
-	LastError string        `json:"last_error"`
-	Fatal     string        `json:"fatal"`
-	Paused    bool          `json:"paused"`
-	Encoder   string        `json:"encoder"`
-	Session   *session.Info `json:"session"`
+	Enrolled  bool             `json:"enrolled"`
+	DeviceID  string           `json:"device_id"`
+	Name      string           `json:"name"`
+	ServerURL string           `json:"server_url"`
+	Hostname  string           `json:"hostname"`
+	Version   string           `json:"version"`
+	Online    bool             `json:"online"`
+	LastError string           `json:"last_error"`
+	Fatal     string           `json:"fatal"`
+	Paused    bool             `json:"paused"`
+	Encoder   string           `json:"encoder"`
+	Session   *session.Info    `json:"session"`
+	Transfers []files.Activity `json:"transfers"` // newest first, see TransferLog
 }
 
 type Options struct {

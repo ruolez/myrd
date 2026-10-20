@@ -33,6 +33,16 @@
 	<false/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>@APP_NAME@ shows its enrollment and consent dialogs.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>@APP_NAME@ saves files sent from an approved remote session to your Downloads folder and lets that session browse it.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>@APP_NAME@ lets an approved remote session browse and transfer files in your Documents folder.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>@APP_NAME@ lets an approved remote session browse and transfer files on your Desktop.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>@APP_NAME@ lets an approved remote session browse and transfer files on removable drives.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>@APP_NAME@ lets an approved remote session browse and transfer files on network volumes.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>@PRODUCT_NAME@ remote access agent. A red border is shown on screen whenever a remote session is active.</string>
 </dict>
