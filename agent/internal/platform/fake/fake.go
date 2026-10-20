@@ -31,6 +31,7 @@ type Backend struct {
 	indicator  bool
 	keyReqs    int
 	configured [2]int
+	starts     []platform.CaptureConfig
 	capturing  bool
 	stop       chan struct{}
 	wg         sync.WaitGroup
@@ -60,6 +61,8 @@ func (b *Backend) StartCapture(cfg platform.CaptureConfig, sink platform.Capture
 		return platform.ErrBusy
 	}
 	b.capturing, b.sink, b.stop, b.forceKey = true, sink, make(chan struct{}), true
+	b.starts = append(b.starts, cfg)
+	b.configured = [2]int{cfg.BitrateKbps, cfg.FPS}
 	fps := max(cfg.FPS, 1)
 	b.mu.Unlock()
 	b.wg.Add(1)
@@ -181,6 +184,21 @@ func (b *Backend) Capturing() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.capturing
+}
+
+// Starts lists every StartCapture config in order.
+func (b *Backend) Starts() []platform.CaptureConfig {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]platform.CaptureConfig(nil), b.starts...)
+}
+
+// Configured is the encoder's current kbps and fps: the last ConfigureEncoder,
+// or the start config's when none came after it.
+func (b *Backend) Configured() (kbps, fps int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.configured[0], b.configured[1]
 }
 
 func (b *Backend) KeyframeRequests() int {

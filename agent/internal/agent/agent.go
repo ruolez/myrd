@@ -257,14 +257,6 @@ func (a *Agent) consoleStatus() devconsole.Status {
 	return out
 }
 
-func (a *Agent) maxFPS() int {
-	switch a.cfg.Backend.EncoderName() {
-	case "x264", "openh264", "mf-sw":
-		return 30
-	}
-	return 60
-}
-
 func (a *Agent) hello() proto.Hello {
 	h := proto.Hello{AgentVersion: a.cfg.Version, OS: runtime.GOOS, Arch: runtime.GOARCH, Hostname: a.cfg.Settings.Hostname,
 		PinnedClientKeys: a.pins.List(), ActiveSessions: []string{}}
@@ -277,7 +269,7 @@ func (a *Agent) hello() proto.Hello {
 				Width: m.Width, Height: m.Height, Scale: m.Scale, Primary: m.Primary})
 		}
 		h.Capabilities.Codecs = []string{"h264"}
-		h.Capabilities.MaxFPS = a.maxFPS()
+		h.Capabilities.MaxFPS = session.EncoderMaxFPS(a.cfg.Backend.EncoderName())
 		h.Capabilities.Encoder = a.cfg.Backend.EncoderName()
 		p := a.cfg.Backend.Permissions()
 		h.Permissions = proto.Permissions{Screen: p.Screen, Input: p.Input}
@@ -405,7 +397,7 @@ func (a *Agent) runConnected(ctx context.Context) error {
 			AutoAccept: a.autoAccept.Load, Paused: a.paused.Load, OnPinsChanged: a.syncPins,
 			OnSessionChange: func(*session.Info) { a.pushTray() },
 			UDPPort:         a.cfg.Settings.UDPPort, NAT1To1IPs: a.cfg.Settings.NAT1To1IPs,
-			AgentVersion: a.cfg.Version, MaxFPS: a.maxFPS(), Log: a.log,
+			AgentVersion: a.cfg.Version, Log: a.log, // MaxFPS unset: the session follows the live encoder
 		})
 		if err != nil {
 			return err

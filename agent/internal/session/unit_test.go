@@ -2,6 +2,7 @@ package session
 
 import (
 	"testing"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 
@@ -48,22 +49,15 @@ func TestCeilingKbps(t *testing.T) {
 }
 
 func TestEncoderTarget(t *testing.T) {
-	cases := []struct {
-		bwe, ceil, tier, maxFPS int
-		kbps, fps               int
-	}{
-		{5000, 8000, TierHigh, 60, 5000, 60},
-		{12000, 8000, TierHigh, 60, 8000, 60}, // clamped to ceiling
-		{200, 8000, TierHigh, 60, 1000, 60},   // floor 1 Mbps
-		{5000, 8000, TierBalanced, 60, 5000, 30},
-		{5000, 8000, TierBalanced, 24, 5000, 24},
-		{5000, 8000, TierBackground, 60, 1000, 5},
-		{5000, 8000, TierHigh, 30, 5000, 30}, // software encoder cap
+	cases := []struct{ bwe, ceil, kbps int }{
+		{5000, 8000, 5000},
+		{12000, 8000, 8000}, // clamped to the ceiling
+		{200, 8000, 1000},   // floor 1 Mbps
+		{25000, 20000, 20000},
 	}
 	for _, c := range cases {
-		k, f := EncoderTarget(c.bwe, c.ceil, c.tier, c.maxFPS)
-		if k != c.kbps || f != c.fps {
-			t.Errorf("EncoderTarget(%+v) = %d,%d", c, k, f)
+		if k := EncoderTarget(c.bwe, c.ceil); k != c.kbps {
+			t.Errorf("EncoderTarget(%d, %d) = %d, want %d", c.bwe, c.ceil, k, c.kbps)
 		}
 	}
 }
@@ -189,5 +183,49 @@ func TestClipboardFromBrowserReachesBackend(t *testing.T) {
 	}
 	if fm.clip != "copied text" {
 		t.Fatalf("clip = %q", fm.clip)
+	}
+}
+
+func TestFrameKeyframeGuard(t *testing.T) {
+	cases := []struct {
+		name     string
+		interval time.Duration
+		frames   int
+		want     int
+	}{
+		{"60 fps inside the GOP", 16 * time.Millisecond, 90, 0},
+		{"idle frames once a second", time.Second, 10, 0},
+		{"5 fps past 2 s", 200 * time.Millisecond, 12, 1},
+		{"one request until the next keyframe", 200 * time.Millisecond, 40, 1},
+	}
+	for _, c := range cases {
+		b := fake.New()
+		track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264}, "video", "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock := t0
+		p := &mediaPipe{b: b, track: track, now: func() time.Time { return clock }, applied: encoderState{fps: 5}}
+		frame := func(key bool) {
+			p.Frame([]byte{0, 0, 0, 1, 0x41}, clock.Sub(t0).Microseconds()+1, key)
+		}
+		frame(true)
+		for i := 0; i < c.frames; i++ {
+			clock = clock.Add(c.interval)
+			frame(false)
+		}
+		time.Sleep(50 * time.Millisecond) // requests run on their own goroutine
+		if got := b.KeyframeRequests(); got != c.want {
+			t.Errorf("%s: %d keyframe requests, want %d", c.name, got, c.want)
+		}
+		if c.want == 0 {
+			continue
+		}
+		frame(true) // the keyframe re-arms the guard
+		for i := 0; i < c.frames; i++ {
+			clock = clock.Add(c.interval)
+			frame(false)
+		}
+		waitFor(t, "second guard request", func() bool { return b.KeyframeRequests() == c.want+1 })
 	}
 }

@@ -23,46 +23,42 @@ import (
 const (
 	floorKbps      = 1000
 	initialKbps    = 3000
-	maxCeilKbps    = 16000
+	maxCeilKbps    = proto.StreamMaxKbps // manual caps; also the GCC maximum
+	autoCeilKbps   = 16000               // automatic ceiling (pixel-scaled)
 	relayCeilKbps  = 6000
 	ceil1080pKbps  = 8000
 	keyframeGOPms  = 2000
+	keyGuardAge    = 2 * time.Second // re-request a keyframe when the encoder's own GOP runs longer
+	keyGuardFrames = 10
 	statsInterval  = 2 * time.Second
+	autoInterval   = time.Second
 	cursorInterval = time.Second / 120
 	clipboardPoll  = time.Second
 	shapeResend    = 3 * time.Second
 )
 
-// Quality tiers from the input-channel Control op 3.
+// Quality tiers from the input-channel Control op 3 (legacy browsers).
 const (
 	TierBackground = 0
 	TierBalanced   = 1
 	TierHigh       = 2
 )
 
-// CeilingKbps scales the 8 Mbps @1080p ceiling by pixel count; relay paths
-// are capped at 6 Mbps.
+// CeilingKbps scales the 8 Mbps @1080p ceiling by pixel count (at most
+// 16 Mbps); relay paths are capped at 6 Mbps.
 func CeilingKbps(width, height uint32, relay bool) int {
 	px := float64(width) * float64(height)
 	c := int(ceil1080pKbps * px / (1920 * 1080))
-	c = max(2000, min(c, maxCeilKbps))
+	c = max(2000, min(c, autoCeilKbps))
 	if relay {
 		c = min(c, relayCeilKbps)
 	}
 	return c
 }
 
-// EncoderTarget turns a bandwidth estimate into encoder settings for a tier.
-func EncoderTarget(bweKbps, ceilKbps, tier, maxFPS int) (kbps, fps int) {
-	kbps = max(floorKbps, min(bweKbps, ceilKbps))
-	switch tier {
-	case TierBackground:
-		return floorKbps, min(5, maxFPS)
-	case TierBalanced:
-		return kbps, min(30, maxFPS)
-	default:
-		return kbps, maxFPS
-	}
+// EncoderTarget turns a bandwidth estimate into the encoder bitrate.
+func EncoderTarget(bweKbps, ceilKbps int) int {
+	return max(floorKbps, min(bweKbps, ceilKbps))
 }
 
 // ScaledSize applies MaxWidth/MaxHeight (0 = unbounded) keeping aspect,
@@ -79,30 +75,51 @@ func ScaledSize(w, h uint32, maxW, maxH int) (uint32, uint32) {
 	return sw &^ 1, sh &^ 1
 }
 
-type mediaPipe struct {
-	s       *sess
-	b       platform.Backend
-	track   *webrtc.TrackLocalStaticSample
-	maxFPS  int
-	encoder string
+// encoderState is what the encoder was last told.
+type encoderState struct {
+	kbps, fps int
+	w, h      uint32
+}
 
-	mu        sync.Mutex
-	monitors  []platform.Monitor
-	active    int
-	tier      int
-	bweKbps   int
-	relay     bool
-	applied   [2]int // kbps, fps last sent to the encoder
-	running   bool
-	stopped   bool
-	control   *webrtc.DataChannel
-	cursor    *webrtc.DataChannel
-	lastPTS   int64
-	sentShape map[uint32]bool
-	curShape  []byte // full CursorShape message for periodic resend
-	clipSeen  string
-	clipSet   string // last value we wrote from the browser (avoid echo)
-	clipXfer  uint16
+type mediaPipe struct {
+	s     *sess
+	b     platform.Backend
+	track *webrtc.TrackLocalStaticSample
+	now   func() time.Time
+
+	capMu  sync.Mutex // serializes capture start / stop / restart
+	encMu  sync.Mutex // keeps ConfigureEncoder calls in plan order
+	kickCh chan struct{}
+
+	mu         sync.Mutex
+	encoder    string
+	maxFPS     int
+	monitors   []platform.Monitor
+	active     int
+	settings   StreamSettings
+	background bool
+	auto       AutoState
+	ladder     []Rung
+	est        cc.BandwidthEstimator
+	bweKbps    int
+	relay      bool
+	applied    encoderState
+	running    bool
+	stopped    bool
+	reply      bool    // a `stream` request awaits its state reply
+	replyID    *uint32 // id of the latest request
+	lastState  []byte  // last stream state sent (without id)
+	control    *webrtc.DataChannel
+	cursor     *webrtc.DataChannel
+	lastPTS    int64
+	lastKey    time.Time
+	sinceKey   int
+	keyPending bool
+	sentShape  map[uint32]bool
+	curShape   []byte // full CursorShape message for periodic resend
+	clipSeen   string
+	clipSet    string // last value we wrote from the browser (avoid echo)
+	clipXfer   uint16
 
 	frames, keyframes, bytes atomic.Int64
 	posX, posY               atomic.Uint32
@@ -113,16 +130,10 @@ type mediaPipe struct {
 
 func newMediaPipe(s *sess, track *webrtc.TrackLocalStaticSample) *mediaPipe {
 	b := s.m.o.Backend
-	p := &mediaPipe{s: s, b: b, track: track, tier: TierHigh, bweKbps: initialKbps,
-		sentShape: map[uint32]bool{}, quit: make(chan struct{})}
+	p := &mediaPipe{s: s, b: b, track: track, now: time.Now, settings: DefaultStreamSettings(), bweKbps: initialKbps,
+		sentShape: map[uint32]bool{}, kickCh: make(chan struct{}, 1), quit: make(chan struct{})}
 	p.encoder = b.EncoderName()
-	p.maxFPS = s.m.o.MaxFPS
-	if p.maxFPS == 0 {
-		p.maxFPS = 60
-		if p.encoder == "x264" || p.encoder == "openh264" || p.encoder == "mf-sw" {
-			p.maxFPS = 30 // software fallback per the plan
-		}
-	}
+	p.maxFPS = p.fpsCap(p.encoder)
 	mons, err := b.Monitors()
 	if err != nil {
 		s.log.Warn("monitor list failed", "err", err)
@@ -133,20 +144,57 @@ func newMediaPipe(s *sess, track *webrtc.TrackLocalStaticSample) *mediaPipe {
 			p.active = i
 		}
 	}
+	p.resetAutoLocked()
+	go p.reconcileLoop()
 	return p
 }
 
-func (p *mediaPipe) dims() (uint32, uint32) {
+// fpsCap is Options.MaxFPS when set, else the encoder's cap (live: Windows
+// can fall back to a software encoder mid-session).
+func (p *mediaPipe) fpsCap(encoder string) int {
+	if p.s.m.o.MaxFPS > 0 {
+		return p.s.m.o.MaxFPS
+	}
+	return EncoderMaxFPS(encoder)
+}
+
+// nativeLocked is the active monitor's size in physical pixels.
+func (p *mediaPipe) nativeLocked() (uint32, uint32) {
 	if len(p.monitors) == 0 {
 		return 1920, 1080
 	}
 	m := p.monitors[p.active]
-	return ScaledSize(m.Width, m.Height, p.s.m.o.MaxWidth, p.s.m.o.MaxHeight)
+	return m.Width, m.Height
+}
+
+func (p *mediaPipe) inputLocked() StreamInput {
+	nw, nh := p.nativeLocked()
+	in := StreamInput{Settings: p.settings, Background: p.background, MaxFPS: p.maxFPS, NativeW: nw, NativeH: nh,
+		MaxW: p.s.m.o.MaxWidth, MaxH: p.s.m.o.MaxHeight, Relay: p.relay, BweKbps: p.bweKbps}
+	if p.settings.Preset == proto.PresetAuto && len(p.ladder) > 0 {
+		r := p.ladder[max(0, min(p.auto.Rung, len(p.ladder)-1))]
+		in.Rung = &r
+	}
+	return in
+}
+
+func (p *mediaPipe) planLocked() StreamPlan { return PlanStream(p.inputLocked()) }
+
+// resetAutoLocked rebuilds Auto's ladder from the current ceilings and starts
+// over at the top (settings, monitor or encoder cap changed).
+func (p *mediaPipe) resetAutoLocked() {
+	r := ResolveSettings(p.settings, p.maxFPS)
+	nw, nh := p.nativeLocked()
+	p.ladder = AutoLadder(r.FPS, r.Res, nw, nh, p.s.m.o.MaxWidth, p.s.m.o.MaxHeight)
+	p.auto = NewAutoState(p.now())
 }
 
 // ---- encoder control ----
 
 func (p *mediaPipe) attachEstimator(e cc.BandwidthEstimator) {
+	p.mu.Lock()
+	p.est = e
+	p.mu.Unlock()
 	e.OnTargetBitrateChange(func(bps int) {
 		p.mu.Lock()
 		p.bweKbps = bps / 1000
@@ -159,30 +207,26 @@ func (p *mediaPipe) setPath(path string) {
 	p.mu.Lock()
 	p.relay = path == proto.PathRelay
 	p.mu.Unlock()
-	p.applyEncoder(false)
-}
-
-// target computes current settings; caller holds p.mu.
-func (p *mediaPipe) targetLocked() (int, int) {
-	w, h := p.dims()
-	return EncoderTarget(p.bweKbps, CeilingKbps(w, h, p.relay), p.tier, p.maxFPS)
+	p.kick()
 }
 
 func (p *mediaPipe) applyEncoder(force bool) {
+	p.encMu.Lock()
+	defer p.encMu.Unlock()
 	p.mu.Lock()
 	if !p.running {
 		p.mu.Unlock()
 		return
 	}
-	kbps, fps := p.targetLocked()
+	plan := p.planLocked()
 	prev := p.applied
-	changed := force || fps != prev[1] || abs(kbps-prev[0])*10 > prev[0]
+	changed := force || plan.FPS != prev.fps || abs(plan.Kbps-prev.kbps)*10 > prev.kbps
 	if changed {
-		p.applied = [2]int{kbps, fps}
+		p.applied.kbps, p.applied.fps = plan.Kbps, plan.FPS
 	}
 	p.mu.Unlock()
 	if changed {
-		p.b.ConfigureEncoder(kbps, fps)
+		p.b.ConfigureEncoder(plan.Kbps, plan.FPS)
 	}
 }
 
@@ -193,10 +237,166 @@ func abs(x int) int {
 	return x
 }
 
+// kick schedules a reconcile; kicks coalesce.
+func (p *mediaPipe) kick() {
+	select {
+	case p.kickCh <- struct{}{}:
+	default:
+	}
+}
+
+func (p *mediaPipe) reconcileLoop() {
+	for {
+		select {
+		case <-p.quit:
+			return
+		case <-p.kickCh:
+			p.reconcile()
+		}
+	}
+}
+
+// reconcile brings the encoder in line with the current plan: a new size
+// restarts capture, anything else is a reconfigure. Then it reports the
+// stream state if it changed (or a request awaits its reply).
+func (p *mediaPipe) reconcile() {
+	p.capMu.Lock()
+	p.mu.Lock()
+	plan := p.planLocked()
+	restart := p.running && (plan.W != p.applied.w || plan.H != p.applied.h)
+	p.mu.Unlock()
+	var err error
+	if restart {
+		err = p.restartLocked()
+	} else {
+		p.applyEncoder(true)
+	}
+	p.capMu.Unlock()
+	if err != nil {
+		p.s.log.Error("capture restart failed", "err", err)
+		p.sendControl(map[string]any{"t": "error", "code": "capture_failed", "detail": err.Error()})
+	}
+	p.sendStreamState(false)
+}
+
+// ---- stream settings ----
+
+// setStream applies a desired state; reply asks for a `stream` answer.
+func (p *mediaPipe) setStream(s StreamSettings, background bool, id *uint32, reply bool) {
+	p.mu.Lock()
+	if s != p.settings {
+		p.settings = s
+		p.resetAutoLocked()
+	} else if background != p.background {
+		p.auto.Since = p.now() // back from background: warm up again
+	}
+	p.background = background
+	if reply {
+		p.reply, p.replyID = true, id
+	}
+	p.mu.Unlock()
+	p.kick()
+}
+
+func (p *mediaPipe) setTier(t int) {
+	p.mu.Lock()
+	s, bg := LegacyTierSettings(t, p.settings)
+	p.mu.Unlock()
+	p.setStream(s, bg, nil, false)
+}
+
+func (p *mediaPipe) streamStateLocked() StreamState {
+	in := p.inputLocked()
+	var auto *AutoInfo
+	if p.settings.Preset == proto.PresetAuto {
+		auto = &AutoInfo{Rung: p.auto.Rung, Rungs: len(p.ladder), Reason: p.auto.Reason}
+	}
+	st := BuildStreamState(in, PlanStream(in), auto)
+	st.OK = true
+	return st
+}
+
+// sendStreamState sends the state when it changed since the last one, when a
+// request awaits its reply, or when force is set (after hello).
+func (p *mediaPipe) sendStreamState(force bool) {
+	p.mu.Lock()
+	st := p.streamStateLocked()
+	b, _ := json.Marshal(st)
+	send := force || p.reply || !bytes.Equal(b, p.lastState)
+	st.ID = p.replyID
+	p.lastState, p.reply, p.replyID = b, false, nil
+	p.mu.Unlock()
+	if send {
+		p.sendControl(st)
+	}
+}
+
+// rejectStream answers an invalid request with the unchanged state.
+func (p *mediaPipe) rejectStream(id *uint32) {
+	p.mu.Lock()
+	st := p.streamStateLocked()
+	p.mu.Unlock()
+	st.ID, st.OK = id, false
+	p.sendControl(st)
+}
+
+// refreshEncoder follows the encoder name (and so max_fps) during the session.
+func (p *mediaPipe) refreshEncoder() {
+	name := p.b.EncoderName()
+	p.mu.Lock()
+	if name == p.encoder {
+		p.mu.Unlock()
+		return
+	}
+	p.encoder = name
+	fps := p.fpsCap(name)
+	changed := fps != p.maxFPS
+	if changed {
+		p.maxFPS = fps
+		p.resetAutoLocked()
+	}
+	p.mu.Unlock()
+	if changed {
+		p.kick()
+	}
+}
+
+// estimatorStats reads loss (0..1) and the delay detector from GCC.
+func estimatorStats(e cc.BandwidthEstimator) (loss float64, overuse bool) {
+	if e == nil {
+		return 0, false
+	}
+	st := e.GetStats()
+	loss, _ = st["averageLoss"].(float64)
+	return loss, st["usage"] == "overuse"
+}
+
+func (p *mediaPipe) sampleAuto(sendKbps int) {
+	p.mu.Lock()
+	est := p.est
+	p.mu.Unlock()
+	loss, overuse := estimatorStats(est)
+	p.mu.Lock()
+	if !p.running || p.background || p.settings.Preset != proto.PresetAuto {
+		p.mu.Unlock()
+		return
+	}
+	prev := p.auto
+	p.auto = NextAuto(p.auto, p.now(), AutoSample{SendKbps: sendKbps, TargetKbps: p.applied.kbps, Loss: loss, Overuse: overuse}, p.ladder)
+	changed := prev.Rung != p.auto.Rung || prev.Reason != p.auto.Reason
+	p.mu.Unlock()
+	if changed {
+		p.kick()
+	}
+}
+
 // ---- lifecycle ----
 
 func (p *mediaPipe) start() {
-	if err := p.startCapture(); err != nil {
+	p.capMu.Lock()
+	err := p.startCaptureLocked()
+	p.capMu.Unlock()
+	if err != nil {
 		code := "capture_failed"
 		reason := proto.EndError
 		if errors.Is(err, platform.ErrPermission) {
@@ -210,20 +410,22 @@ func (p *mediaPipe) start() {
 	go p.loop()
 }
 
-func (p *mediaPipe) startCapture() error {
+// startCaptureLocked starts capture with the current plan; caller holds capMu.
+func (p *mediaPipe) startCaptureLocked() error {
 	p.mu.Lock()
 	if p.stopped {
 		p.mu.Unlock()
 		return errors.New("session ended")
 	}
-	kbps, fps := p.targetLocked()
-	cfg := platform.CaptureConfig{FPS: fps, BitrateKbps: kbps, KeyframeIntervalMS: keyframeGOPms,
-		MaxWidth: p.s.m.o.MaxWidth, MaxHeight: p.s.m.o.MaxHeight}
+	plan := p.planLocked()
+	cfg := platform.CaptureConfig{FPS: plan.FPS, BitrateKbps: plan.Kbps, KeyframeIntervalMS: keyframeGOPms,
+		MaxWidth: plan.BoxW, MaxHeight: plan.BoxH}
 	if len(p.monitors) > 0 {
 		cfg.MonitorID = p.monitors[p.active].ID
 	}
-	p.applied = [2]int{kbps, fps}
+	p.applied = encoderState{plan.Kbps, plan.FPS, plan.W, plan.H}
 	p.lastPTS = 0
+	p.lastKey, p.sinceKey, p.keyPending = p.now(), 0, false
 	p.mu.Unlock()
 	if err := p.b.StartCapture(cfg, p); err != nil {
 		return err
@@ -231,7 +433,20 @@ func (p *mediaPipe) startCapture() error {
 	p.mu.Lock()
 	p.running = true
 	p.mu.Unlock()
+	p.refreshEncoder()
 	return nil
+}
+
+// restartLocked stops and starts capture; caller holds capMu.
+func (p *mediaPipe) restartLocked() error {
+	p.mu.Lock()
+	running := p.running
+	p.running = false
+	p.mu.Unlock()
+	if running {
+		p.b.StopCapture()
+	}
+	return p.startCaptureLocked()
 }
 
 func (p *mediaPipe) stop(reason string) {
@@ -241,57 +456,60 @@ func (p *mediaPipe) stop(reason string) {
 		return
 	}
 	p.stopped = true
-	running := p.running
-	p.running = false
 	p.mu.Unlock()
 	close(p.quit)
 	p.sendControl(map[string]any{"t": "bye", "reason": reason})
+	p.capMu.Lock()
+	defer p.capMu.Unlock()
+	p.mu.Lock()
+	running := p.running
+	p.running = false
+	p.mu.Unlock()
 	if running {
 		p.b.StopCapture()
 	}
 }
 
 func (p *mediaPipe) selectMonitor(idx int) error {
+	p.capMu.Lock()
 	p.mu.Lock()
 	if idx < 0 || idx >= len(p.monitors) {
 		p.mu.Unlock()
+		p.capMu.Unlock()
 		return inputproto.ErrRange
 	}
 	if idx == p.active {
 		p.mu.Unlock()
+		p.capMu.Unlock()
 		p.b.RequestKeyframe()
 		return nil
 	}
-	running := p.running
 	p.active = idx
-	p.running = false
+	p.resetAutoLocked()
 	p.mu.Unlock()
-	if running {
-		p.b.StopCapture()
-	}
-	if err := p.startCapture(); err != nil {
+	err := p.restartLocked()
+	p.capMu.Unlock()
+	if err != nil {
 		p.sendControl(map[string]any{"t": "error", "code": "capture_failed", "detail": err.Error()})
 		return nil
 	}
-	w, h := p.dims()
-	p.sendControl(map[string]any{"t": "monitor", "active": idx, "width": w, "height": h})
-	return nil
-}
-
-func (p *mediaPipe) setTier(t int) {
 	p.mu.Lock()
-	p.tier = t
+	w, h := p.nativeLocked()
 	p.mu.Unlock()
-	p.applyEncoder(true)
+	p.sendControl(map[string]any{"t": "monitor", "active": idx, "width": w, "height": h})
+	p.sendStreamState(false)
+	return nil
 }
 
 // loop runs the periodic work while the session lives.
 func (p *mediaPipe) loop() {
 	stats := time.NewTicker(statsInterval)
+	auto := time.NewTicker(autoInterval)
 	cursor := time.NewTicker(cursorInterval)
 	clip := time.NewTicker(clipboardPoll)
 	shape := time.NewTicker(shapeResend)
 	defer stats.Stop()
+	defer auto.Stop()
 	defer cursor.Stop()
 	defer clip.Stop()
 	defer shape.Stop()
@@ -301,6 +519,7 @@ func (p *mediaPipe) loop() {
 		p.mu.Unlock()
 	}
 	var lastBytes, lastFrames int64
+	autoBytes := p.bytes.Load()
 	for {
 		select {
 		case <-p.quit:
@@ -309,13 +528,21 @@ func (p *mediaPipe) loop() {
 			if p.posDirty.Swap(false) {
 				p.sendCursor(inputproto.EncodeCursorPos(uint16(p.posX.Load()), uint16(p.posY.Load()), p.posVis.Load()))
 			}
+		case <-auto.C:
+			p.refreshEncoder()
+			b := p.bytes.Load()
+			p.sampleAuto(int(float64(b-autoBytes) * 8 / 1000 / autoInterval.Seconds()))
+			autoBytes = b
 		case <-stats.C:
 			b, f := p.bytes.Load(), p.frames.Load()
 			secs := statsInterval.Seconds()
-			w, h := p.dims()
+			p.mu.Lock()
+			a, bwe, enc, est := p.applied, p.bweKbps, p.encoder, p.est
+			p.mu.Unlock()
+			loss, _ := estimatorStats(est)
 			p.sendControl(map[string]any{"t": "stats", "bitrate_kbps": int(float64(b-lastBytes) * 8 / 1000 / secs),
-				"fps": float64(f-lastFrames) / secs, "encoder": p.encoder, "width": w, "height": h,
-				"keyframes": p.keyframes.Load()})
+				"fps": float64(f-lastFrames) / secs, "encoder": enc, "width": a.w, "height": a.h,
+				"keyframes": p.keyframes.Load(), "target_fps": a.fps, "target_kbps": a.kbps, "bwe_kbps": bwe, "loss": loss})
 			lastBytes, lastFrames = b, f
 		case <-shape.C:
 			p.mu.Lock()
@@ -373,16 +600,17 @@ func (p *mediaPipe) setControlChannel(dc *webrtc.DataChannel) {
 	p.control = dc
 	mons := make([]proto.Monitor, len(p.monitors))
 	for i, m := range p.monitors {
-		w, h := ScaledSize(m.Width, m.Height, p.s.m.o.MaxWidth, p.s.m.o.MaxHeight)
-		mons[i] = proto.Monitor{ID: m.ID, Name: m.Name, X: m.X, Y: m.Y, Width: w, Height: h, Scale: m.Scale, Primary: m.Primary}
+		mons[i] = proto.Monitor{ID: m.ID, Name: m.Name, X: m.X, Y: m.Y, Width: m.Width, Height: m.Height, Scale: m.Scale, Primary: m.Primary}
 	}
-	_, fps := p.targetLocked()
-	active := p.active
+	plan := p.planLocked()
+	active, enc, maxFPS := p.active, p.encoder, p.maxFPS
 	p.mu.Unlock()
 	perm := p.b.Permissions()
-	p.sendControl(map[string]any{"t": "hello", "monitors": mons, "active": active, "encoder": p.encoder,
-		"codec": "h264", "fps": fps, "permissions": proto.Permissions{Screen: perm.Screen, Input: perm.Input},
+	p.sendControl(map[string]any{"t": "hello", "monitors": mons, "active": active, "encoder": enc,
+		"codec": "h264", "fps": plan.FPS, "max_fps": maxFPS, "features": helloFeatures(p.s.m.o),
+		"permissions":   proto.Permissions{Screen: perm.Screen, Input: perm.Input},
 		"agent_version": p.s.m.o.AgentVersion, "os": runtime.GOOS})
+	p.sendStreamState(true)
 }
 
 func (p *mediaPipe) setCursorChannel(dc *webrtc.DataChannel) {
@@ -430,8 +658,16 @@ func (p *mediaPipe) onControlText(b []byte) {
 	if json.Unmarshal(b, &m) != nil {
 		return
 	}
-	if m.T == "ping" {
+	switch m.T {
+	case "ping":
 		p.sendControl(map[string]any{"t": "pong", "id": m.ID, "ts": m.TS})
+	case "stream":
+		r, err := proto.DecodeStreamRequest(b)
+		if err != nil {
+			p.rejectStream(r.ID) // not an input reject: no abuse count
+			return
+		}
+		p.setStream(SettingsFromRequest(r), r.Background, r.ID, true)
 	}
 }
 
@@ -439,14 +675,28 @@ func (p *mediaPipe) onControlText(b []byte) {
 
 func (p *mediaPipe) Frame(data []byte, pts int64, keyframe bool) {
 	p.mu.Lock()
-	dur := time.Second / time.Duration(max(p.applied[1], 1))
+	dur := time.Second / time.Duration(max(p.applied.fps, 1))
 	if p.lastPTS != 0 && pts > p.lastPTS {
 		if d := time.Duration(pts-p.lastPTS) * time.Microsecond; d < time.Second {
 			dur = d
 		}
 	}
 	p.lastPTS = pts
+	// The native GOP is sized for 60 fps; at lower or damage-driven frame
+	// rates it runs long, so ask for a keyframe to bound loss recovery.
+	now, wantKey := p.now(), false
+	if keyframe {
+		p.lastKey, p.sinceKey, p.keyPending = now, 0, false
+	} else {
+		p.sinceKey++
+		if !p.keyPending && p.sinceKey > keyGuardFrames && now.Sub(p.lastKey) > keyGuardAge {
+			p.keyPending, wantKey = true, true
+		}
+	}
 	p.mu.Unlock()
+	if wantKey {
+		go p.b.RequestKeyframe()
+	}
 	p.frames.Add(1)
 	p.bytes.Add(int64(len(data)))
 	if keyframe {

@@ -387,7 +387,6 @@ func RunHelper(o Options) error {
 		UDPPort:      o.Settings.UDPPort,
 		NAT1To1IPs:   o.Settings.NAT1To1IPs,
 		AgentVersion: o.Version,
-		MaxFPS:       maxFPS(backend),
 		Log:          o.Log,
 	})
 	if err != nil {
@@ -443,17 +442,8 @@ func RunHelper(o Options) error {
 	select {}
 }
 
-// maxFPS matches internal/agent: software encoders are capped at 30 fps.
-func maxFPS(b platform.Backend) int {
-	switch b.EncoderName() {
-	case "mf-sw", "x264", "openh264", "none":
-		return 30
-	}
-	return 60
-}
-
 func helperCaps(b platform.Backend) HelperCaps {
-	c := HelperCaps{Capabilities: proto.Capabilities{Codecs: []string{"h264"}, MaxFPS: maxFPS(b), Encoder: b.EncoderName()}}
+	c := HelperCaps{Capabilities: proto.Capabilities{Codecs: []string{"h264"}, MaxFPS: session.EncoderMaxFPS(b.EncoderName()), Encoder: b.EncoderName()}}
 	if mons, err := b.Monitors(); err == nil {
 		for _, m := range mons {
 			c.Capabilities.Monitors = append(c.Capabilities.Monitors, proto.Monitor{
