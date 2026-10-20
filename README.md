@@ -94,7 +94,7 @@ macOS notes:
   tccutil reset ScreenCapture com.remotectl.agent; tccutil reset Accessibility com.remotectl.agent
   ```
 
-  Developer ID signing (`DEVELOPER_ID_APP` / `DEVELOPER_ID_INSTALLER` plus the notary credentials) keeps grants across updates.
+  Builds signed with the identity from `packaging/macos/make-signing-cert.sh` (picked up automatically by `build-app.sh`), or with Developer ID (`DEVELOPER_ID_APP` / `DEVELOPER_ID_INSTALLER` plus the notary credentials), keep grants across updates. The first install after switching from an ad-hoc build needs one last re-grant.
 - **Logs.** The agent logs to `~/Library/Logs/RemoteAgent.log` (rotated at 10 MB); set `RC_LOG_LEVEL=debug` for more.
 - **Self-test.** Run it as the app, so that the app's own grants apply:
 
@@ -126,19 +126,35 @@ Admins are users with `is_admin`. The bootstrap admin comes from `ADMIN_EMAIL` /
 - **Users**: create, disable, admin toggle, password and MFA reset, force logout.
 - **All devices** and **Sessions**: disable devices, force-end sessions.
 - **Audit log**: append-only, partitioned by month.
-- **Releases**: signed update manifests with rollout %.
+- **Releases**: upload signed agent builds, publish them with a rollout %, push updates (see below).
 - **System**: client downloads (installer uploads), signup, default auto-accept, max session length, external download URLs.
 
 Admins can end sessions but cannot watch or join them: the end-to-end pinning makes that impossible by design.
 
-Release signing (offline key):
+### Releasing agent updates
+
+Devices update themselves from releases published in **Admin → Releases**. Every installer is signed with an offline Ed25519 release key. Agents and the server trust only the public key committed in `proto/release_key.go`, so the server can host and offer updates but cannot forge one. The private key is in `~/.config/remotectl/release.key` on the release Mac and in the `RELEASE_PRIVATE_KEY` GitHub secret.
+
+One-time setup (already done for key id `351189a8615491fb`, except the signing certificate):
 
 ```bash
-cd server && ../scripts/godocker.sh run ./cmd/remotectl-release keygen     # keep the private key offline
-../scripts/godocker.sh run ./cmd/remotectl-release sign --key <priv> --version 0.2.0 --os darwin --arch arm64 --url <cdn url> --sha256 <hex>
+cd server && ../scripts/gohost.sh run ./cmd/remotectl-release keygen   # writes the private key file, prints the public key
+gh secret set RELEASE_PRIVATE_KEY < ~/.config/remotectl/release.key
+packaging/macos/make-signing-cert.sh                                   # stable macOS code-signing identity (asks for your password)
 ```
 
-Set `RELEASE_PUBLIC_KEY` in `.env` (the server verifies uploads against it), and build the agents with `-X main.releasePublicKey=<pub>`.
+Each release:
+
+1. Bump `VERSION` (for example `0.3.0` → `0.3.1`) and commit.
+2. macOS: `make release-macos` builds `dist/macos/RemoteAgent-<version>.pkg` (universal, server `https://myrd.site`) and its `.sig`.
+3. Windows: `gh workflow run agent-windows.yml -R ruolez/myrd -f release=true -f server_url=https://myrd.site`, then `gh run download <run> -R ruolez/myrd` gives the `.msi` and its `.msi.sig`.
+4. In **Admin → Releases**, drop each installer together with its `.sig`, then **Publish**. Online devices of that OS start updating within minutes. The rollout % limits how many devices take it automatically. **Use as Add-device installer** also makes it the download on the Add device page.
+
+Devices wait until no session is active before installing. On a device page, **Update now** starts an update immediately, and **Force** ends a running session for it. **Update all outdated** pushes to every online device of an OS. A build that cannot reach the server within 5 minutes of installing, or that keeps crashing, is replaced by the previous one, and the device reports **rolled back**. The device lists show each agent's version, the latest release and the update state.
+
+On macOS the pkg installs a root helper (`com.remotectl.updater`) that installs updates, because the agent itself runs as the signed-in user. Updates keep the Screen Recording and Accessibility grants only while every build is signed with the same identity. Keep the `~/.config/remotectl/codesign.p12` backup, and never re-create the certificate.
+
+Untagged CI builds are versioned `<VERSION>-dev.<run>`. They rank below the release they precede, so they never replace it through auto-update.
 
 ## Production (dedicated Ubuntu 24.04 server)
 
@@ -182,7 +198,8 @@ Ports: 80/443 tcp+udp, 3478 tcp+udp, 5349/tcp, and 49152–65535/udp for the TUR
 ## Known gaps
 
 - Windows: runtime untested (hardware MFT negotiation, secure-desktop capture, SYSTEM helper spawn, WiX build).
-- macOS: tested only by controlling this same Mac, not from a second machine. There is no app icon, and the bundle-swap auto-update is untested.
+- macOS: tested only by controlling this same Mac, not from a second machine. There is no app icon.
+- Auto-update has not run on real hardware yet. Still to verify: the macOS root helper, keeping grants with the self-signed identity, detached `msiexec` surviving the Windows service stop, and rollback on both.
 - Email alerts on login and new devices are not implemented; those events are only audited. (TOTP codes are single-use: the accepted time step is stored per user.)
 - Passkey ceremonies are implemented on both sides but were not exercised with a real authenticator.
 - PNG clipboard is ignored; text clipboard works both ways.
