@@ -17,10 +17,9 @@ COPY native/linux native/linux
 COPY agent agent
 RUN make -C native/linux
 ARG VERSION=0.1.0-demo
-ARG RELEASE_PUBLIC_KEY=
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     cd agent && CGO_ENABLED=1 go build -trimpath \
-      -ldflags "-s -w -X main.version=${VERSION} -X main.releasePublicKey=${RELEASE_PUBLIC_KEY}" \
+      -ldflags "-s -w -X main.version=${VERSION}" \
       -o /out/remote-agent ./cmd/remote-agent
 
 FROM debian:bookworm-slim

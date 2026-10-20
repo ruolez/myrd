@@ -26,7 +26,7 @@ ADMIN_INITIAL_PASSWORD=${ADMIN_PW}
 # TURN_URLS_AGENT=   (empty = same as TURN_URLS)
 # TURN_EXTERNAL_IP=<public ip>
 # TURN_ALLOW_PRIVATE_PEERS=false
-# RELEASE_PUBLIC_KEY=<base64 ed25519 public key from remotectl-release keygen>
+# RELEASE_PUBLIC_KEY=<base64 ed25519; overrides the key in proto/release_key.go, for testing only>
 CONF
 chmod 600 "$ENV"
 echo "wrote .env — admin login: ${ADMIN_EMAIL:-admin@example.com} / ${ADMIN_PW}"

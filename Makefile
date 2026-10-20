@@ -1,7 +1,7 @@
 # remotectl — common tasks. `make up` starts the full local stack incl. the demo device.
 COMPOSE := docker compose --profile demo
 
-.PHONY: env up down logs ps build test test-server test-agent test-web test-proto test-install agent-macos agent-windows-cross clean
+.PHONY: env up down logs ps build test test-server test-agent test-web test-proto test-install agent-macos release-macos agent-windows-cross clean
 
 env:
 	@scripts/gen-env.sh
@@ -42,6 +42,9 @@ test-install:
 
 agent-macos:
 	packaging/macos/build-app.sh
+
+release-macos:
+	packaging/macos/release.sh
 
 agent-windows-cross:
 	native/windows/xbuild.sh

@@ -27,7 +27,8 @@ jobs:
 
       - name: Version
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF#refs/tags/v}"; else v="0.0.0-${GITHUB_SHA::8}"; fi
+          base="$(tr -d '[:space:]' < VERSION)"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF#refs/tags/v}"; else v="$base-dev.$GITHUB_RUN_NUMBER"; fi
           echo "VERSION=$v" >> "$GITHUB_ENV"
 
       - name: "Native library (universal)"
@@ -68,7 +69,6 @@ jobs:
         env:
           SERVER_URL: ${{ vars.SERVER_URL || 'https://remote.example.com' }}
           DEVELOPER_ID_APP: ${{ secrets.DEVELOPER_ID_APP }}
-          RELEASE_PUBLIC_KEY: ${{ vars.RELEASE_PUBLIC_KEY }}
         run: packaging/macos/build-app.sh
 
       - name: Build pkg (signed + notarized when secrets exist)

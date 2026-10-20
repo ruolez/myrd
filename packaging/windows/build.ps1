@@ -20,7 +20,8 @@
     - $env:SIGNTOOL_CERT_SHA1  thumbprint of an OV certificate in the store (hardware token / Key Vault CSP), or
     - CI uses azure/trusted-signing-action between -Stage exe and -Stage msi (see .github/workflows/agent-windows.yml).
     - $env:SIGNTOOL_TIMESTAMP_URL defaults to http://timestamp.digicert.com
-  Release public key (Ed25519, base64) compiled into the agent: $env:RELEASE_PUBLIC_KEY.
+  Update signing: the release key lives in proto/release_key.go; sign the MSI with
+  `remotectl-release sign` (server/cmd/remotectl-release) after Authenticode signing.
 #>
 [CmdletBinding()]
 param(
@@ -71,7 +72,6 @@ function Build-Exe {
   if (-not $env:CC) { $env:CC = 'gcc' }
   if (-not $env:CXX) { $env:CXX = 'g++' }
   $ld = "-s -w -X main.version=$Version"
-  if ($env:RELEASE_PUBLIC_KEY) { $ld += " -X main.releasePublicKey=$($env:RELEASE_PUBLIC_KEY)" }
   $tags = if ($Native -eq 'msvc') { 'rcnative_msvc' } else { '' }
   Push-Location $AgentDir
   try {

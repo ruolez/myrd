@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # Builds dist/macos/RemoteAgent.app.
-#   VERSION=1.2.3          bundle + agent version (default 0.0.0-dev)
+#   VERSION=1.2.3          bundle + agent version (default: the repo's VERSION file)
 #   SERVER_URL=https://…   control plane URL baked into Info.plist (LSEnvironment) + LaunchAgent
 #   UNIVERSAL=1            arm64 + x86_64 (lipo); default host arch only
-#   DEVELOPER_ID_APP="Developer ID Application: Org (TEAMID)"  real signing; else ad-hoc
-#   RELEASE_PUBLIC_KEY=<b64 ed25519>  compiled in for update-manifest verification
+#   DEVELOPER_ID_APP="Developer ID Application: Org (TEAMID)"  Apple signing + hardened runtime timestamp
+#   CODESIGN_IDENTITY=<sha1|name>  any other identity; default: the one make-signing-cert.sh recorded in
+#                          ~/.config/remotectl/codesign-identity, else ad-hoc
 #   GO=go                  Go command (default: scripts/gohost.sh, the repo's offline host Go)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck disable=SC1091
 source "$HERE/product.env"
-export VERSION="${VERSION:-0.0.0-dev}"
+export VERSION="${VERSION:-$(tr -d '[:space:]' < "$ROOT/VERSION")}"
 export SERVER_URL="${SERVER_URL:-https://remote.example.com}"
 GO="${GO:-$ROOT/scripts/gohost.sh}"
 if [[ "${UNIVERSAL:-0}" == "1" ]]; then ARCHS="arm64 x86_64"; fi
@@ -24,7 +25,6 @@ mkdir -p "$BUILD"
 ARCHS="$ARCHS" MIN_MACOS="$MIN_MACOS" "$ROOT/native/macos/build.sh"
 
 LDFLAGS="-s -w -X main.version=$VERSION"
-[[ -n "${RELEASE_PUBLIC_KEY:-}" ]] && LDFLAGS="$LDFLAGS -X main.releasePublicKey=$RELEASE_PUBLIC_KEY"
 BINS=()
 for arch in $ARCHS; do
   goarch="$arch"; [[ "$arch" == "x86_64" ]] && goarch=amd64
@@ -52,9 +52,17 @@ plutil -lint "$APP/Contents/Info.plist" >/dev/null
 BAKED_URL="$(plutil -extract LSEnvironment.RC_SERVER_URL raw "$APP/Contents/Info.plist")"
 [[ "$BAKED_URL" == "$SERVER_URL" ]] || { echo "Info.plist RC_SERVER_URL is '$BAKED_URL'" >&2; exit 1; }
 
+IDENTITY_FILE="$HOME/.config/remotectl/codesign-identity"
+if [[ -z "${CODESIGN_IDENTITY:-}" && -z "${DEVELOPER_ID_APP:-}" && -f "$IDENTITY_FILE" ]]; then
+  CODESIGN_IDENTITY="$(tr -d '[:space:]' < "$IDENTITY_FILE")"
+fi
 if [[ -n "${DEVELOPER_ID_APP:-}" ]]; then
   codesign --force --options runtime --timestamp --entitlements "$HERE/entitlements.plist" \
     --sign "$DEVELOPER_ID_APP" "$APP"
+elif [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
+  # A stable identity keeps TCC grants and the Keychain ACL across updates.
+  codesign --force --options runtime --timestamp=none --entitlements "$HERE/entitlements.plist" \
+    --sign "$CODESIGN_IDENTITY" "$APP"
 else
   # Ad-hoc: runs locally, but TCC grants and the Keychain ACL reset on every rebuild.
   codesign --force --options runtime --entitlements "$HERE/entitlements.plist" --sign - "$APP"

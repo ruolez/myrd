@@ -12,6 +12,10 @@ on:
       server_url:
         description: "Server address pre-filled in the MSI (default: repo variable SERVER_URL)"
         required: false
+      release:
+        description: "Release build: version = VERSION file (else <VERSION>-dev.<run>)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -46,13 +50,21 @@ jobs:
   msi:
     runs-on: windows-latest
     env:
-      # Untagged builds get a rising version so a newer MSI upgrades an older one.
-      VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('0.0.{0}-dev', github.run_number) }}
       SERVER_URL: ${{ inputs.server_url || vars.SERVER_URL }}
-      RELEASE_PUBLIC_KEY: ${{ secrets.RELEASE_PUBLIC_KEY }}
       HAS_AZURE_SIGNING: ${{ secrets.AZURE_CLIENT_ID != '' }}
+      HAS_RELEASE_KEY: ${{ secrets.RELEASE_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
+      - name: Version
+        shell: bash
+        run: |
+          # Tags and release runs ship the VERSION file's version; other builds are
+          # prereleases of it, so they never outrank a release in auto-update.
+          base="$(tr -d '[:space:]' < VERSION)"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF#refs/tags/v}"
+          elif [[ "${{ inputs.release }}" == "true" ]]; then v="$base"
+          else v="$base-dev.${{ github.run_number }}"; fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
       - uses: actions/setup-go@v5
         with:
           go-version-file: agent/go.mod
@@ -77,7 +89,7 @@ jobs:
           wix extension add --global WixToolset.UI.wixext/5.0.2
       - name: Build native + exe
         shell: pwsh
-        run: ./packaging/windows/build.ps1 -Version ($env:VERSION -replace '^v','') -Stage exe
+        run: ./packaging/windows/build.ps1 -Version $env:VERSION -Stage exe
       - name: exe imports only system DLLs
         shell: bash
         run: native/windows/check-imports.sh agent/dist/windows/remote-agent.exe objdump
@@ -98,7 +110,7 @@ jobs:
           timestamp-digest: SHA256
       - name: Build MSI
         shell: pwsh
-        run: ./packaging/windows/build.ps1 -Version ($env:VERSION -replace '^v','') -Stage msi
+        run: ./packaging/windows/build.ps1 -Version $env:VERSION -Stage msi
       - name: Sign MSI (Azure Artifact Signing)
         if: env.HAS_AZURE_SIGNING == 'true'
         uses: azure/trusted-signing-action@v0.5.1
@@ -121,10 +133,22 @@ jobs:
             $h = (Get-FileHash -Algorithm SHA256 $_).Hash.ToLower()
             Set-Content "$($_.FullName).sha256" "$h  $($_.Name)" -NoNewline
           }
+      - name: Sign MSI for auto-update (release key)
+        if: env.HAS_RELEASE_KEY == 'true'
+        shell: bash
+        working-directory: server
+        env:
+          RELEASE_PRIVATE_KEY: ${{ secrets.RELEASE_PRIVATE_KEY }}
+        run: |
+          for m in ../dist/*.msi; do
+            go run ./cmd/remotectl-release sign --version "$VERSION" --os windows --arch amd64 "$m"
+            go run ./cmd/remotectl-release verify "$m"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: remote-agent-windows-${{ env.VERSION }}
           path: |
             dist/*.msi
+            dist/*.msi.sig
             dist/*.sha256
             agent/dist/windows/remote-agent.exe
