@@ -368,6 +368,26 @@ func TestPasswordAndTOTPLogin(t *testing.T) {
 	}
 }
 
+// The local dev setup signs in as a bare "admin"; login must not demand an
+// email-shaped identifier.
+func TestLoginAcceptsPlainUsername(t *testing.T) {
+	e := newEnv(t)
+	const username = "admin"
+	if _, err := e.pool.Exec(context.Background(), `UPDATE users SET email = $1 WHERE email = $2`, username, adminEmail); err != nil {
+		t.Fatal(err)
+	}
+	for _, typed := range []string{username, " Admin "} {
+		var me struct {
+			User struct {
+				Email string `json:"email"`
+			} `json:"user"`
+		}
+		if st := e.call(e.login(typed, adminPass), "GET", "/v1/auth/me", nil, &me); st != 200 || me.User.Email != username {
+			t.Fatalf("login as %q: me = %d %+v", typed, st, me)
+		}
+	}
+}
+
 func TestEnrollmentAndAgentAuth(t *testing.T) {
 	e := newEnv(t)
 	c := e.login(adminEmail, adminPass)
