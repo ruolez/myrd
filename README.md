@@ -85,7 +85,19 @@ macOS notes:
   open -W -n /Applications/RemoteAgent.app --stdout /tmp/selftest.txt --stderr /tmp/selftest.txt --args selftest; cat /tmp/selftest.txt
   ```
 
-Scripted installs: `msiexec /i RemoteAgent.msi ENROLL_TOKEN=XXXX-XXXX /qn`. On macOS, write the token to `/Library/Preferences/com.remotectl.agent` (`EnrollToken`) before running the `.pkg`. Otherwise the agent asks for the token on first run.
+**Distributing the agent.** Upload the installers under **Admin → System → Client downloads**:
+
+- macOS: `.pkg`, `.dmg` or `.zip`. Build it with `SERVER_URL=<PUBLIC_URL>`.
+- Windows: `.msi`, `.exe` or `.zip`.
+- At most 512 MB each.
+
+Files are stored in the `downloads` volume and survive updates. **Add device** then shows a download button and a public link (`/v1/downloads/macos`, `/v1/downloads/windows`) that works without signing in, so you can open it on the machine being enrolled. Enrolling still needs the one-time token. With no upload, the page falls back to the external installer URLs set on the same Admin page.
+
+Add device also shows a ready-to-paste scripted install for the uploaded file:
+- macOS: `curl`, then `sudo defaults write /Library/Preferences/com.remotectl.agent EnrollToken …`, then `sudo installer -pkg …`.
+- Windows (PowerShell): `Invoke-WebRequest`, then `msiexec /i … ENROLL_TOKEN=… SERVER_URL=… /qn`. For an `.exe` it uses `remote-agent.exe enroll --token … --server …` followed by `install-service`.
+
+Otherwise the agent asks for the token on first run.
 
 Agent subcommands: `run` (default), `enroll --token`, `status`, `selftest`, `uninstall`, `version`. Windows also has `service`, `helper`, `install-service` and `uninstall-service`.
 
@@ -98,7 +110,7 @@ Admins are users with `is_admin`. The bootstrap admin comes from `ADMIN_EMAIL` /
 - **All devices** and **Sessions**: disable devices, force-end sessions.
 - **Audit log**: append-only, partitioned by month.
 - **Releases**: signed update manifests with rollout %.
-- **System**: signup, default auto-accept, max session length, download URLs.
+- **System**: client downloads (installer uploads), signup, default auto-accept, max session length, external download URLs.
 
 Admins can end sessions but cannot watch or join them: the end-to-end pinning makes that impossible by design.
 
