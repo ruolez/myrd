@@ -24,9 +24,11 @@ export SERVER_URL="$APP_URL"
 
 WORK="$OUT/pkgwork"
 rm -rf "$WORK"
-mkdir -p "$WORK/root/Applications" "$WORK/root/Library/LaunchAgents" "$WORK/scripts"
+mkdir -p "$WORK/root/Applications" "$WORK/root/Library/LaunchAgents" "$WORK/root/Library/LaunchDaemons" "$WORK/scripts"
 ditto "$APP" "$WORK/root/Applications/$APP_NAME.app"
 "$HERE/render.sh" "$HERE/launchagent.plist.in" "$WORK/root/Library/LaunchAgents/$BUNDLE_ID.plist"
+"$HERE/render.sh" "$HERE/updater.plist.in" "$WORK/root/Library/LaunchDaemons/com.remotectl.updater.plist"
+plutil -lint "$WORK/root/Library/LaunchAgents/$BUNDLE_ID.plist" "$WORK/root/Library/LaunchDaemons/com.remotectl.updater.plist" >/dev/null
 for s in preinstall postinstall; do
   "$HERE/render.sh" "$HERE/scripts/$s" "$WORK/scripts/$s"
   chmod 755 "$WORK/scripts/$s"

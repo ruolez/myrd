@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Root update daemon (docs/PROTOCOL.md §7 "macOS"): installs signed pkgs the
+     user agent drops into the inbox, and watches a fresh install's health. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.remotectl.updater</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Applications/@APP_NAME@.app/Contents/MacOS/@EXECUTABLE@</string>
+		<string>update-daemon</string>
+	</array>
+	<!-- Started whenever the sticky drop box is not empty... -->
+	<key>QueueDirectories</key>
+	<array>
+		<string>/Library/Application Support/@APP_NAME@/Updater/inbox</string>
+	</array>
+	<!-- ...and every 2 minutes as the health watchdog of a pending install. -->
+	<key>StartInterval</key>
+	<integer>120</integer>
+	<key>RunAtLoad</key>
+	<false/>
+	<!-- installer(8) must outlive the daemon if launchd stops it mid-install. -->
+	<key>AbandonProcessGroup</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>UserName</key>
+	<string>root</string>
+</dict>
+</plist>

@@ -259,21 +259,3 @@ func (w *winInstaller) prune(keep ...string) {
 		_ = os.Remove(filepath.Join(w.updatesDir(), n))
 	}
 }
-
-func closed(c <-chan struct{}) bool {
-	select {
-	case <-c:
-		return true
-	default:
-		return false
-	}
-}
-
-func waitClosed(ctx context.Context, c <-chan struct{}) bool {
-	select {
-	case <-c:
-		return true
-	case <-ctx.Done():
-		return false
-	}
-}

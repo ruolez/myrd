@@ -1,18 +1,58 @@
 #!/bin/sh
-# Loads the LaunchAgent for the logged-in user and enrolls when a token was
-# provided via: defaults write /Library/Preferences/@BUNDLE_ID@ EnrollToken XXXX-XXXX
+# Sets up the update daemon, loads the LaunchAgent for the logged-in user and
+# enrolls when a token was provided via:
+#   defaults write /Library/Preferences/@BUNDLE_ID@ EnrollToken XXXX-XXXX
 LABEL="@BUNDLE_ID@"
 APP="/Applications/@APP_NAME@.app"
 BIN="$APP/Contents/MacOS/@EXECUTABLE@"
 PLIST="/Library/LaunchAgents/$LABEL.plist"
 PREFS="/Library/Preferences/$LABEL"
+UPDATER_LABEL="com.remotectl.updater"
+UPDATER_PLIST="/Library/LaunchDaemons/$UPDATER_LABEL.plist"
+UPDATER="/Library/Application Support/@APP_NAME@/Updater"
+TCC_MARK="/private/var/tmp/remotectl-tcc-reset"
 
-chown root:wheel "$PLIST"
-chmod 644 "$PLIST"
+chown root:wheel "$PLIST" "$UPDATER_PLIST"
+chmod 644 "$PLIST" "$UPDATER_PLIST"
+
+# Update daemon layout (docs/PROTOCOL.md §7): the inbox is a sticky drop box,
+# everything else is root's.
+install -d -o root -g wheel -m 0755 "/Library/Application Support/@APP_NAME@"
+install -d -o root -g wheel -m 0755 "$UPDATER"
+install -d -o root -g wheel -m 1733 "$UPDATER/inbox"
+for d in pkgs previous logs; do
+  install -d -o root -g wheel -m 0700 "$UPDATER/$d"
+done
+
+# When the daemon runs this install it must not be restarted under itself;
+# otherwise (first install, manual upgrade) load the new definition.
+if ! launchctl print "system/$UPDATER_LABEL" 2>/dev/null | grep -q 'state = running'; then
+  launchctl bootout "system/$UPDATER_LABEL" 2>/dev/null || true
+  launchctl bootstrap system "$UPDATER_PLIST" || echo "could not load $UPDATER_LABEL; updates will not install"
+fi
+
+# An ad-hoc signed build is a new app to macOS: grants made for the previous
+# build stay listed as "on" in System Settings but no longer apply. Clear them
+# when the new or the replaced build is ad-hoc, so the agent's first start asks
+# again; builds with a stable signing identity keep their grants.
+reset_tcc=0
+if codesign -dv "$APP" 2>&1 | grep -q '^Signature=adhoc'; then
+  reset_tcc=1
+fi
+if [ -f "$TCC_MARK" ] && [ ! -L "$TCC_MARK" ] && [ "$(stat -f %u "$TCC_MARK")" = 0 ]; then
+  reset_tcc=1
+fi
+rm -f "$TCC_MARK"
 
 user=$(stat -f %Su /dev/console)
 if [ -z "$user" ] || [ "$user" = "root" ] || [ "$user" = "loginwindow" ]; then
-  exit 0 # no GUI user right now; launchd loads the agent at next login
+  # No GUI user right now; launchd loads the agent at next login.
+  if [ "$reset_tcc" = 1 ]; then
+    for service in ScreenCapture Accessibility; do
+      tccutil reset "$service" "$LABEL" >/dev/null 2>&1 || true
+    done
+  fi
+  exit 0
 fi
 uid=$(id -u "$user")
 server=$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:RC_SERVER_URL" "$PLIST" 2>/dev/null)
@@ -25,10 +65,7 @@ if [ -n "$token" ]; then
   defaults delete "$PREFS" EnrollToken 2>/dev/null || true
 fi
 
-# An ad-hoc signed build is a new app to macOS: grants made for the previous
-# build stay listed as "on" in System Settings but no longer apply. Clear them
-# so the agent's first start asks again. Developer ID builds keep their grants.
-if codesign -dv "$APP" 2>&1 | grep -q '^Signature=adhoc'; then
+if [ "$reset_tcc" = 1 ]; then
   for service in ScreenCapture Accessibility; do
     launchctl asuser "$uid" sudo -u "$user" tccutil reset "$service" "$LABEL" >/dev/null 2>&1 || true
   done

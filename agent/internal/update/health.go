@@ -1,6 +1,7 @@
 package update
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -115,4 +116,22 @@ func writeAtomic(path string, b []byte, mode os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
+}
+
+func closed(c <-chan struct{}) bool {
+	select {
+	case <-c:
+		return true
+	default:
+		return false
+	}
+}
+
+func waitClosed(ctx context.Context, c <-chan struct{}) bool {
+	select {
+	case <-c:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
