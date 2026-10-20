@@ -1,35 +1,18 @@
-# Production overlay for one VPS:
+# Production overlay for one dedicated server, managed by install.sh:
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-# Requires in .env: PUBLIC_URL=https://<domain>, SITE_ADDRESS=<domain>,
-# TURN_URLS=..., TURN_EXTERNAL_IP=<public ip>, TURN_ALLOW_PRIVATE_PEERS=false.
+# (install.sh sets COMPOSE_FILE in .env, so a plain `docker compose` works in /opt/myrd.)
+# .env from install.sh: PUBLIC_URL, SITE_ADDRESS, CADDY_TLS, TURN_URLS, TURN_URLS_AGENT,
+# TURN_EXTERNAL_IP, PG_SHARED_BUFFERS, PG_EFFECTIVE_CACHE_SIZE.
+# TLS: certbot (host) → deploy hook copies the certificate to ./data/tls → Caddy + coturn.
 services:
-  postgres:
-    command:
-      - postgres
-      - -c
-      - shared_buffers=2GB
-      - -c
-      - effective_cache_size=5GB
-      - -c
-      - work_mem=16MB
-      - -c
-      - maintenance_work_mem=256MB
-      - -c
-      - max_connections=50
-      - -c
-      - random_page_cost=1.1
-      - -c
-      - wal_compression=on
-      - -c
-      - checkpoint_completion_target=0.9
-      - -c
-      - log_min_duration_statement=200ms
-
   web:
     ports: !override
       - "80:80"
       - "443:443"
       - "443:443/udp"
+    volumes:
+      - ./data/acme:/acme:ro
+      - ./data/tls:/tls:ro
 
   # coturn needs the whole relay port range; host networking avoids publishing
   # thousands of UDP ports through docker-proxy.
@@ -40,9 +23,8 @@ services:
       TURN_MIN_PORT: ${TURN_MIN_PORT:-49152}
       TURN_MAX_PORT: ${TURN_MAX_PORT:-65535}
       TURN_ALLOW_PRIVATE_PEERS: "false"
-      # TURNS (5349) reuses the certificate Caddy obtains for TURN_DOMAIN.
-      TURN_TLS_CERT: ${TURN_TLS_CERT:-/caddy/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${TURN_DOMAIN:-localhost}/${TURN_DOMAIN:-localhost}.crt}
-      TURN_TLS_KEY: ${TURN_TLS_KEY:-/caddy/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${TURN_DOMAIN:-localhost}/${TURN_DOMAIN:-localhost}.key}
+      TURN_TLS_CERT: /tls/fullchain.pem
+      TURN_TLS_KEY: /tls/privkey.pem
     volumes:
       - ./deploy/coturn/entrypoint.sh:/etc/coturn/entrypoint.sh:ro
-      - caddy_data:/caddy:ro
+      - ./data/tls:/tls:ro

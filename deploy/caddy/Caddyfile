@@ -1,7 +1,8 @@
 # remotectl edge: serves the SPA and proxies the API (REST + signaling WebSocket).
 # SITE_ADDRESS=":5560" serves plain HTTP for local dev (localhost is a secure
-# context, so WebCrypto and passkeys work). Set it to a domain in production
-# for automatic TLS, HTTP/2 and HTTP/3.
+# context, so WebCrypto and passkeys work). In production install.sh manages it:
+# "http://<domain>" until certbot has a certificate, then "<domain>" with
+# CADDY_TLS="tls /tls/fullchain.pem /tls/privkey.pem" (HTTPS, HTTP/2, HTTP/3).
 {
 	admin off
 	servers {
@@ -10,6 +11,7 @@
 }
 
 {$SITE_ADDRESS::5560} {
+	{$CADDY_TLS}
 	encode zstd gzip
 
 	header {
@@ -24,6 +26,13 @@
 
 	@https protocol https
 	header @https Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+	# certbot --webroot (initial issue and renewals; Let's Encrypt follows the
+	# HTTP→HTTPS redirect).
+	handle /.well-known/acme-challenge/* {
+		root * /acme
+		file_server
+	}
 
 	@api path /v1/* /healthz
 	handle @api {

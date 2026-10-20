@@ -28,11 +28,10 @@ if [ -n "${TURN_EXTERNAL_IP:-}" ]; then
   echo "external-ip=${TURN_EXTERNAL_IP}" >> "$CONF"
 fi
 
-if [ -n "${TURN_TLS_CERT:-}" ]; then
-  # Caddy may still be obtaining the certificate on first boot.
-  i=0
-  while [ ! -f "$TURN_TLS_CERT" ] && [ $i -lt 60 ]; do sleep 2; i=$((i + 1)); done
-  [ -f "$TURN_TLS_CERT" ] || { echo "coturn: $TURN_TLS_CERT not found, TURNS disabled"; TURN_TLS_CERT=; }
+if [ -n "${TURN_TLS_CERT:-}" ] && [ ! -r "$TURN_TLS_CERT" ]; then
+  # Before the first certificate; install.sh restarts coturn once it exists.
+  echo "coturn: $TURN_TLS_CERT not readable, TURNS disabled"
+  TURN_TLS_CERT=
 fi
 
 if [ -n "${TURN_TLS_CERT:-}" ] && [ -n "${TURN_TLS_KEY:-}" ]; then

@@ -78,7 +78,7 @@ services:
       - api
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:-:5560}
-      TURN_HOSTS: ${TURN_HOSTS:-localhost:${TURN_PORT:-3478}}
+      CADDY_TLS: ${CADDY_TLS:-}
     ports:
       - "${HTTP_PORT:-5560}:5560"
     volumes:
