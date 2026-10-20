@@ -15,6 +15,7 @@ import (
 	"github.com/pion/ice/v4"
 	"github.com/pion/webrtc/v4"
 
+	"github.com/ruolez/remotectl/agent/internal/files"
 	"github.com/ruolez/remotectl/agent/internal/keymap"
 	"github.com/ruolez/remotectl/agent/internal/pins"
 	"github.com/ruolez/remotectl/agent/internal/platform"
@@ -46,6 +47,14 @@ type Options struct {
 	MaxWidth     int // 0 = native
 	MaxHeight    int
 
+	// Files enables the `file` channel (transfers and browsing as the
+	// device's user); nil disables it and the channel is closed. FileDeny
+	// lists paths it never touches (the agent's state directory).
+	// OnFileActivity feeds the tray / device console and must not block.
+	Files          files.Host
+	FileDeny       []string
+	OnFileActivity func(files.Activity)
+
 	ConsentTimeout time.Duration // default 60 s
 	FailedTimeout  time.Duration // ICE failed → end; default 15 s
 	Keymap         keymap.Table  // default keymap.For(runtime.GOOS)
@@ -66,6 +75,8 @@ type Info struct {
 type Manager struct {
 	o      Options
 	udpMux ice.UDPMux
+
+	audit *fileAudit // nil without Files
 
 	mu      sync.Mutex
 	cur     *sess
@@ -94,6 +105,10 @@ func NewManager(o Options) (*Manager, error) {
 		o.Paused = func() bool { return false }
 	}
 	m := &Manager{o: o, revoked: map[string]bool{}}
+	if o.Files != nil {
+		m.audit = newFileAudit(o.Send, o.Log)
+		go m.audit.run()
+	}
 	if o.UDPPort > 0 {
 		conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: o.UDPPort})
 		if err != nil {
@@ -242,9 +257,13 @@ func (m *Manager) Current() *Info {
 	return cur.info()
 }
 
-// Close ends any session and releases the UDP port.
+// Close ends any session, makes a last attempt at unsent file audit records
+// and releases the UDP port.
 func (m *Manager) Close() {
 	m.EndAll(proto.EndAgentKill)
+	if m.audit != nil {
+		m.audit.close()
+	}
 	if m.udpMux != nil {
 		_ = m.udpMux.Close()
 	}

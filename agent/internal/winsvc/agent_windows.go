@@ -361,6 +361,12 @@ func RunHelper(o Options) error {
 		}
 	}
 
+	// File transfers run as the user signed in to this console session and
+	// show in the tray tooltip and menu.
+	var sid uint32
+	_ = windows.ProcessIdToSessionId(windows.GetCurrentProcessId(), &sid)
+	fileFeed := tray.NewActivityFeed(func(line string) { pushTray(func(s *tray.State) { s.Activity = line }) }, tray.Notify)
+
 	var mgr *session.Manager
 	mgr, err = session.NewManager(session.Options{
 		Backend:    backend,
@@ -384,10 +390,13 @@ func RunHelper(o Options) error {
 				}
 			})
 		},
-		UDPPort:      o.Settings.UDPPort,
-		NAT1To1IPs:   o.Settings.NAT1To1IPs,
-		AgentVersion: o.Version,
-		Log:          o.Log,
+		UDPPort:        o.Settings.UDPPort,
+		NAT1To1IPs:     o.Settings.NAT1To1IPs,
+		AgentVersion:   o.Version,
+		Files:          UserFS{SessionID: sid},
+		FileDeny:       []string{o.Settings.DataDir, o.PinsPath},
+		OnFileActivity: fileFeed.Add,
+		Log:            o.Log,
 	})
 	if err != nil {
 		return err

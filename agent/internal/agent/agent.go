@@ -22,6 +22,7 @@ import (
 	"github.com/ruolez/remotectl/agent/internal/api"
 	"github.com/ruolez/remotectl/agent/internal/config"
 	"github.com/ruolez/remotectl/agent/internal/devconsole"
+	"github.com/ruolez/remotectl/agent/internal/files"
 	"github.com/ruolez/remotectl/agent/internal/identity"
 	"github.com/ruolez/remotectl/agent/internal/pins"
 	"github.com/ruolez/remotectl/agent/internal/platform"
@@ -64,6 +65,10 @@ type Agent struct {
 	trayUp   func(tray.State)
 	sigState signal.Status
 	enrolled chan struct{}
+	activity string // tray line from fileFeed
+
+	fileFeed  *tray.ActivityFeed
+	transfers devconsole.TransferLog
 
 	autoAccept atomic.Bool
 	paused     atomic.Bool
@@ -88,6 +93,7 @@ func New(cfg Config) (*Agent, error) {
 		return nil, err
 	}
 	a := &Agent{cfg: cfg, log: cfg.Log, ks: cfg.Keystore, pins: ps, state: st, enrolled: make(chan struct{})}
+	a.fileFeed = tray.NewActivityFeed(a.setActivity, tray.Notify)
 	if st.Enrolled() {
 		close(a.enrolled)
 	}
@@ -209,10 +215,24 @@ func (a *Agent) SetTrayUpdater(f func(tray.State)) {
 	a.pushTray()
 }
 
+// onFileActivity shows file transfers in the tray (and a notification on
+// macOS) and on the device console.
+func (a *Agent) onFileActivity(act files.Activity) {
+	a.transfers.Add(act)
+	a.fileFeed.Add(act)
+}
+
+func (a *Agent) setActivity(line string) {
+	a.mu.Lock()
+	a.activity = line
+	a.mu.Unlock()
+	a.pushTray()
+}
+
 func (a *Agent) pushTray() {
 	a.mu.Lock()
 	up := a.trayUp
-	st := tray.State{Enrolled: a.state.Enrolled(), Online: a.sigState.Online, Paused: a.paused.Load()}
+	st := tray.State{Enrolled: a.state.Enrolled(), Online: a.sigState.Online, Paused: a.paused.Load(), Activity: a.activity}
 	mgr := a.mgr
 	sigState := a.sigState
 	a.mu.Unlock()
@@ -250,7 +270,7 @@ func (a *Agent) consoleStatus() devconsole.Status {
 	a.mu.Unlock()
 	out := devconsole.Status{Enrolled: st.Enrolled(), DeviceID: st.DeviceID, Name: st.Name, ServerURL: st.ServerURL,
 		Hostname: a.cfg.Settings.Hostname, Version: a.cfg.Version, Online: ss.Online, LastError: ss.LastError,
-		Fatal: ss.Fatal, Paused: a.paused.Load(), Encoder: a.cfg.Backend.EncoderName()}
+		Fatal: ss.Fatal, Paused: a.paused.Load(), Encoder: a.cfg.Backend.EncoderName(), Transfers: a.transfers.List()}
 	if mgr != nil {
 		out.Session = mgr.Current()
 	}
@@ -398,6 +418,7 @@ func (a *Agent) runConnected(ctx context.Context) error {
 			OnSessionChange: func(*session.Info) { a.pushTray() },
 			UDPPort:         a.cfg.Settings.UDPPort, NAT1To1IPs: a.cfg.Settings.NAT1To1IPs,
 			AgentVersion: a.cfg.Version, Log: a.log, // MaxFPS unset: the session follows the live encoder
+			Files: files.LocalHost{}, FileDeny: []string{a.cfg.Settings.DataDir}, OnFileActivity: a.onFileActivity,
 		})
 		if err != nil {
 			return err

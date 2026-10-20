@@ -223,21 +223,21 @@ func (s *Service) Handle(isString bool, data []byte) {
 
 // Close cancels every transfer (each records `cancelled` and removes its
 // partial file) and waits briefly for them to finish. Nothing is sent.
+// Every call waits, so a caller never overtakes a Close in progress.
 func (s *Service) Close(reason string) {
 	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return
-	}
+	first := !s.closed
 	s.closed = true
 	ts := make([]*transfer, 0, len(s.xfers))
 	for _, t := range s.xfers {
 		ts = append(ts, t)
 	}
 	s.mu.Unlock()
-	close(s.stop)
-	for _, t := range ts {
-		t.abort(CodeCancelled, reason)
+	if first {
+		close(s.stop)
+		for _, t := range ts {
+			t.abort(CodeCancelled, reason)
+		}
 	}
 	done := make(chan struct{})
 	go func() {

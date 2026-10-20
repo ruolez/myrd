@@ -15,6 +15,7 @@ import (
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 
+	"github.com/ruolez/remotectl/agent/internal/files"
 	"github.com/ruolez/remotectl/agent/internal/platform"
 	"github.com/ruolez/remotectl/proto"
 )
@@ -54,6 +55,7 @@ type sess struct {
 
 	media *mediaPipe
 	in    *inputState
+	files *files.Service // set when the browser opens the file channel
 }
 
 func newSess(m *Manager, o proto.SessionOffer) *sess {
@@ -298,12 +300,47 @@ func (s *sess) setupPeer() error {
 					s.media.onControlText(msg.Data)
 				}
 			})
+		case "file":
+			s.attachFiles(dc)
 		default:
 			s.log.Warn("unexpected data channel", "label", dc.Label())
 			dc.Close()
 		}
 	})
 	return nil
+}
+
+// attachFiles serves the `file` channel; without Options.Files (or for a
+// second file channel) it is closed, which browsers read as "unsupported".
+func (s *sess) attachFiles(dc *webrtc.DataChannel) {
+	o := s.m.o
+	if o.Files == nil {
+		dc.Close()
+		return
+	}
+	svc := files.New(files.Config{Host: o.Files, Policy: files.Policy{Deny: o.FileDeny}, Path: s.currentPath,
+		Record: func(r proto.FileRecord) { s.m.audit.record(s.id, r) }, Activity: o.OnFileActivity,
+		AuditOK: s.m.audit.ok, Log: s.log})
+	s.mu.Lock()
+	refuse := s.ended || s.files != nil
+	if !refuse {
+		s.files = svc
+	}
+	s.mu.Unlock()
+	if refuse {
+		svc.Close("refused")
+		dc.Close()
+		return
+	}
+	dc.OnOpen(func() { svc.Attach(dc) })
+	dc.OnMessage(func(msg webrtc.DataChannelMessage) { svc.Handle(msg.IsString, msg.Data) })
+	dc.OnClose(func() { go svc.Close("file channel closed") })
+}
+
+func (s *sess) currentPath() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.path
 }
 
 func (s *sess) readRTCP(sender *webrtc.RTPSender) {
@@ -473,9 +510,18 @@ func (s *sess) end(reason string, send bool) {
 	s.state = stateEnded
 	pc := s.pc
 	started := s.started
+	fsvc := s.files
 	s.mu.Unlock()
 	s.cancel()
 
+	// Transfers end first so their `cancelled` records reach the server
+	// before session.end.
+	if fsvc != nil {
+		fsvc.Close("session ended")
+	}
+	if s.m.audit != nil {
+		s.m.audit.flush(s.id)
+	}
 	var sent, recv int64
 	if s.media != nil {
 		s.media.stop(reason)

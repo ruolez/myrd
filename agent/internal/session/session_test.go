@@ -64,6 +64,7 @@ type harness struct {
 	input   *webrtc.DataChannel
 	control *webrtc.DataChannel
 	cursor  *webrtc.DataChannel
+	file    *webrtc.DataChannel
 
 	mu          sync.Mutex
 	statuses    []string
@@ -75,6 +76,10 @@ type harness struct {
 	rtpPackets  chan struct{}
 	autoAccept  bool
 	cands       []string
+	fileRecs    []proto.SessionFile
+	signalOrder []string // session.file / session.end, as sent
+	fileText    chan map[string]any
+	fileData    chan []byte
 }
 
 func newHarness(t *testing.T, answer platform.Consent, tweaks ...func(*Options)) *harness {
@@ -89,7 +94,8 @@ func newHarness(t *testing.T, answer platform.Consent, tweaks ...func(*Options))
 	h := &harness{t: t, backend: fake.New(), pins: ps, prompter: &recordingPrompter{answer: answer},
 		devPub: pub, clientK: ck, spki: base64.StdEncoding.EncodeToString(der),
 		answerOK: make(chan error, 4), controlMsgs: make(chan map[string]any, 64),
-		cursorMsgs: make(chan []byte, 256), rtpPackets: make(chan struct{}, 1)}
+		cursorMsgs: make(chan []byte, 256), rtpPackets: make(chan struct{}, 1),
+		fileText: make(chan map[string]any, 256), fileData: make(chan []byte, 1024)}
 	opts := Options{
 		Backend: h.backend, DeviceKey: priv, Pins: ps, Send: h.fromAgent, Prompter: h.prompter,
 		AutoAccept: func() bool { h.mu.Lock(); defer h.mu.Unlock(); return h.autoAccept },
@@ -155,6 +161,14 @@ func (h *harness) fromAgent(typ string, msg any) error {
 		_ = json.Unmarshal(b, &m)
 		h.mu.Lock()
 		h.ends = append(h.ends, m)
+		h.signalOrder = append(h.signalOrder, typ)
+		h.mu.Unlock()
+	case proto.TypeSessionFile:
+		var m proto.SessionFile
+		_ = json.Unmarshal(b, &m)
+		h.mu.Lock()
+		h.fileRecs = append(h.fileRecs, m)
+		h.signalOrder = append(h.signalOrder, typ)
 		h.mu.Unlock()
 	}
 	return nil
@@ -198,6 +212,17 @@ func (h *harness) offer(tamper bool) {
 	h.input, _ = pc.CreateDataChannel("input", nil)
 	h.cursor, _ = pc.CreateDataChannel("cursor", &webrtc.DataChannelInit{Ordered: &ordered, MaxRetransmits: &zero})
 	h.control, _ = pc.CreateDataChannel("control", nil)
+	h.file, _ = pc.CreateDataChannel("file", nil)
+	h.file.OnMessage(func(m webrtc.DataChannelMessage) {
+		if !m.IsString {
+			h.fileData <- m.Data
+			return
+		}
+		var v map[string]any
+		if json.Unmarshal(m.Data, &v) == nil {
+			h.fileText <- v
+		}
+	})
 	h.control.OnMessage(func(m webrtc.DataChannelMessage) {
 		if m.IsString {
 			var v map[string]any
