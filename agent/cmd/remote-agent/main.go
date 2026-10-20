@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -77,6 +79,10 @@ func newLogger() *slog.Logger {
 	if path := defaultLogFile(); path != "" {
 		if f, err := openLogFile(path, maxLogSize); err == nil {
 			w = io.MultiWriter(os.Stderr, f) // closed at process exit
+			// launchd discards stderr: keep panic traces in the log.
+			if lf, ok := f.(*os.File); ok {
+				_ = debug.SetCrashOutput(lf, debug.CrashOptions{})
+			}
 		}
 	}
 	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: lvl}))
@@ -115,6 +121,15 @@ func cmdRun(log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	release, err := singleInstance(s.DataDir)
+	if errors.Is(err, errAlreadyRunning) && os.Getenv("XPC_SERVICE_NAME") == "" {
+		log.Info("not starting: " + err.Error())
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer release()
 	a, err := newAgent(log, s)
 	if err != nil {
 		return err
