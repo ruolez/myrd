@@ -910,7 +910,9 @@ func (h *Hub) onHello(ac *agentConn, m proto.Hello) {
 	ack := proto.HelloAck{ServerTime: time.Now().UTC().Format(time.RFC3339Nano),
 		Device:            proto.DeviceInfo{ID: d.ID, Name: d.Name, AutoAccept: d.AutoAccept},
 		RevokedClientKeys: []string{}}
-	if rel, err := a.latestRelease(ctx, m.OS, m.Arch, m.AgentVersion); err == nil && rel != nil {
+	if rels, err := store.ListReleases(ctx, a.pool); err != nil {
+		a.log.Error("hello releases", "err", err)
+	} else if rel := pickRelease(rels, m.OS, m.Arch, m.AgentVersion, proto.RolloutBucket(d.ID), false); rel != nil {
 		ack.Update = proto.UpdateHint{Available: true, Version: rel.Version}
 	}
 	if keys, err := store.RevokedClientKeys(ctx, a.pool, d.UserID); err == nil {

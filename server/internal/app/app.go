@@ -3,8 +3,6 @@ package app
 
 import (
 	"context"
-	"crypto/ed25519"
-	"errors"
 	"log/slog"
 	"net/http"
 	"runtime"
@@ -17,7 +15,6 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"golang.org/x/mod/semver"
 
 	"github.com/ruolez/remotectl/proto"
 	"github.com/ruolez/remotectl/server/internal/config"
@@ -165,50 +162,6 @@ func (a *App) iceServers(sessionID, side string, urls []string) []proto.ICEServe
 	return out
 }
 
-// latestRelease returns the newest published release for os/arch newer than
-// current, or nil.
-func (a *App) latestRelease(ctx context.Context, os, arch, current string) (*store.Release, error) {
-	rels, err := store.ListReleases(ctx, a.pool, os, arch, true)
-	if err != nil {
-		return nil, err
-	}
-	var best *store.Release
-	for i := range rels {
-		r := &rels[i]
-		if semver.Compare(sv(r.Version), sv(current)) <= 0 {
-			continue
-		}
-		if best == nil || semver.Compare(sv(r.Version), sv(best.Version)) > 0 {
-			best = r
-		}
-	}
-	return best, nil
-}
-
-func sv(v string) string {
-	if !strings.HasPrefix(v, "v") {
-		v = "v" + v
-	}
-	if !semver.IsValid(v) {
-		return "v0.0.0"
-	}
-	return v
-}
-
-func (a *App) verifyRelease(r store.Release) error {
-	if len(a.cfg.ReleasePublicKey) == 0 {
-		return nil
-	}
-	sig, err := decodeB64Any(r.Signature)
-	if err != nil || len(sig) != ed25519.SignatureSize {
-		return errors.New("bad signature encoding")
-	}
-	if !ed25519.Verify(a.cfg.ReleasePublicKey, proto.ReleaseManifestMessage(r.Version, r.OS, r.Arch, r.URL, r.SHA256), sig) {
-		return errors.New("signature does not verify against RELEASE_PUBLIC_KEY")
-	}
-	return nil
-}
-
 // Run starts background loops (sweeper, last_seen flush, partitions) until ctx ends.
 func (a *App) Run(ctx context.Context) {
 	sweep := time.NewTicker(5 * time.Second)
@@ -257,6 +210,8 @@ func (a *App) Router() http.Handler {
 		r.Get("/config", a.h(a.getConfig))
 		r.Get("/downloads/{os}", a.h(a.serveDownload))
 		r.Head("/downloads/{os}", a.h(a.serveDownload))
+		r.Get("/releases/{id}/file", a.h(a.serveReleaseFile))
+		r.Head("/releases/{id}/file", a.h(a.serveReleaseFile))
 
 		r.Post("/auth/signup", a.h(a.signup))
 		r.Post("/auth/login", a.h(a.login))
@@ -318,8 +273,9 @@ func (a *App) Router() http.Handler {
 			r.Post("/sessions/{id}/end", a.h(a.adminEndSession))
 			r.Get("/audit", a.h(a.adminListAudit))
 			r.Get("/releases", a.h(a.adminListReleases))
-			r.Post("/releases", a.h(a.adminCreateRelease))
+			r.Post("/releases", a.h(a.adminUploadRelease))
 			r.Patch("/releases/{id}", a.h(a.adminPatchRelease))
+			r.Post("/releases/{id}/installer", a.h(a.adminSetReleaseInstaller))
 			r.Delete("/releases/{id}", a.h(a.adminDeleteRelease))
 			r.Get("/settings", a.h(a.adminGetSettings))
 			r.Put("/settings", a.h(a.adminPutSettings))

@@ -2,6 +2,7 @@
 package config
 
 import (
+	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -9,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/ruolez/remotectl/proto"
 )
 
 type Config struct {
@@ -32,7 +35,7 @@ type Config struct {
 	AdminEmail           string
 	AdminInitialPassword string
 
-	ReleasePublicKey []byte // optional raw 32-byte Ed25519
+	ReleasePublicKey string // base64 Ed25519 key release uploads must be signed with
 	DownloadsDir     string // agent installers uploaded under Admin → System
 	LogLevel         slog.Level
 }
@@ -94,12 +97,10 @@ func Load(getenv func(string) string) (*Config, error) {
 	}
 	c.TURNTTL = ttl
 
-	if rk := get("RELEASE_PUBLIC_KEY", ""); rk != "" {
-		b, err := decodeB64(rk)
-		if err != nil || len(b) != 32 {
-			errs = append(errs, errors.New("RELEASE_PUBLIC_KEY must be base64 of a 32-byte Ed25519 key"))
-		}
-		c.ReleasePublicKey = b
+	if b, err := decodeB64(get("RELEASE_PUBLIC_KEY", proto.ReleasePublicKey)); err != nil || len(b) != ed25519.PublicKeySize {
+		errs = append(errs, errors.New("RELEASE_PUBLIC_KEY must be base64 of a 32-byte Ed25519 key"))
+	} else {
+		c.ReleasePublicKey = base64.StdEncoding.EncodeToString(b)
 	}
 	if err := c.LogLevel.UnmarshalText([]byte(get("LOG_LEVEL", "info"))); err != nil {
 		errs = append(errs, fmt.Errorf("LOG_LEVEL: %w", err))

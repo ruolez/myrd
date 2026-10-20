@@ -160,29 +160,36 @@ func (a *App) agentDevice(r *http.Request) (*store.Device, error) {
 	return a.deviceUsable(r, id)
 }
 
+// agentUpdate offers the release pickRelease selects for this device; the
+// cohort is applied here unless explicit=1.
 func (a *App) agentUpdate(w http.ResponseWriter, r *http.Request) error {
 	d, err := a.agentDevice(r)
 	if err != nil {
 		return err
 	}
 	q := r.URL.Query()
-	os, arch := q.Get("os"), q.Get("arch")
+	os, arch, version := q.Get("os"), q.Get("arch"), q.Get("version")
 	if os == "" {
 		os = d.OS
 	}
 	if arch == "" {
 		arch = d.Arch
 	}
-	rel, err := a.latestRelease(r.Context(), os, arch, q.Get("version"))
+	if version == "" {
+		version = d.AgentVersion
+	}
+	rels, err := store.ListReleases(r.Context(), a.pool)
 	if err != nil {
 		return err
 	}
+	explicit := q.Get("explicit") == "1" || q.Get("explicit") == "true"
+	rel := pickRelease(rels, os, arch, version, proto.RolloutBucket(d.ID), explicit)
 	if rel == nil {
 		w.WriteHeader(http.StatusNoContent)
 		return nil
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"version": rel.Version, "os": rel.OS, "arch": rel.Arch, "url": rel.URL,
-		"sha256": rel.SHA256, "signature": rel.Signature, "rollout_pct": rel.RolloutPct})
+		"sha256": rel.SHA256, "size": rel.Size, "signature": rel.Signature})
 	return nil
 }
 

@@ -3,7 +3,6 @@ package app
 import (
 	"errors"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
@@ -252,13 +251,19 @@ func (a *App) adminListDevices(w http.ResponseWriter, r *http.Request) error {
 	if status == "online" || status == "offline" {
 		fetch = 1000
 	}
-	ds, err := store.ListAllDevices(r.Context(), a.pool, strings.TrimSpace(r.URL.Query().Get("q")), status == "disabled", fetch, before)
+	ctx := r.Context()
+	ds, err := store.ListAllDevices(ctx, a.pool, strings.TrimSpace(r.URL.Query().Get("q")), status == "disabled", fetch, before)
+	if err != nil {
+		return err
+	}
+	rels, err := store.ListReleases(ctx, a.pool)
 	if err != nil {
 		return err
 	}
 	out := ds[:0]
 	for i := range ds {
 		a.hub.decorate(&ds[i])
+		applyLatest(&ds[i], rels)
 		if (status == "online" || status == "offline") && ds[i].Status != status {
 			continue
 		}
@@ -316,6 +321,9 @@ func (a *App) adminPatchDevice(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	a.hub.decorate(nd)
+	if err := a.withLatest(ctx, nd); err != nil {
+		return err
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"device": nd})
 	return nil
 }
@@ -392,99 +400,6 @@ func (a *App) adminListAudit(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	writeJSON(w, http.StatusOK, page(evs, limit, auditCursor))
-	return nil
-}
-
-// ---------- releases ----------
-
-var (
-	reVersion = regexp.MustCompile(`^v?\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$`)
-	reSHA256  = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
-)
-
-func (a *App) adminListReleases(w http.ResponseWriter, r *http.Request) error {
-	rels, err := store.ListReleases(r.Context(), a.pool, "", "", false)
-	if err != nil {
-		return err
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": rels})
-	return nil
-}
-
-func (a *App) adminCreateRelease(w http.ResponseWriter, r *http.Request) error {
-	var body store.Release
-	if err := decode(r, &body); err != nil {
-		return err
-	}
-	switch {
-	case !reVersion.MatchString(body.Version):
-		return errf(http.StatusBadRequest, "bad_request", "version must be semver, e.g. 1.2.3")
-	case body.OS != "darwin" && body.OS != "windows" && body.OS != "linux":
-		return errf(http.StatusBadRequest, "bad_request", "os must be darwin, windows or linux")
-	case body.Arch != "amd64" && body.Arch != "arm64" && body.Arch != "universal":
-		return errf(http.StatusBadRequest, "bad_request", "arch must be amd64, arm64 or universal")
-	case !strings.HasPrefix(body.URL, "https://") && !strings.HasPrefix(body.URL, "http://"):
-		return errf(http.StatusBadRequest, "bad_request", "url must be http(s)")
-	case !reSHA256.MatchString(body.SHA256):
-		return errf(http.StatusBadRequest, "bad_request", "sha256 must be 64 hex characters")
-	case body.Signature == "":
-		return errf(http.StatusBadRequest, "bad_request", "signature is required")
-	case body.RolloutPct < 0 || body.RolloutPct > 100:
-		return errf(http.StatusBadRequest, "bad_request", "rollout_pct must be 0..100")
-	}
-	if err := a.verifyRelease(body); err != nil {
-		return errf(http.StatusBadRequest, "bad_request", err.Error())
-	}
-	rel, err := store.CreateRelease(r.Context(), a.pool, body)
-	if errors.Is(err, store.ErrConflict) {
-		return errf(http.StatusConflict, "conflict", "a release with this version/os/arch exists")
-	}
-	if err != nil {
-		return err
-	}
-	a.adminAudit(r, store.Audit{Event: "release.created", Meta: map[string]any{"release_id": rel.ID, "version": rel.Version, "os": rel.OS, "arch": rel.Arch}})
-	writeJSON(w, http.StatusOK, map[string]any{"release": rel})
-	return nil
-}
-
-func (a *App) adminPatchRelease(w http.ResponseWriter, r *http.Request) error {
-	id, err := pathID(r, "id")
-	if err != nil {
-		return err
-	}
-	var body struct {
-		RolloutPct *int  `json:"rollout_pct"`
-		Published  *bool `json:"published"`
-	}
-	if err := decode(r, &body); err != nil {
-		return err
-	}
-	if body.RolloutPct != nil && (*body.RolloutPct < 0 || *body.RolloutPct > 100) {
-		return errf(http.StatusBadRequest, "bad_request", "rollout_pct must be 0..100")
-	}
-	rel, err := store.UpdateRelease(r.Context(), a.pool, id, body.RolloutPct, body.Published)
-	if err != nil {
-		return err
-	}
-	event := "release.updated"
-	if body.Published != nil && *body.Published {
-		event = "release.published"
-	}
-	a.adminAudit(r, store.Audit{Event: event, Meta: map[string]any{"release_id": rel.ID, "version": rel.Version, "rollout_pct": rel.RolloutPct, "published": rel.PublishedAt != nil}})
-	writeJSON(w, http.StatusOK, map[string]any{"release": rel})
-	return nil
-}
-
-func (a *App) adminDeleteRelease(w http.ResponseWriter, r *http.Request) error {
-	id, err := pathID(r, "id")
-	if err != nil {
-		return err
-	}
-	if err := store.DeleteRelease(r.Context(), a.pool, id); err != nil {
-		return err
-	}
-	a.adminAudit(r, store.Audit{Event: "release.deleted", Meta: map[string]any{"release_id": id}})
-	writeJSON(w, http.StatusOK, map[string]any{})
 	return nil
 }
 

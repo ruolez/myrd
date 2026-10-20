@@ -34,6 +34,14 @@ type Device struct {
 	PinnedClients []PinnedClientRow `json:"pinned_clients"`
 	OwnerEmail    string            `json:"owner_email,omitempty"`
 
+	LatestVersion   *string    `json:"latest_version"` // applied by the API from the published releases
+	UpdateAvailable bool       `json:"update_available"`
+	UpdateState     string     `json:"update_state"`
+	UpdateFrom      string     `json:"update_from"`
+	UpdateVersion   string     `json:"update_version"`
+	UpdateError     string     `json:"update_error"`
+	UpdateAt        *time.Time `json:"update_at"`
+
 	UserID   string `json:"-"`
 	Disabled bool   `json:"-"`
 	Removed  bool   `json:"-"`
@@ -45,14 +53,14 @@ const deviceCols = `d.id, d.user_id, d.name, d.hostname, d.os, d.arch, d.agent_v
 	EXISTS (SELECT 1 FROM sessions s WHERE s.device_id = d.id AND s.state IN ('pending', 'active')),
 	coalesce((SELECT json_agg(json_build_object('client_key_id', p.client_key_id, 'label', p.label, 'approved_at', p.approved_at) ORDER BY p.approved_at)
 		FROM device_pinned_clients p WHERE p.device_id = d.id), '[]'),
-	u.email`
+	u.email, d.update_state, d.update_from, d.update_version, d.update_error, d.update_at`
 
 func scanDevice(row interface{ Scan(...any) error }) (*Device, error) {
 	var d Device
 	var pins []byte
 	err := row.Scan(&d.ID, &d.UserID, &d.Name, &d.Hostname, &d.OS, &d.Arch, &d.AgentVersion, &d.PublicKey,
 		&d.Disabled, &d.Removed, &d.AutoAccept, &d.LastSeenAt, &d.CreatedAt, &d.Monitors, &d.Permissions, &d.Encoder,
-		&d.Busy, &pins, &d.OwnerEmail)
+		&d.Busy, &pins, &d.OwnerEmail, &d.UpdateState, &d.UpdateFrom, &d.UpdateVersion, &d.UpdateError, &d.UpdateAt)
 	if err != nil {
 		return nil, notFound(err)
 	}

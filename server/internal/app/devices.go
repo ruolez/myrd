@@ -117,12 +117,18 @@ func (a *App) ownDevice(r *http.Request) (*store.Device, error) {
 }
 
 func (a *App) listDevices(w http.ResponseWriter, r *http.Request) error {
-	ds, err := store.DevicesByUser(r.Context(), a.pool, userFrom(r).ID)
+	ctx := r.Context()
+	ds, err := store.DevicesByUser(ctx, a.pool, userFrom(r).ID)
+	if err != nil {
+		return err
+	}
+	rels, err := store.ListReleases(ctx, a.pool)
 	if err != nil {
 		return err
 	}
 	for i := range ds {
 		a.hub.decorate(&ds[i])
+		applyLatest(&ds[i], rels)
 		ds[i].OwnerEmail = ""
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": ds})
@@ -132,6 +138,9 @@ func (a *App) listDevices(w http.ResponseWriter, r *http.Request) error {
 func (a *App) getDevice(w http.ResponseWriter, r *http.Request) error {
 	d, err := a.ownDevice(r)
 	if err != nil {
+		return err
+	}
+	if err := a.withLatest(r.Context(), d); err != nil {
 		return err
 	}
 	d.OwnerEmail = ""
@@ -176,6 +185,9 @@ func (a *App) patchDevice(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	a.hub.decorate(nd)
+	if err := a.withLatest(ctx, nd); err != nil {
+		return err
+	}
 	a.hub.PushDeviceUpdate(nd.ID, nd.Name, nd.AutoAccept)
 	nd.OwnerEmail = ""
 	writeJSON(w, http.StatusOK, map[string]any{"device": nd})
