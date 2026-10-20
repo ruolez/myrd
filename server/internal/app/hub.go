@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"math/rand/v2"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -191,12 +193,15 @@ type Hub struct {
 	seen        map[string]bool // devices connected at least once since boot
 	reconnects  []time.Time
 	bootClaimed bool
+
+	updateTimers map[string][]*time.Timer // pending update.check pushes by batch key
+	checkSpread  time.Duration            // per device in a bulk push (tests shorten it)
 }
 
 func newHub(a *App) *Hub {
 	return &Hub{app: a, bootTime: time.Now(), agents: map[string]*agentConn{},
 		browsers: map[string]map[*browserConn]struct{}{}, sessions: map[string]*liveSession{},
-		creating: map[string]bool{}, seen: map[string]bool{}}
+		creating: map[string]bool{}, seen: map[string]bool{}, updateTimers: map[string][]*time.Timer{}, checkSpread: checkSpread}
 }
 
 func dbctx() (context.Context, context.CancelFunc) {
@@ -247,6 +252,16 @@ func (h *Hub) IsOnline(deviceID string) bool {
 	defer h.mu.Unlock()
 	_, ok := h.agents[deviceID]
 	return ok
+}
+
+func (h *Hub) OnlineDeviceIDs() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ids := make([]string, 0, len(h.agents))
+	for id := range h.agents {
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func (h *Hub) ReconnectsPerMin() float64 {
@@ -323,6 +338,72 @@ func (h *Hub) PushKeyRevoked(userID string, spki []byte) {
 	for _, ac := range targets {
 		h.sendMsg(ac.wsConn, proto.TypeKeyRevoked, msg)
 	}
+}
+
+// PushUpdateCheck sends update.check to the device; false when it is offline.
+func (h *Hub) PushUpdateCheck(deviceID string, explicit, force bool) bool {
+	ac := h.agent(deviceID)
+	if ac == nil || ac.ctx.Err() != nil {
+		return false
+	}
+	h.sendMsg(ac.wsConn, proto.TypeUpdateCheck, proto.UpdateCheck{Explicit: explicit, Force: force})
+	return true
+}
+
+// ScheduleUpdateChecks spreads update.check to ids over spreadWindow,
+// replacing the checks still pending under key. A device that went offline
+// meanwhile is skipped; it asks again on its next hello.
+func (h *Hub) ScheduleUpdateChecks(key string, ids []string, explicit bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	stopTimers(h.updateTimers[key])
+	delete(h.updateTimers, key)
+	if len(ids) == 0 || h.app.ctx.Err() != nil {
+		return
+	}
+	delays := spreadDelays(len(ids), spreadWindow(len(ids), h.checkSpread), rand.Int64N)
+	timers := make([]*time.Timer, len(ids))
+	for i, id := range ids {
+		timers[i] = time.AfterFunc(delays[i], func() {
+			if h.app.ctx.Err() == nil {
+				h.PushUpdateCheck(id, explicit, false)
+			}
+		})
+	}
+	h.updateTimers[key] = timers
+}
+
+// CancelUpdateChecks drops the pending checks of key ("" = all, at shutdown).
+func (h *Hub) CancelUpdateChecks(key string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for k, ts := range h.updateTimers {
+		if key == "" || k == key {
+			stopTimers(ts)
+			delete(h.updateTimers, k)
+		}
+	}
+}
+
+func stopTimers(ts []*time.Timer) {
+	for _, t := range ts {
+		t.Stop()
+	}
+}
+
+// SetUpdateStatus stores a device's update state and relays it to the
+// owner's browsers.
+func (h *Hub) SetUpdateStatus(ctx context.Context, userID, deviceID string, st proto.UpdateStatus) error {
+	at, err := store.SetDeviceUpdate(ctx, h.app.pool, deviceID, st.State, st.From, st.Version, st.Error)
+	if err != nil {
+		return err
+	}
+	msg := proto.DeviceUpdateStatus{DeviceID: deviceID, State: st.State, From: st.From, Version: st.Version, Error: st.Error,
+		At: at.UTC().Format(time.RFC3339)}
+	for _, b := range h.browsersOf(userID) {
+		h.sendMsg(b.wsConn, proto.TypeDeviceUpdateStatus, msg)
+	}
+	return nil
 }
 
 // KickDevice ends the device's live sessions and closes its socket (4003).
@@ -840,8 +921,38 @@ func (h *Hub) onAgent(ac *agentConn, typ string, raw []byte) {
 			return
 		}
 		h.syncPins(ac, m.PinnedClientKeys)
+	case proto.TypeUpdateStatus:
+		var m proto.UpdateStatus
+		if json.Unmarshal(raw, &m) != nil || !slices.Contains(proto.UpdateStates, m.State) {
+			h.sendErr(ac.wsConn, "", "", proto.ErrBadRequest, "invalid update.status")
+			return
+		}
+		h.onUpdateStatus(ac, proto.UpdateStatus{State: m.State, From: cleanText(m.From, proto.MaxUpdateVersionLen),
+			Version: cleanText(m.Version, proto.MaxUpdateVersionLen), Error: cleanText(m.Error, proto.MaxUpdateErrorLen)})
 	default:
 		h.sendErr(ac.wsConn, "", "", proto.ErrBadRequest, "unknown message type "+typ)
+	}
+}
+
+func (h *Hub) onUpdateStatus(ac *agentConn, st proto.UpdateStatus) {
+	a := h.app
+	ctx, cancel := dbctx()
+	defer cancel()
+	d, err := store.DeviceByID(ctx, a.pool, ac.deviceID)
+	if err != nil {
+		a.log.Error("update status device", "err", err)
+		return
+	}
+	if st == (proto.UpdateStatus{State: d.UpdateState, From: d.UpdateFrom, Version: d.UpdateVersion, Error: d.UpdateError}) {
+		return
+	}
+	if err := h.SetUpdateStatus(ctx, d.UserID, d.ID, st); err != nil {
+		a.log.Error("update status", "err", err)
+		return
+	}
+	if event, ok := auditEventFor(d.UpdateState, st); ok {
+		a.audit(ctx, store.Audit{Actor: "agent", Event: event, UserID: d.UserID, DeviceID: d.ID, IP: ac.ip,
+			Meta: map[string]any{"from": st.From, "version": st.Version, "error": st.Error}})
 	}
 }
 
@@ -907,10 +1018,20 @@ func (h *Hub) onHello(ac *agentConn, m proto.Hello) {
 		a.log.Error("hello device", "err", err)
 		return
 	}
+	if st, event, ok := helloOutcome(d.UpdateState, d.UpdateFrom, d.UpdateVersion, d.UpdateAt, d.AgentVersion, time.Now()); ok {
+		if err := h.SetUpdateStatus(ctx, d.UserID, d.ID, st); err != nil {
+			a.log.Error("hello update outcome", "err", err)
+		} else {
+			a.audit(ctx, store.Audit{Actor: "agent", Event: event, UserID: d.UserID, DeviceID: d.ID, IP: ac.ip,
+				Meta: map[string]any{"from": st.From, "version": st.Version, "error": st.Error}})
+		}
+	}
 	ack := proto.HelloAck{ServerTime: time.Now().UTC().Format(time.RFC3339Nano),
 		Device:            proto.DeviceInfo{ID: d.ID, Name: d.Name, AutoAccept: d.AutoAccept},
 		RevokedClientKeys: []string{}}
-	if rel, err := a.latestRelease(ctx, m.OS, m.Arch, m.AgentVersion); err == nil && rel != nil {
+	if rels, err := store.ListReleases(ctx, a.pool); err != nil {
+		a.log.Error("hello releases", "err", err)
+	} else if rel := pickRelease(rels, m.OS, m.Arch, m.AgentVersion, proto.RolloutBucket(d.ID), false); rel != nil {
 		ack.Update = proto.UpdateHint{Available: true, Version: rel.Version}
 	}
 	if keys, err := store.RevokedClientKeys(ctx, a.pool, d.UserID); err == nil {

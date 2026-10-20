@@ -34,6 +34,14 @@ type Device struct {
 	PinnedClients []PinnedClientRow `json:"pinned_clients"`
 	OwnerEmail    string            `json:"owner_email,omitempty"`
 
+	LatestVersion   *string    `json:"latest_version"` // applied by the API from the published releases
+	UpdateAvailable bool       `json:"update_available"`
+	UpdateState     string     `json:"update_state"`
+	UpdateFrom      string     `json:"update_from"`
+	UpdateVersion   string     `json:"update_version"`
+	UpdateError     string     `json:"update_error"`
+	UpdateAt        *time.Time `json:"update_at"`
+
 	UserID   string `json:"-"`
 	Disabled bool   `json:"-"`
 	Removed  bool   `json:"-"`
@@ -45,14 +53,14 @@ const deviceCols = `d.id, d.user_id, d.name, d.hostname, d.os, d.arch, d.agent_v
 	EXISTS (SELECT 1 FROM sessions s WHERE s.device_id = d.id AND s.state IN ('pending', 'active')),
 	coalesce((SELECT json_agg(json_build_object('client_key_id', p.client_key_id, 'label', p.label, 'approved_at', p.approved_at) ORDER BY p.approved_at)
 		FROM device_pinned_clients p WHERE p.device_id = d.id), '[]'),
-	u.email`
+	u.email, d.update_state, d.update_from, d.update_version, d.update_error, d.update_at`
 
 func scanDevice(row interface{ Scan(...any) error }) (*Device, error) {
 	var d Device
 	var pins []byte
 	err := row.Scan(&d.ID, &d.UserID, &d.Name, &d.Hostname, &d.OS, &d.Arch, &d.AgentVersion, &d.PublicKey,
 		&d.Disabled, &d.Removed, &d.AutoAccept, &d.LastSeenAt, &d.CreatedAt, &d.Monitors, &d.Permissions, &d.Encoder,
-		&d.Busy, &pins, &d.OwnerEmail)
+		&d.Busy, &pins, &d.OwnerEmail, &d.UpdateState, &d.UpdateFrom, &d.UpdateVersion, &d.UpdateError, &d.UpdateAt)
 	if err != nil {
 		return nil, notFound(err)
 	}
@@ -84,6 +92,11 @@ func ListAllDevices(ctx context.Context, q db.Querier, search string, disabledOn
 		  AND (NOT $2 OR d.status = 'disabled')
 		  AND ($3::timestamptz IS NULL OR d.created_at < $3)
 		ORDER BY d.created_at DESC LIMIT $4`, search, disabledOnly, before, limit)
+}
+
+func DevicesByIDs(ctx context.Context, q db.Querier, ids []string) ([]Device, error) {
+	return queryDevices(ctx, q, `SELECT `+deviceCols+` FROM devices d JOIN users u ON u.id = d.user_id
+		WHERE d.id = ANY($1::uuid[]) AND d.removed_at IS NULL ORDER BY d.created_at`, ids)
 }
 
 func queryDevices(ctx context.Context, q db.Querier, sql string, args ...any) ([]Device, error) {
@@ -131,6 +144,14 @@ func ApplyHello(ctx context.Context, q db.Querier, id string, h DeviceHello) err
 		last_seen_at = now(), status = CASE WHEN status = 'disabled' THEN status ELSE 'online' END
 		WHERE id = $1`, id, h.Hostname, h.OS, h.Arch, h.Version, h.Capabilities, h.Permissions, h.Monitors, h.Encoder, h.IP)
 	return err
+}
+
+// SetDeviceUpdate records the device's update state and returns its time.
+func SetDeviceUpdate(ctx context.Context, q db.Querier, id, state, from, version, errMsg string) (time.Time, error) {
+	var at time.Time
+	err := q.QueryRow(ctx, `UPDATE devices SET update_state = $2, update_from = $3, update_version = $4, update_error = $5,
+		update_at = now() WHERE id = $1 RETURNING update_at`, id, state, from, version, errMsg).Scan(&at)
+	return at, notFound(err)
 }
 
 func SetDevicePermissions(ctx context.Context, q db.Querier, id string, perms []byte) error {

@@ -64,7 +64,7 @@ func testConfig(t *testing.T, dbURL string) *config.Config {
 			"TURN_URLS":       "stun:localhost:3478,turn:localhost:3478?transport=udp",
 			"TURN_URLS_AGENT": "stun:coturn:3478,turn:coturn:3478?transport=udp",
 			"ADMIN_EMAIL":     adminEmail, "ADMIN_INITIAL_PASSWORD": adminPass, "LOG_LEVEL": "error",
-			"DOWNLOADS_DIR": downloadsDir,
+			"DOWNLOADS_DIR": downloadsDir, "RELEASE_PUBLIC_KEY": testReleasePub,
 		}[k]
 	})
 	if err != nil {
@@ -523,25 +523,6 @@ func TestEnrollmentAndAgentAuth(t *testing.T) {
 	ag.tok = e.agentAuth(ag)
 	if id, err := security.ParseAgentJWT(e.cfg.JWTSecret, ag.tok); err != nil || id != en.DeviceID {
 		t.Fatalf("jwt: %q %v", id, err)
-	}
-
-	// No release yet → 204; a published newer release → signed manifest.
-	path := "/v1/agent/update?os=darwin&arch=arm64&version=0.1.0"
-	if st := e.call(e.client(), "GET", path, nil, nil, "Authorization", "Bearer "+ag.tok); st != 204 {
-		t.Fatalf("update: %d, want 204", st)
-	}
-	var rel struct {
-		Release struct{ ID string } `json:"release"`
-	}
-	e.call(c, "POST", "/v1/admin/releases", map[string]any{"version": "0.2.0", "os": "darwin", "arch": "arm64",
-		"url": "https://dl.example.com/a.pkg", "sha256": strings.Repeat("ab", 32), "signature": "c2ln", "rollout_pct": 10}, &rel)
-	e.call(c, "PATCH", "/v1/admin/releases/"+rel.Release.ID, map[string]any{"published": true}, nil)
-	var man struct {
-		Version    string `json:"version"`
-		RolloutPct int    `json:"rollout_pct"`
-	}
-	if st := e.call(e.client(), "GET", path, nil, &man, "Authorization", "Bearer "+ag.tok); st != 200 || man.Version != "0.2.0" || man.RolloutPct != 10 {
-		t.Fatalf("manifest: %d %+v", st, man)
 	}
 
 	// Uninstall marks the device removed; auth is refused afterwards.

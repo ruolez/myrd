@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ruolez/remotectl/proto"
 )
 
 func env(m map[string]string) func(string) string {
@@ -35,6 +37,9 @@ func TestLoadDerivesOriginAndDefaults(t *testing.T) {
 	if strings.Join(c.TURNURLsAgent, ",") != "stun:a:3478,turn:a:3478?transport=udp" {
 		t.Fatalf("agent urls should default to browser urls, got %v", c.TURNURLsAgent)
 	}
+	if c.ReleasePublicKey != proto.ReleasePublicKey {
+		t.Fatalf("release key should default to proto.ReleasePublicKey, got %q", c.ReleasePublicKey)
+	}
 	if c.TURNTTL != 90*time.Minute || !c.TrustProxy || c.ListenAddr != ":8080" {
 		t.Fatalf("unexpected: %+v", c)
 	}
@@ -42,10 +47,11 @@ func TestLoadDerivesOriginAndDefaults(t *testing.T) {
 
 func TestLoadRejectsBadValues(t *testing.T) {
 	cases := map[string]string{
-		"TOTP_ENC_KEY": "c2hvcnQ=",
-		"TURN_TTL":     "3h",
-		"JWT_SECRET":   "short",
-		"PUBLIC_URL":   "ftp://x",
+		"TOTP_ENC_KEY":       "c2hvcnQ=",
+		"TURN_TTL":           "3h",
+		"JWT_SECRET":         "short",
+		"PUBLIC_URL":         "ftp://x",
+		"RELEASE_PUBLIC_KEY": "c2hvcnQ=",
 	}
 	for k, v := range cases {
 		e := validEnv()
@@ -53,5 +59,14 @@ func TestLoadRejectsBadValues(t *testing.T) {
 		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), k) {
 			t.Errorf("%s=%q: want error mentioning %s, got %v", k, v, k, err)
 		}
+	}
+}
+
+func TestLoadNormalizesReleaseKey(t *testing.T) {
+	e := validEnv()
+	e["RELEASE_PUBLIC_KEY"] = strings.TrimRight(proto.ReleasePublicKey, "=")
+	c, err := Load(env(e))
+	if err != nil || c.ReleasePublicKey != proto.ReleasePublicKey {
+		t.Fatalf("unpadded key: %q, %v; want %q", c.ReleasePublicKey, err, proto.ReleasePublicKey)
 	}
 }
