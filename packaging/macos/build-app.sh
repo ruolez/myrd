@@ -60,11 +60,11 @@ if [[ -n "${DEVELOPER_ID_APP:-}" ]]; then
   codesign --force --options runtime --timestamp --entitlements "$HERE/entitlements.plist" \
     --sign "$DEVELOPER_ID_APP" "$APP"
 elif [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
-  # A stable identity keeps TCC grants and the Keychain ACL across updates.
+  # A stable identity keeps TCC grants across updates.
   codesign --force --options runtime --timestamp=none --entitlements "$HERE/entitlements.plist" \
     --sign "$CODESIGN_IDENTITY" "$APP"
 else
-  # Ad-hoc: runs locally, but TCC grants and the Keychain ACL reset on every rebuild.
+  # Ad-hoc: runs locally, but TCC grants reset on every rebuild.
   codesign --force --options runtime --entitlements "$HERE/entitlements.plist" --sign - "$APP"
 fi
 codesign --verify --strict --verbose=1 "$APP"

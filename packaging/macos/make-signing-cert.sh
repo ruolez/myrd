@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # One-time: creates the self-signed code-signing identity every RemoteAgent
 # release is signed with, in the login keychain of this Mac. A stable identity
-# lets macOS keep Screen Recording / Accessibility grants and the device-key
-# Keychain access across updates; never replace it once devices run builds
-# signed with it (they would lose both on the next update).
+# lets macOS keep Screen Recording / Accessibility grants across updates; never
+# replace it once devices run builds signed with it (they would lose the grants
+# on the next update).
 #
 # Writes ~/.config/remotectl/codesign-identity (SHA-1, read by build-app.sh)
 # and a backup ~/.config/remotectl/codesign.p12 (+ .password). Keep the backup

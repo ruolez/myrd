@@ -68,6 +68,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"unsafe"
 )
 
@@ -78,10 +79,16 @@ var KeychainService = "com.remotectl.agent"
 const keychainAccount = "device-key"
 
 // KeychainKeystore keeps the Ed25519 private key in the user's login Keychain.
+// It is only the migration source now: a self-signed build has no Team ID, so
+// the item's access was tied to one exact build and every update prompted for
+// the login password before the agent could load its key.
 type KeychainKeystore struct{ Service, Account string }
 
-func platformKeystore(string) Keystore {
-	return KeychainKeystore{Service: KeychainService, Account: keychainAccount}
+func platformKeystore(dataDir string) Keystore {
+	return migratingKeystore{
+		primary: FileKeystore{Path: filepath.Join(dataDir, "device.key")},
+		legacy:  KeychainKeystore{Service: KeychainService, Account: keychainAccount},
+	}
 }
 
 func (k KeychainKeystore) cstrings() (*C.char, *C.char, func()) {

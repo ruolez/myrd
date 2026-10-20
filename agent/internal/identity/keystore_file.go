@@ -26,10 +26,22 @@ func (f FileKeystore) Load() (ed25519.PrivateKey, error) {
 }
 
 func (f FileKeystore) Save(k ed25519.PrivateKey) error {
+	if len(k) != ed25519.PrivateKeySize {
+		return errors.New("invalid ed25519 private key")
+	}
 	if err := os.MkdirAll(filepath.Dir(f.Path), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(f.Path, k, 0o600)
+	tmp := f.Path + ".tmp"
+	_ = os.Remove(tmp)
+	if err := os.WriteFile(tmp, k, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, f.Path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func (f FileKeystore) Delete() error {

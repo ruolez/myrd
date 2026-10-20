@@ -55,12 +55,14 @@ if [ -z "$user" ] || [ "$user" = "root" ] || [ "$user" = "loginwindow" ]; then
   exit 0
 fi
 uid=$(id -u "$user")
+home=$(dscl . -read "/Users/$user" NFSHomeDirectory | sed 's/^NFSHomeDirectory: //')
 server=$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:RC_SERVER_URL" "$PLIST" 2>/dev/null)
 
 token=$(defaults read "$PREFS" EnrollToken 2>/dev/null || true)
 if [ -n "$token" ]; then
-  # Run in the user's GUI bootstrap so the device key lands in their login Keychain.
-  launchctl asuser "$uid" sudo -u "$user" env RC_SERVER_URL="$server" RC_ENROLL_TOKEN="$token" \
+  # As the user with their HOME, so config and device key land in their data
+  # dir (~/Library/Application Support/@APP_NAME@), owned by them.
+  launchctl asuser "$uid" sudo -H -u "$user" env HOME="$home" RC_SERVER_URL="$server" RC_ENROLL_TOKEN="$token" \
     "$BIN" enroll || echo "enrollment failed; the agent will ask for a token on first run"
   defaults delete "$PREFS" EnrollToken 2>/dev/null || true
 fi

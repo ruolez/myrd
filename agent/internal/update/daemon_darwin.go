@@ -26,7 +26,7 @@ const (
 )
 
 // RunSystemDaemon is `remote-agent update-daemon`, run by launchd as root
-// (com.remotectl.updater). It never touches the Keychain or the tray.
+// (com.remotectl.updater). It never touches the device key or the tray.
 func RunSystemDaemon(ctx context.Context, log *slog.Logger) error {
 	if os.Geteuid() != 0 {
 		return errors.New("update-daemon runs as root under launchd (com.remotectl.updater)")

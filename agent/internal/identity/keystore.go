@@ -1,6 +1,7 @@
 // Package identity owns the device's Ed25519 key. The private key never
-// leaves the OS secret store: Keychain (macOS), DPAPI LocalMachine (Windows),
-// a 0600 file in the data dir (Linux demo device).
+// leaves its store: a DPAPI LocalMachine blob (Windows) or a 0600 file
+// (macOS, Linux) in the data dir. On macOS a key left in the login Keychain by
+// older builds moves to the file on first Load.
 package identity
 
 import (
@@ -17,6 +18,5 @@ type Keystore interface {
 	Delete() error
 }
 
-// Default returns the platform keystore. dataDir is used by stores that keep
-// a file (Linux, Windows DPAPI blob).
+// Default returns the platform keystore, which keeps its file in dataDir.
 func Default(dataDir string) Keystore { return platformKeystore(dataDir) }
