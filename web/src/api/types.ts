@@ -5,6 +5,7 @@ export type UserId = Brand<string, "UserId">;
 export type DeviceId = Brand<string, "DeviceId">;
 export type SessionId = Brand<string, "SessionId">;
 export type ClientKeyId = Brand<string, "ClientKeyId">;
+export type ReleaseId = Brand<string, "ReleaseId">;
 
 export type User = {
   id: UserId;
@@ -119,17 +120,27 @@ export type LoginSession = {
   current: boolean;
 };
 
+export type ReleaseOS = Exclude<OS, "linux">;
+export type ReleaseArch = "amd64" | "arm64" | "universal";
+
 export type Release = {
-  id: string;
+  id: ReleaseId;
   version: string;
-  os: OS;
-  arch: string;
+  os: ReleaseOS;
+  arch: ReleaseArch;
   url: string;
+  filename: string;
+  size: number;
   sha256: string;
   signature: string;
+  key_id: string;
   rollout_pct: number;
   published_at: string | null;
   created_at: string;
+  /** Also served as the Add-device download for its os. */
+  installer: boolean;
+  /** Devices currently reporting this version. */
+  devices: number;
 };
 
 export type Page<T> = { items: T[]; next_before: string | null };
