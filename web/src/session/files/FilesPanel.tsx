@@ -123,7 +123,7 @@ export function FilesPanel({
       ref={root}
       tabIndex={-1}
       aria-label="Files on the device"
-      className="absolute top-0 right-0 bottom-0 z-30 flex w-full flex-col border-l border-white/10 bg-[#1e1f20]/95 text-sm text-white shadow-xl outline-none sm:w-96"
+      className="absolute top-0 right-0 bottom-0 z-30 flex w-full flex-col border-l border-white/10 bg-[#1e1f20] text-sm text-white shadow-xl outline-none sm:w-96"
     >
       <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
         <Icon name="folder" size={18} className="text-white/70" />

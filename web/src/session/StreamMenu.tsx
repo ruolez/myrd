@@ -100,7 +100,7 @@ export function StreamMenu({
       role="dialog"
       aria-label="Stream settings"
       tabIndex={-1}
-      className={`absolute z-30 w-[min(22rem,calc(100%-1.5rem))] space-y-4 rounded-2xl border border-white/10 bg-[#1e1f20]/95 p-4 text-sm text-white shadow-xl outline-none ${className}`}
+      className={`absolute z-30 w-[min(22rem,calc(100%-1.5rem))] space-y-4 rounded-2xl border border-white/10 bg-[#1e1f20] p-4 text-sm text-white shadow-xl outline-none ${className}`}
     >
       <div className="flex items-center gap-2">
         <h2 className="font-medium">Stream</h2>

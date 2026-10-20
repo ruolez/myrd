@@ -350,6 +350,9 @@ export function SessionView() {
   const monitor = monitors[snap?.activeMonitor ?? 0];
   // Cursor shapes are in native pixels: prefer the agent's native size for this stream.
   const nativeWidth = snap?.streamState?.native_width || monitor?.width || 0;
+  // The agent's relay address can reach the browser as a peer-reflexive
+  // candidate, so trust the agent when it reports a relayed path.
+  const path = snap?.streamState?.relay ? "relay" : snap?.stats.path;
   const filesLabel =
     snap?.filesState === "unsupported" ? "Files (not supported by this device's agent)" : "Files";
 
@@ -365,8 +368,8 @@ export function SessionView() {
         </Link>
         <span className="truncate font-medium">{name}</span>
         {phase === "connected" && (
-          <Badge tone={snap?.stats.path === "relay" ? "relay" : "success"} dot>
-            {snap?.stats.path ? `Live · ${snap.stats.path}` : "Live"}
+          <Badge tone={path === "relay" ? "relay" : "success"} dot>
+            {path ? `Live · ${path}` : "Live"}
           </Badge>
         )}
         {phase === "reconnecting" && (
