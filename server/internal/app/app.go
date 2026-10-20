@@ -255,6 +255,8 @@ func (a *App) Router() http.Handler {
 	r.Route("/v1", func(r chi.Router) {
 		r.Get("/healthz", health)
 		r.Get("/config", a.h(a.getConfig))
+		r.Get("/downloads/{os}", a.h(a.serveDownload))
+		r.Head("/downloads/{os}", a.h(a.serveDownload))
 
 		r.Post("/auth/signup", a.h(a.signup))
 		r.Post("/auth/login", a.h(a.login))
@@ -321,6 +323,8 @@ func (a *App) Router() http.Handler {
 			r.Delete("/releases/{id}", a.h(a.adminDeleteRelease))
 			r.Get("/settings", a.h(a.adminGetSettings))
 			r.Put("/settings", a.h(a.adminPutSettings))
+			r.Put("/downloads/{os}", a.h(a.adminUploadDownload))
+			r.Delete("/downloads/{os}", a.h(a.adminDeleteDownload))
 		})
 	})
 	r.NotFound(a.h(func(w http.ResponseWriter, r *http.Request) error { return errNotFound }))
@@ -353,21 +357,18 @@ func (a *App) healthz(w http.ResponseWriter, r *http.Request) error {
 
 func (a *App) getConfig(w http.ResponseWriter, r *http.Request) error {
 	s := a.Settings()
+	downloads, err := a.downloadLinks(r, s)
+	if err != nil {
+		return err
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"product_name":   "remotectl",
 		"version":        Version,
 		"signup_allowed": s.SignupAllowed,
 		"webauthn":       map[string]string{"rp_id": a.cfg.RPID, "origin": a.cfg.PublicOrigin},
-		"downloads":      map[string]*string{"macos": nonEmpty(s.DownloadMacOSURL), "windows": nonEmpty(s.DownloadWindowsURL)},
+		"downloads":      downloads,
 	})
 	return nil
-}
-
-func nonEmpty(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
 }
 
 func goVersion() string { return runtime.Version() }

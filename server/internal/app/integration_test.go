@@ -11,8 +11,10 @@ import (
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,6 +37,7 @@ import (
 	"github.com/ruolez/remotectl/server/internal/config"
 	"github.com/ruolez/remotectl/server/internal/db"
 	"github.com/ruolez/remotectl/server/internal/security"
+	"github.com/ruolez/remotectl/server/internal/store"
 )
 
 const (
@@ -53,6 +56,7 @@ type env struct {
 }
 
 func testConfig(t *testing.T, dbURL string) *config.Config {
+	downloadsDir := t.TempDir()
 	cfg, err := config.Load(func(k string) string {
 		return map[string]string{
 			"DATABASE_URL": dbURL, "PUBLIC_URL": testOrigin, "JWT_SECRET": "test-jwt-secret-0123456789",
@@ -60,6 +64,7 @@ func testConfig(t *testing.T, dbURL string) *config.Config {
 			"TURN_URLS":       "stun:localhost:3478,turn:localhost:3478?transport=udp",
 			"TURN_URLS_AGENT": "stun:coturn:3478,turn:coturn:3478?transport=udp",
 			"ADMIN_EMAIL":     adminEmail, "ADMIN_INITIAL_PASSWORD": adminPass, "LOG_LEVEL": "error",
+			"DOWNLOADS_DIR": downloadsDir,
 		}[k]
 	})
 	if err != nil {
@@ -385,6 +390,99 @@ func TestLoginAcceptsPlainUsername(t *testing.T) {
 		if st := e.call(e.login(typed, adminPass), "GET", "/v1/auth/me", nil, &me); st != 200 || me.User.Email != username {
 			t.Fatalf("login as %q: me = %d %+v", typed, st, me)
 		}
+	}
+}
+
+// raw sends body as-is and returns the response with its body read.
+func (e *env) raw(c *http.Client, method, path string, body []byte, hdr ...string) (*http.Response, []byte) {
+	e.t.Helper()
+	req, _ := http.NewRequest(method, e.srv.URL+path, bytes.NewReader(body))
+	for i := 0; i+1 < len(hdr); i += 2 {
+		req.Header.Set(hdr[i], hdr[i+1])
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp, b
+}
+
+func TestAgentDownloads(t *testing.T) {
+	e := newEnv(t)
+	admin := e.login(adminEmail, adminPass)
+	user := e.createUser(admin, "user@example.com")
+	anon := e.client()
+	pkg := []byte("xar! pretend macOS installer")
+	sum := sha256.Sum256(pkg)
+
+	type link struct {
+		URL  string               `json:"url"`
+		File *store.AgentDownload `json:"file"`
+	}
+	downloads := func() map[string]*link {
+		var cfg struct {
+			Downloads map[string]*link `json:"downloads"`
+		}
+		e.call(anon, "GET", "/v1/config", nil, &cfg)
+		return cfg.Downloads
+	}
+	if d := downloads(); d["macos"] != nil || d["windows"] != nil {
+		t.Fatalf("fresh install advertises downloads: %+v", d)
+	}
+
+	if resp, _ := e.raw(user, "PUT", "/v1/admin/downloads/macos?filename=RemoteAgent.pkg", pkg); resp.StatusCode != 403 {
+		t.Fatalf("non-admin upload: %d, want 403", resp.StatusCode)
+	}
+	if resp, _ := e.raw(admin, "PUT", "/v1/admin/downloads/macos?filename=RemoteAgent.msi", pkg); resp.StatusCode != 400 {
+		t.Fatalf("wrong extension: %d, want 400", resp.StatusCode)
+	}
+	if resp, _ := e.raw(admin, "PUT", "/v1/admin/downloads/macos?filename=RemoteAgent.pkg", nil); resp.StatusCode != 400 {
+		t.Fatalf("empty upload: %d, want 400", resp.StatusCode)
+	}
+	resp, body := e.raw(admin, "PUT", "/v1/admin/downloads/macos?filename=RemoteAgent-1.0.pkg", pkg, "Origin", testOrigin)
+	var up store.AgentDownload
+	json.Unmarshal(body, &up)
+	if resp.StatusCode != 200 || up.SHA256 != hex.EncodeToString(sum[:]) || up.Size != int64(len(pkg)) || up.Filename != "RemoteAgent-1.0.pkg" {
+		t.Fatalf("upload: %d %s", resp.StatusCode, body)
+	}
+
+	d := downloads()
+	if d["macos"] == nil || d["macos"].URL != "/v1/downloads/macos" || d["macos"].File == nil || d["macos"].File.SHA256 != up.SHA256 || d["windows"] != nil {
+		t.Fatalf("config after upload: %+v", d)
+	}
+
+	resp, body = e.raw(anon, "GET", "/v1/downloads/macos", nil)
+	if resp.StatusCode != 200 || !bytes.Equal(body, pkg) ||
+		resp.Header.Get("Content-Disposition") != `attachment; filename=RemoteAgent-1.0.pkg` ||
+		resp.Header.Get("Content-Type") != "application/octet-stream" {
+		t.Fatalf("anonymous download: %d %q %v", resp.StatusCode, body, resp.Header)
+	}
+	if resp, body = e.raw(anon, "GET", "/v1/downloads/macos", nil, "Range", "bytes=0-3"); resp.StatusCode != 206 || string(body) != "xar!" {
+		t.Fatalf("range request: %d %q", resp.StatusCode, body)
+	}
+	if resp, _ = e.raw(anon, "GET", "/v1/downloads/macos", nil, "If-None-Match", `"`+up.SHA256+`"`); resp.StatusCode != 304 {
+		t.Fatalf("conditional request: %d, want 304", resp.StatusCode)
+	}
+
+	newer := []byte("xar! newer installer")
+	e.raw(admin, "PUT", "/v1/admin/downloads/macos?filename=RemoteAgent-1.1.pkg", newer)
+	if _, body = e.raw(anon, "GET", "/v1/downloads/macos", nil); !bytes.Equal(body, newer) {
+		t.Fatalf("replacement not served: %q", body)
+	}
+
+	if resp, _ = e.raw(admin, "DELETE", "/v1/admin/downloads/macos", nil); resp.StatusCode != 204 {
+		t.Fatalf("delete: %d", resp.StatusCode)
+	}
+	if resp, _ = e.raw(anon, "GET", "/v1/downloads/macos", nil); resp.StatusCode != 404 {
+		t.Fatalf("after delete: %d, want 404", resp.StatusCode)
+	}
+	if d := downloads(); d["macos"] != nil {
+		t.Fatalf("config after delete: %+v", d["macos"])
+	}
+	if resp, _ = e.raw(admin, "DELETE", "/v1/admin/downloads/macos", nil); resp.StatusCode != 404 {
+		t.Fatalf("second delete: %d, want 404", resp.StatusCode)
 	}
 }
 

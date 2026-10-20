@@ -33,6 +33,7 @@ type Config struct {
 	AdminInitialPassword string
 
 	ReleasePublicKey []byte // optional raw 32-byte Ed25519
+	DownloadsDir     string // agent installers uploaded under Admin → System
 	LogLevel         slog.Level
 }
 
@@ -54,6 +55,7 @@ func Load(getenv func(string) string) (*Config, error) {
 		TURNSecret:           get("TURN_SECRET", ""),
 		AdminEmail:           get("ADMIN_EMAIL", ""),
 		AdminInitialPassword: get("ADMIN_INITIAL_PASSWORD", ""),
+		DownloadsDir:         get("DOWNLOADS_DIR", "/data/downloads"),
 	}
 	if c.DatabaseURL == "" {
 		errs = append(errs, errors.New("DATABASE_URL is required"))

@@ -68,6 +68,8 @@ services:
       - "8080"
     ports:
       - "127.0.0.1:${METRICS_PORT:-9190}:9090" # Prometheus /metrics, localhost only
+    volumes:
+      - downloads:/data/downloads # agent installers uploaded under Admin → System
 
   web:
     build:
@@ -133,6 +135,7 @@ services:
 
 volumes:
   pgdata:
+  downloads:
   caddy_data:
   caddy_config:
   demo_data:
