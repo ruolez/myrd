@@ -80,6 +80,16 @@ export function AddDevice() {
         : null;
   const downloadUrl = link ? new URL(link.url, window.location.origin).toString() : null;
   const osLabel = target === "darwin" ? "macOS" : "Windows";
+  const snippet =
+    target === "linux"
+      ? ""
+      : installSnippet({
+          target,
+          token: t,
+          serverUrl: config?.webauthn.origin ?? window.location.origin,
+          downloadUrl,
+          filename: link?.file?.filename ?? null,
+        });
 
   return (
     <>
@@ -192,18 +202,40 @@ export function AddDevice() {
             </>
           ) : (
             <>
-              <ol className="list-decimal space-y-2 pl-5 text-sm">
-                <li>
-                  On the computer you are adding, download and run the {osLabel} installer
-                  {link?.file ? ` (${link.file.filename})` : ""}.
-                </li>
-                <li>On first launch, enter the token above when the agent asks for it.</li>
-                <li>
-                  {target === "darwin"
-                    ? "Grant Screen Recording and Accessibility when prompted; the agent opens the exact System Settings pane."
-                    : "No extra permissions are needed; the agent runs as a Windows service."}
-                </li>
-              </ol>
+              {target === "darwin" ? (
+                <ol className="list-decimal space-y-2 pl-5 text-sm">
+                  <li>
+                    On the Mac you are adding, download and run the macOS installer
+                    {link?.file ? ` (${link.file.filename})` : ""}.
+                  </li>
+                  <li>On first launch, enter the token above when the agent asks for it.</li>
+                  <li>
+                    Grant Screen Recording and Accessibility when prompted; the agent opens the
+                    exact System Settings pane.
+                  </li>
+                </ol>
+              ) : (
+                <>
+                  <ol className="list-decimal space-y-2 pl-5 text-sm">
+                    <li>
+                      On the PC you are adding, open <strong>PowerShell as Administrator</strong>{" "}
+                      (Start → type PowerShell → Run as administrator).
+                    </li>
+                    <li>
+                      Paste the command below. It downloads the installer, installs the service and
+                      enrolls with the token above; the PC appears here within seconds.
+                    </li>
+                  </ol>
+                  <p className="rounded-xl bg-surface-2 p-3 text-sm">
+                    Windows has no token prompt: double-clicking the installer alone installs the
+                    service but does not add the PC.
+                  </p>
+                  <div>
+                    <div className="mb-2 text-sm font-medium">Install command</div>
+                    <Snippet code={snippet} />
+                  </div>
+                </>
+              )}
               {link && downloadUrl ? (
                 <div className="space-y-2">
                   <div className="flex flex-wrap items-center gap-2">
@@ -237,18 +269,12 @@ export function AddDevice() {
                   )}
                 </p>
               )}
-              <div>
-                <div className="mb-2 text-sm font-medium">Scripted install</div>
-                <Snippet
-                  code={installSnippet({
-                    target,
-                    token: t,
-                    serverUrl: config?.webauthn.origin ?? window.location.origin,
-                    downloadUrl,
-                    filename: link?.file?.filename ?? null,
-                  })}
-                />
-              </div>
+              {target === "darwin" && (
+                <div>
+                  <div className="mb-2 text-sm font-medium">Scripted install</div>
+                  <Snippet code={snippet} />
+                </div>
+              )}
             </>
           )}
         </section>
