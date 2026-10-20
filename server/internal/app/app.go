@@ -98,8 +98,11 @@ func New(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, log *slog.
 
 func (a *App) Hub() *Hub { return a.hub }
 
-// Close cancels every socket context.
-func (a *App) Close() { a.cancel() }
+// Close cancels every socket context and pending update pushes.
+func (a *App) Close() {
+	a.cancel()
+	a.hub.CancelUpdateChecks("")
+}
 
 func (a *App) bootstrapAdmin(ctx context.Context) error {
 	n, err := store.CountUsers(ctx, a.pool)
@@ -251,6 +254,7 @@ func (a *App) Router() http.Handler {
 			r.Get("/devices/{id}", a.h(a.getDevice))
 			r.Patch("/devices/{id}", a.h(a.patchDevice))
 			r.Delete("/devices/{id}", a.h(a.deleteDevice))
+			r.Post("/devices/{id}/update", a.h(a.updateDevice))
 			r.Post("/enroll-tokens", a.h(a.createEnrollToken))
 			r.Get("/sessions", a.h(a.listSessions))
 			r.Get("/audit", a.h(a.listAudit))
@@ -269,6 +273,8 @@ func (a *App) Router() http.Handler {
 			r.Get("/devices", a.h(a.adminListDevices))
 			r.Patch("/devices/{id}", a.h(a.adminPatchDevice))
 			r.Delete("/devices/{id}", a.h(a.adminDeleteDevice))
+			r.Post("/devices/{id}/update", a.h(a.adminUpdateDevice))
+			r.Post("/updates/push", a.h(a.adminPushUpdates))
 			r.Get("/sessions", a.h(a.adminListSessions))
 			r.Post("/sessions/{id}/end", a.h(a.adminEndSession))
 			r.Get("/audit", a.h(a.adminListAudit))

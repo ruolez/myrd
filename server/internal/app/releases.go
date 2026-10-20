@@ -233,9 +233,22 @@ func (a *App) adminPatchRelease(w http.ResponseWriter, r *http.Request) error {
 	if body.RolloutPct != nil && (*body.RolloutPct < 0 || *body.RolloutPct > 100) {
 		return errf(http.StatusBadRequest, "bad_request", "rollout_pct must be 0..100")
 	}
-	rel, err := store.UpdateRelease(r.Context(), a.pool, id, body.RolloutPct, body.Published)
+	ctx := r.Context()
+	before, err := store.ReleaseByID(ctx, a.pool, id)
 	if err != nil {
 		return err
+	}
+	rel, err := store.UpdateRelease(ctx, a.pool, id, body.RolloutPct, body.Published)
+	if err != nil {
+		return err
+	}
+	switch {
+	case rel.PublishedAt == nil:
+		a.hub.CancelUpdateChecks(releaseChecksKey(id))
+	case before.PublishedAt == nil || rel.RolloutPct > before.RolloutPct:
+		if err := a.scheduleReleaseChecks(ctx, rel); err != nil {
+			a.log.Error("schedule update checks", "release", id, "err", err)
+		}
 	}
 	event := "release.updated"
 	if body.Published != nil && *body.Published {
@@ -260,6 +273,7 @@ func (a *App) adminDeleteRelease(w http.ResponseWriter, r *http.Request) error {
 	if err := store.DeleteRelease(ctx, a.pool, id); err != nil {
 		return err
 	}
+	a.hub.CancelUpdateChecks(releaseChecksKey(id))
 	if err := os.Remove(a.releasePath(rel)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		a.log.Error("remove release file", "release", id, "err", err)
 	}

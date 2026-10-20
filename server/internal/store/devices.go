@@ -94,6 +94,11 @@ func ListAllDevices(ctx context.Context, q db.Querier, search string, disabledOn
 		ORDER BY d.created_at DESC LIMIT $4`, search, disabledOnly, before, limit)
 }
 
+func DevicesByIDs(ctx context.Context, q db.Querier, ids []string) ([]Device, error) {
+	return queryDevices(ctx, q, `SELECT `+deviceCols+` FROM devices d JOIN users u ON u.id = d.user_id
+		WHERE d.id = ANY($1::uuid[]) AND d.removed_at IS NULL ORDER BY d.created_at`, ids)
+}
+
 func queryDevices(ctx context.Context, q db.Querier, sql string, args ...any) ([]Device, error) {
 	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {
@@ -139,6 +144,14 @@ func ApplyHello(ctx context.Context, q db.Querier, id string, h DeviceHello) err
 		last_seen_at = now(), status = CASE WHEN status = 'disabled' THEN status ELSE 'online' END
 		WHERE id = $1`, id, h.Hostname, h.OS, h.Arch, h.Version, h.Capabilities, h.Permissions, h.Monitors, h.Encoder, h.IP)
 	return err
+}
+
+// SetDeviceUpdate records the device's update state and returns its time.
+func SetDeviceUpdate(ctx context.Context, q db.Querier, id, state, from, version, errMsg string) (time.Time, error) {
+	var at time.Time
+	err := q.QueryRow(ctx, `UPDATE devices SET update_state = $2, update_from = $3, update_version = $4, update_error = $5,
+		update_at = now() WHERE id = $1 RETURNING update_at`, id, state, from, version, errMsg).Scan(&at)
+	return at, notFound(err)
 }
 
 func SetDevicePermissions(ctx context.Context, q db.Querier, id string, perms []byte) error {
