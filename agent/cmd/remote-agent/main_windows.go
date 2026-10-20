@@ -93,15 +93,9 @@ func fileLogger(dataDir, name string) (*slog.Logger, func()) {
 	}
 	var w io.Writer = os.Stderr
 	closeFn := func() {}
-	if err := os.MkdirAll(dataDir, 0o700); err == nil {
-		path := filepath.Join(dataDir, name)
-		if fi, err := os.Stat(path); err == nil && fi.Size() > 10<<20 {
-			os.Rename(path, path+".1")
-		}
-		if f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
-			w = f
-			closeFn = func() { f.Close() }
-		}
+	if f, err := openLogFile(filepath.Join(dataDir, name), maxLogSize); err == nil {
+		w = f
+		closeFn = func() { f.Close() }
 	}
 	return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{Level: lvl})), closeFn
 }

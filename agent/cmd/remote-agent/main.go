@@ -12,6 +12,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -75,7 +76,13 @@ func newLogger() *slog.Logger {
 	if os.Getenv("RC_LOG_LEVEL") == "debug" {
 		lvl = slog.LevelDebug
 	}
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
+	var w io.Writer = os.Stderr
+	if path := defaultLogFile(); path != "" {
+		if f, err := openLogFile(path, maxLogSize); err == nil {
+			w = io.MultiWriter(os.Stderr, f) // closed at process exit
+		}
+	}
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: lvl}))
 }
 
 // settings merges RC_* env with command-line flags (flags win).
