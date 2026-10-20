@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds dist/macos/RemoteAgent-<version>.pkg from an already built .app.
-#   SERVER_URL is taken from the .app (build-app.sh bakes it); passing a different one is an error
+#   VERSION and SERVER_URL are taken from the .app (build-app.sh bakes both); a different SERVER_URL is an error
 #   DEVELOPER_ID_INSTALLER="Developer ID Installer: Org (TEAMID)"   signs the pkg
 #   NOTARY_KEY_PATH / NOTARY_KEY_ID / NOTARY_ISSUER   App Store Connect API key → notarize + staple
 # Scripted install with an enrollment token (no terminal on the device needed for GUI installs):
@@ -11,10 +11,12 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck disable=SC1091
 source "$HERE/product.env"
-export VERSION="${VERSION:-0.0.0-dev}"
 OUT="$ROOT/dist/macos"
 APP="$OUT/$APP_NAME.app"
 [[ -d "$APP" ]] || { echo "missing $APP — run build-app.sh first" >&2; exit 1; }
+# Version and server URL come from the app build-app.sh made.
+VERSION="$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")"
+export VERSION
 APP_URL="$(plutil -extract LSEnvironment.RC_SERVER_URL raw "$APP/Contents/Info.plist")"
 [[ -z "${SERVER_URL:-}" || "$SERVER_URL" == "$APP_URL" ]] ||
   { echo "SERVER_URL $SERVER_URL differs from the app's $APP_URL — rebuild the app" >&2; exit 1; }
