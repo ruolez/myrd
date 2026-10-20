@@ -56,6 +56,7 @@ func (o *Options) defaults() {
 func ServiceCore(o Options) Core {
 	o.defaults()
 	return func(ctx context.Context, p *Proxy) error {
+		update.CountServiceStart(o.Settings.DataDir) // crash-loop detection for a pending update
 		for ctx.Err() == nil {
 			err := runConnected(ctx, &o, p)
 			if ctx.Err() != nil {
@@ -117,7 +118,7 @@ func runConnected(ctx context.Context, o *Options, p *Proxy) error {
 			hostname, _ = os.Hostname()
 		}
 		var s *signal.Client
-		// The service owns updates (msiexec /i new.msi /qn /norestart).
+		// The service owns updates: detached msiexec, health check and rollback.
 		upd := update.New(update.Options{API: client, Token: func(c context.Context) (string, error) { return s.Token(c) },
 			Version: o.Version, DataDir: o.Settings.DataDir, Log: o.Log,
 			Busy: func() bool { return len(p.ActiveSessions()) > 0 }, EndAll: p.EndAll,

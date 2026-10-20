@@ -36,9 +36,11 @@
            Compressed="yes"
            InstallerVersion="500">
 
-    <!-- Same-version upgrades too: dev builds share a version and must still replace each other. -->
-    <MajorUpgrade Schedule="afterInstallInitialize" AllowSameVersionUpgrades="yes"
-                  DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <!-- Any installed version is replaced: same-version (dev builds share a version) and older
+         ones, plus downgrades so the agent can reinstall its previous build after a failed update
+         (the server never offers one). WiX rejects AllowSameVersionUpgrades next to AllowDowngrades;
+         the latter already covers the same version. -->
+    <MajorUpgrade Schedule="afterInstallInitialize" AllowDowngrades="yes" />
     <MediaTemplate EmbedCab="yes" />
 
     <!-- Hidden keeps the one-time token out of verbose MSI logs. -->
