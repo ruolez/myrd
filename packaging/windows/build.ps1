@@ -15,6 +15,7 @@
     - -Native msvc: Visual Studio 2022 Build Tools + Windows SDK (C++/WinRT), CMake ≥ 3.24
     - WiX v5: dotnet tool install --global wix --version 5.0.2
               wix extension add --global WixToolset.Util.wixext/5.0.2
+              wix extension add --global WixToolset.UI.wixext/5.0.2
   Signing (optional, applied to the exe(s) and the MSI):
     - $env:SIGNTOOL_CERT_SHA1  thumbprint of an OV certificate in the store (hardware token / Key Vault CSP), or
     - CI uses azure/trusted-signing-action between -Stage exe and -Stage msi (see .github/workflows/agent-windows.yml).
@@ -26,7 +27,9 @@ param(
   [Parameter(Mandatory = $true)][string]$Version,
   [ValidateSet('mingw', 'msvc')][string]$Native = 'mingw',
   [ValidateSet('all', 'native', 'exe', 'msi')][string]$Stage = 'all',
-  [string]$ProductName = 'RemoteAgent'
+  [string]$ProductName = 'RemoteAgent',
+  # Pre-fills the server address on the installer's "Add this PC" page.
+  [string]$ServerUrl = $env:SERVER_URL
 )
 
 $ErrorActionPreference = 'Stop'
@@ -84,10 +87,11 @@ function Build-Msi {
   $dll = if ($Native -eq 'msvc') { 'yes' } else { 'no' }
   # MSI versions are numeric major.minor.build; strip any pre-release suffix.
   $msiVersion = ($Version -split '[-+]')[0]
-  Invoke-Checked 'wix' @('build', (Join-Path $PSScriptRoot 'RemoteAgent.wxs'), '-arch', 'x64',
-    '-ext', 'WixToolset.Util.wixext',
-    '-d', "Version=$msiVersion", '-d', "BinDir=$BinDir", '-d', "ProductName=$ProductName", '-d', "IncludeNativeDll=$dll",
-    '-o', $msi)
+  $wixArgs = @('build', (Join-Path $PSScriptRoot 'RemoteAgent.wxs'), '-arch', 'x64',
+    '-ext', 'WixToolset.Util.wixext', '-ext', 'WixToolset.UI.wixext',
+    '-d', "Version=$msiVersion", '-d', "BinDir=$BinDir", '-d', "ProductName=$ProductName", '-d', "IncludeNativeDll=$dll")
+  if ($ServerUrl) { $wixArgs += @('-d', "ServerUrl=$ServerUrl") }
+  Invoke-Checked 'wix' ($wixArgs + @('-o', $msi))
   Invoke-Sign @($msi)
   $hash = (Get-FileHash -Algorithm SHA256 $msi).Hash.ToLower()
   Set-Content -Path "$msi.sha256" -Value "$hash  $(Split-Path -Leaf $msi)" -NoNewline

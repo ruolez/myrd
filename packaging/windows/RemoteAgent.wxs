@@ -5,10 +5,12 @@
   `remote-agent.exe helper` into the active console session.
 
   Build (see build.ps1):
-    wix build RemoteAgent.wxs -arch x64 -ext WixToolset.Util.wixext
-      -d Version=1.2.3 -d BinDir=..\..\agent\dist\windows -o RemoteAgent.msi
+    wix build RemoteAgent.wxs -arch x64 -ext WixToolset.Util.wixext -ext WixToolset.UI.wixext
+      -d Version=1.2.3 -d BinDir=..\..\agent\dist\windows [-d ServerUrl=https://remote.example.com] -o RemoteAgent.msi
 
-  Scripted install:
+  Interactive install (double-click): the "Add this PC" page asks for the server
+  (pre-filled from ServerUrl) and the enrollment token.
+  Scripted install (no UI):
     msiexec /i RemoteAgent.msi ENROLL_TOKEN=XXXX-XXXX SERVER_URL=https://remote.example.com /qn
 
   The product name is still an open decision (docs plan); everything that
@@ -34,13 +36,18 @@
            Compressed="yes"
            InstallerVersion="500">
 
-    <MajorUpgrade Schedule="afterInstallInitialize"
+    <!-- Same-version upgrades too: dev builds share a version and must still replace each other. -->
+    <MajorUpgrade Schedule="afterInstallInitialize" AllowSameVersionUpgrades="yes"
                   DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
     <!-- Hidden keeps the one-time token out of verbose MSI logs. -->
     <Property Id="ENROLL_TOKEN" Secure="yes" Hidden="yes" />
+    <?ifdef ServerUrl ?>
+    <Property Id="SERVER_URL" Value="$(ServerUrl)" Secure="yes" />
+    <?else?>
     <Property Id="SERVER_URL" Secure="yes" />
+    <?endif?>
     <!-- Must be set before util's RemoveFoldersEx action, which runs just before CostInitialize. -->
     <SetProperty Id="DATADIR" Value="[CommonAppDataFolder]RemoteAgent" After="AppSearch" Sequence="both" />
 
@@ -111,6 +118,8 @@
               Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
 
+    <UIRef Id="RemoteAgentUI" />
+
     <Feature Id="Main" Title="$(ProductName)" Level="1">
       <ComponentRef Id="AgentService" />
       <?if $(IncludeNativeDll) = "yes" ?>
@@ -122,4 +131,59 @@
       <ComponentRef Id="RegKeyCleanup" />
     </Feature>
   </Package>
+
+  <!--
+    Minimal UI: one "Add this PC" page, then progress and finish. The service
+    reads SERVER_URL/ENROLL_TOKEN from the registry and enrolls within seconds.
+    Skipped by /qn, so scripted installs are unchanged.
+  -->
+  <Fragment>
+    <UI Id="RemoteAgentUI">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+
+      <DialogRef Id="CancelDlg" />
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
+
+      <Dialog Id="EnrollDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="280" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="{\WixUI_Font_Title}Add this PC to your devices" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="Use the token shown in the web app under Devices, Add device, Windows." />
+
+        <Control Id="ServerLabel" Type="Text" X="20" Y="60" Width="330" Height="12" Text="&amp;Server address:" />
+        <Control Id="ServerEdit" Type="Edit" X="20" Y="74" Width="330" Height="18" Property="SERVER_URL" Text="{255}" />
+        <Control Id="TokenLabel" Type="Text" X="20" Y="104" Width="330" Height="12" Text="&amp;Enrollment token (XXXX-XXXX):" />
+        <Control Id="TokenEdit" Type="Edit" X="20" Y="118" Width="110" Height="18" Property="ENROLL_TOKEN" Text="{9}" />
+        <Control Id="Hint" Type="Text" X="20" Y="148" Width="330" Height="50" NoPrefix="yes"
+                 Text="The token is valid for 15 minutes. The PC appears in your device list a few seconds after setup finishes. Leave the token empty to install now and enroll later." />
+
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Install" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes"
+                 ElevationShield="yes" Text="&amp;Install">
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+
+      <InstallUISequence>
+        <Show Dialog="EnrollDlg" Before="ProgressDlg" Condition="NOT Installed" />
+      </InstallUISequence>
+    </UI>
+    <UIRef Id="WixUI_Common" />
+  </Fragment>
 </Wix>
