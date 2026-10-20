@@ -5,6 +5,8 @@ import type { ICEServer, Monitor, UserId } from "../api/types";
 import { ensureClientKey, signFingerprint } from "../lib/clientKey";
 import { checkDevicePin, pinDevice, verifyDeviceSignature } from "../lib/devicePins";
 import { sdpFingerprint } from "../lib/fingerprint";
+import { filesAvailability } from "../lib/files";
+import type { FilesAvailability } from "../lib/files";
 import {
   ClipboardAssembler,
   ControlOp,
@@ -12,11 +14,20 @@ import {
   encodeClipboard,
   encodeControl,
   Mime,
-  Quality,
 } from "../lib/input";
-import type { CursorMessage, QualityTier } from "../lib/input";
+import type { CursorMessage } from "../lib/input";
 import { signaling } from "../lib/signaling";
 import type { SignalMessage } from "../lib/signaling";
+import {
+  encodeStreamRequest,
+  legacyTier,
+  parseStreamPrefs,
+  parseStreamState,
+  serializeStreamPrefs,
+  streamPrefsKey,
+} from "../lib/stream";
+import type { StreamPrefs, StreamRequestId, StreamState } from "../lib/stream";
+import { FileChannel } from "./FileChannel";
 
 export type Phase =
   | "preparing"
@@ -43,6 +54,12 @@ export type HudStats = {
   agentFps: number | null;
   agentBitrateKbps: number | null;
   keyframes: number | null;
+  targetFps: number | null;
+  targetKbps: number | null;
+  bweKbps: number | null;
+  agentLossPct: number | null;
+  encodeWidth: number | null;
+  encodeHeight: number | null;
 };
 
 export type Snapshot = {
@@ -59,7 +76,14 @@ export type Snapshot = {
   agentOs: string | null;
   agentVersion: string | null;
   permissions: { screen: boolean; input: boolean } | null;
-  quality: QualityTier;
+  streamPrefs: StreamPrefs;
+  streamState: StreamState | null;
+  /** null until `hello`; false for agents without the `stream` feature. */
+  streamFeature: boolean | null;
+  maxFps: number | null;
+  features: string[] | null;
+  files: FileChannel | null;
+  filesState: FilesAvailability;
   forceRelay: boolean;
   pinMismatch: { pinned: string; offered: string } | null;
   stats: HudStats;
@@ -80,7 +104,33 @@ const emptyStats: HudStats = {
   agentFps: null,
   agentBitrateKbps: null,
   keyframes: null,
+  targetFps: null,
+  targetKbps: null,
+  bweKbps: null,
+  agentLossPct: null,
+  encodeWidth: null,
+  encodeHeight: null,
 };
+
+const STREAM_DEBOUNCE_MS = 200;
+
+function loadStreamPrefs(deviceId: string): StreamPrefs {
+  try {
+    return parseStreamPrefs(localStorage.getItem(streamPrefsKey(deviceId)));
+  } catch {
+    return parseStreamPrefs(null);
+  }
+}
+
+function saveStreamPrefs(deviceId: string, prefs: StreamPrefs) {
+  try {
+    localStorage.setItem(streamPrefsKey(deviceId), serializeStreamPrefs(prefs));
+  } catch {
+    // storage unavailable
+  }
+}
+
+const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
 export const END_REASONS: Record<string, string> = {
   user_hangup: "You ended the session.",
@@ -124,6 +174,10 @@ export class RemoteSession {
   private pc: RTCPeerConnection | null = null;
   private input: RTCDataChannel | null = null;
   private control: RTCDataChannel | null = null;
+  private file: RTCDataChannel | null = null;
+  private fileChannel: FileChannel | null = null;
+  private streamReqId = 0;
+  private streamTimer: ReturnType<typeof setTimeout> | null = null;
   private offs: (() => void)[] = [];
   private timers: ReturnType<typeof setInterval>[] = [];
   private pendingCandidates: RTCIceCandidateInit[] = [];
@@ -137,7 +191,6 @@ export class RemoteSession {
   private pings = new Map<number, number>();
   private clipboard = new ClipboardAssembler();
   private clipXfer = 1;
-  private userQuality: QualityTier = Quality.High;
   private ended = false;
 
   constructor(private readonly opts: Options) {
@@ -155,7 +208,13 @@ export class RemoteSession {
       agentOs: null,
       agentVersion: null,
       permissions: null,
-      quality: Quality.High,
+      streamPrefs: loadStreamPrefs(opts.deviceId),
+      streamState: null,
+      streamFeature: null,
+      maxFps: null,
+      features: null,
+      files: null,
+      filesState: "pending",
       forceRelay: opts.forceRelay,
       pinMismatch: null,
       stats: emptyStats,
@@ -270,7 +329,11 @@ export class RemoteSession {
     this.input = pc.createDataChannel("input", { ordered: true });
     const cursor = pc.createDataChannel("cursor", { ordered: false, maxRetransmits: 0 });
     this.control = pc.createDataChannel("control", { ordered: true });
-    for (const ch of [this.input, cursor, this.control]) ch.binaryType = "arraybuffer";
+    this.file = pc.createDataChannel("file", { ordered: true });
+    for (const ch of [this.input, cursor, this.control, this.file]) ch.binaryType = "arraybuffer";
+    // Agents without file transfer close this channel; that means "unsupported".
+    this.file.addEventListener("open", () => this.refreshFiles());
+    this.file.addEventListener("close", () => this.refreshFiles());
 
     cursor.onmessage = (ev) => {
       if (!(ev.data instanceof ArrayBuffer)) return;
@@ -278,7 +341,6 @@ export class RemoteSession {
       if (msg) for (const l of this.cursorListeners) l(msg);
     };
     this.control.onmessage = (ev) => this.onControl(ev.data);
-    this.control.onopen = () => this.onControlOpen();
 
     pc.ontrack = (ev) => {
       const stream = ev.streams[0] ?? new MediaStream([ev.track]);
@@ -306,7 +368,7 @@ export class RemoteSession {
     pc.oniceconnectionstatechange = () => this.onConnState();
 
     this.timers.push(setInterval(() => void this.tick(), 1000));
-    const onVis = () => this.applyQuality();
+    const onVis = () => this.applyStream();
     document.addEventListener("visibilitychange", onVis);
     this.offs.push(() => document.removeEventListener("visibilitychange", onVis));
   }
@@ -468,10 +530,6 @@ export class RemoteSession {
     this.update({ stats: next });
   }
 
-  private onControlOpen() {
-    this.applyQuality();
-  }
-
   private onControl(data: unknown) {
     if (data instanceof ArrayBuffer) {
       const done = this.clipboard.push(new Uint8Array(data));
@@ -489,7 +547,10 @@ export class RemoteSession {
       return;
     }
     switch (m.t) {
-      case "hello":
+      case "hello": {
+        const features = Array.isArray(m.features)
+          ? m.features.filter((f): f is string => typeof f === "string")
+          : null;
         this.update({
           monitors: (m.monitors as Monitor[]) ?? [],
           activeMonitor: (m.active as number) ?? 0,
@@ -497,11 +558,34 @@ export class RemoteSession {
           agentOs: (m.os as string) ?? null,
           agentVersion: (m.agent_version as string) ?? null,
           permissions: (m.permissions as Snapshot["permissions"]) ?? null,
+          features: features ?? [],
+          streamFeature: features?.includes("stream") ?? false,
+          maxFps: num(m.max_fps),
+        });
+        this.applyStream();
+        this.refreshFiles();
+        break;
+      }
+      case "monitor": {
+        const active = (m.active as number) ?? 0;
+        const w = num(m.width);
+        const h = num(m.height);
+        this.update({
+          activeMonitor: active,
+          monitors:
+            w && h
+              ? this.snap.monitors.map((mon, i) =>
+                  i === active ? { ...mon, width: w, height: h } : mon,
+                )
+              : this.snap.monitors,
         });
         break;
-      case "monitor":
-        this.update({ activeMonitor: (m.active as number) ?? 0 });
+      }
+      case "stream": {
+        const state = parseStreamState(m);
+        if (state) this.update({ streamState: state, maxFps: state.max_fps });
         break;
+      }
       case "pong": {
         const sent = this.pings.get(m.id as number);
         if (sent !== undefined) {
@@ -515,9 +599,15 @@ export class RemoteSession {
           encoder: (m.encoder as string) ?? this.snap.encoder,
           stats: {
             ...this.snap.stats,
-            agentFps: (m.fps as number) ?? null,
-            agentBitrateKbps: (m.bitrate_kbps as number) ?? null,
-            keyframes: (m.keyframes as number) ?? null,
+            agentFps: num(m.fps),
+            agentBitrateKbps: num(m.bitrate_kbps),
+            keyframes: num(m.keyframes),
+            targetFps: num(m.target_fps),
+            targetKbps: num(m.target_kbps),
+            bweKbps: num(m.bwe_kbps),
+            agentLossPct: num(m.loss) === null ? null : (m.loss as number) * 100,
+            encodeWidth: num(m.width),
+            encodeHeight: num(m.height),
           },
         });
         break;
@@ -551,15 +641,37 @@ export class RemoteSession {
     this.sendInput(encodeControl(ControlOp.ReleaseAll));
   }
 
-  setQuality(tier: QualityTier) {
-    this.userQuality = tier;
-    this.applyQuality();
+  /** Saves the per-device preference and tells the agent after a short debounce. */
+  setStreamPrefs(prefs: StreamPrefs) {
+    this.update({ streamPrefs: prefs });
+    saveStreamPrefs(this.opts.deviceId, prefs);
+    if (this.streamTimer) clearTimeout(this.streamTimer);
+    this.streamTimer = setTimeout(() => {
+      this.streamTimer = null;
+      this.applyStream();
+    }, STREAM_DEBOUNCE_MS);
   }
 
-  private applyQuality() {
-    const tier = document.hidden ? Quality.Background : this.userQuality;
-    this.sendInput(encodeControl(ControlOp.SetQuality, tier));
-    if (tier !== this.snap.quality) this.update({ quality: tier });
+  /** `stream` on control for agents with the feature, legacy `0x20 op 3` otherwise. */
+  private applyStream() {
+    const hidden = document.hidden;
+    const prefs = this.snap.streamPrefs;
+    if (this.snap.streamFeature === true) {
+      if (this.control?.readyState !== "open") return;
+      this.streamReqId = (this.streamReqId + 1) >>> 0;
+      this.control.send(encodeStreamRequest(prefs, hidden, this.streamReqId as StreamRequestId));
+    } else if (this.snap.streamFeature === false) {
+      this.sendInput(encodeControl(ControlOp.SetQuality, legacyTier(prefs, hidden)));
+    }
+  }
+
+  private refreshFiles() {
+    const dc = this.file;
+    const state = filesAvailability(this.snap.features, dc?.readyState ?? "closed");
+    if (state === "ready" && dc && !this.fileChannel) this.fileChannel = new FileChannel(dc);
+    if (state !== this.snap.filesState || this.fileChannel !== this.snap.files) {
+      this.update({ filesState: state, files: this.fileChannel });
+    }
   }
 
   /** Pushes local clipboard text to the remote clipboard. */
@@ -596,6 +708,9 @@ export class RemoteSession {
   }
 
   private cleanup() {
+    if (this.streamTimer) clearTimeout(this.streamTimer);
+    this.streamTimer = null;
+    this.fileChannel?.dispose("session_ended");
     for (const off of this.offs) off();
     this.offs = [];
     for (const t of this.timers) clearInterval(t);
@@ -608,6 +723,7 @@ export class RemoteSession {
     this.pc = null;
     this.input = null;
     this.control = null;
+    this.file = null;
   }
 }
 

@@ -17,4 +17,10 @@ export default tseslint.config(
       "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
     },
   },
+  {
+    // Service workers served as-is from public/ (no bundling, no TypeScript).
+    extends: [js.configs.recommended],
+    files: ["public/**/*.js"],
+    languageOptions: { ecmaVersion: 2023, sourceType: "script", globals: globals.serviceworker },
+  },
 );

@@ -3,11 +3,25 @@ import { readFileSync } from "node:fs";
 type Json = Record<string, unknown>;
 export type Vector = { name: string; event: Json; hex: string };
 
+type VectorPrefs = {
+  preset: string;
+  fps: number | null;
+  res: string | null;
+  max_kbps: number | null;
+};
+
 export type Vectors = {
   input: Vector[];
   input_invalid: { name: string; hex: string }[];
   cursor: Vector[];
   fingerprint_message: { session_id: string; role: string; fingerprint: string; utf8: string }[];
+  stream_request: { name: string; prefs: VectorPrefs; hidden: boolean; id: number; json: string }[];
+  stream_request_invalid: { name: string; json: string }[];
+  legacy_tier: { name: string; prefs: VectorPrefs; hidden: boolean; tier: number }[];
+  file_data: { name: string; xfer: number; payload_hex: string; hex: string }[];
+  file_data_invalid: { name: string; hex: string }[];
+  file_messages: { name: string; json: Json }[];
+  file_sha256: { name: string; chunks_hex: string[]; sha256: string }[];
 };
 
 export const vectors: Vectors = JSON.parse(

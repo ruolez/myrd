@@ -1,17 +1,26 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import type { ReactNode } from "react";
+import type {
+  DragEvent as ReactDragEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactNode,
+} from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { api } from "../api/client";
 import { useUser } from "../app/auth";
 import { Icon } from "../components/icons";
 import { Badge, Spinner } from "../components/ui";
 import { keyFingerprint } from "../lib/devicePins";
-import { encodeText, Quality } from "../lib/input";
-import type { QualityTier } from "../lib/input";
+import { encodeText } from "../lib/input";
 import { CursorLayer } from "../session/CursorLayer";
+import { DropOverlay } from "../session/files/DropOverlay";
+import { FilesPanel } from "../session/files/FilesPanel";
+import { useTransfers } from "../session/files/TransferList";
+import { TransferPill } from "../session/files/TransferPill";
+import { isFinal } from "../session/FileChannel";
 import { Hud } from "../session/Hud";
 import { END_REASONS, RemoteSession } from "../session/RemoteSession";
 import type { Snapshot } from "../session/RemoteSession";
+import { StreamButton, StreamMenu } from "../session/StreamMenu";
 import { useRemoteInput } from "../session/useRemoteInput";
 
 type KeyboardLock = { lock?: (codes?: string[]) => Promise<void>; unlock?: () => void };
@@ -26,6 +35,27 @@ function readHudPref() {
     return false;
   }
 }
+
+const FOLDER_HINT = "Folders can't be uploaded. Drop files, or zip the folder first.";
+
+/** Splits dropped items into files and folders (folders are not supported). */
+function droppedFiles(dt: DataTransfer): { files: File[]; folders: number } {
+  const files: File[] = [];
+  let folders = 0;
+  for (const item of Array.from(dt.items)) {
+    if (item.kind !== "file") continue;
+    if (item.webkitGetAsEntry?.()?.isDirectory) {
+      folders++;
+      continue;
+    }
+    const f = item.getAsFile();
+    if (f) files.push(f);
+  }
+  return { files, folders };
+}
+
+const hasFiles = (e: { dataTransfer: DataTransfer | null }) =>
+  !!e.dataTransfer && Array.from(e.dataTransfer.types).includes("Files");
 
 const phaseText: Partial<Record<Snapshot["phase"], string>> = {
   preparing: "Preparing this browser's signing key…",
@@ -49,6 +79,15 @@ export function SessionView() {
   const [relative, setRelative] = useState(false);
   const [hasCursorShape, setHasCursorShape] = useState(false);
   const [deviceName, setDeviceName] = useState("");
+  const [streamOpen, setStreamOpen] = useState(false);
+  const [filesOpen, setFilesOpen] = useState(false);
+  const [filesFolder, setFilesFolder] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [hint, setHint] = useState<string | null>(null);
+  const [pill, setPill] = useState(false);
+  const dragDepth = useRef(0);
+  const pillTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const relockOnClose = useRef(false);
 
   const stageRef = useRef<HTMLDivElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
@@ -102,11 +141,118 @@ export function SessionView() {
   }, [snap?.stream]);
 
   const live = snap?.phase === "connected" || snap?.phase === "reconnecting";
+  const files = snap?.filesState === "ready" ? snap.files : null;
+  const transfers = useTransfers(snap?.files ?? null);
+  const transfersActive = transfers.some((t) => !isFinal(t));
+
+  // In-stage panels release pointer lock; it comes back on close if it was on.
+  const openPanel = useCallback((which: "stream" | "files") => {
+    relockOnClose.current ||= document.pointerLockElement !== null;
+    setRelative(false);
+    if (which === "stream") setStreamOpen(true);
+    else setFilesOpen(true);
+  }, []);
+  const closePanel = (which: "stream" | "files") => {
+    const other = which === "stream" ? filesOpen : streamOpen;
+    if (which === "stream") setStreamOpen(false);
+    else setFilesOpen(false);
+    if (!other) {
+      if (relockOnClose.current && fullscreen) setRelative(true);
+      relockOnClose.current = false;
+      kbRef.current?.focus({ preventScroll: true });
+    }
+  };
+  const onHotkey = useCallback(() => openPanel("stream"), [openPanel]);
+
   useRemoteInput(
     { session: sessionRef, surface: surfaceRef, video: videoRef, keyboard: kbRef },
     live,
     snap?.activeMonitor ?? 0,
+    onHotkey,
   );
+
+  useEffect(() => {
+    if (!live) {
+      setStreamOpen(false);
+      setFilesOpen(false);
+    }
+  }, [live]);
+
+  // A drop that misses the stage must not navigate away (and end the session).
+  useEffect(() => {
+    const prevent = (e: DragEvent) => {
+      if (hasFiles(e)) e.preventDefault();
+    };
+    window.addEventListener("dragover", prevent);
+    window.addEventListener("drop", prevent);
+    return () => {
+      window.removeEventListener("dragover", prevent);
+      window.removeEventListener("drop", prevent);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!transfersActive) return;
+    const guard = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", guard);
+    return () => window.removeEventListener("beforeunload", guard);
+  }, [transfersActive]);
+
+  useEffect(() => {
+    if (!hint) return;
+    const t = setTimeout(() => setHint(null), 6000);
+    return () => clearTimeout(t);
+  }, [hint]);
+
+  const revealPill = useCallback((ms: number) => {
+    setPill(true);
+    if (pillTimer.current) clearTimeout(pillTimer.current);
+    pillTimer.current = setTimeout(() => setPill(false), ms);
+  }, []);
+  useEffect(() => {
+    if (fullscreen) revealPill(3000);
+    else setPill(false);
+  }, [fullscreen, revealPill]);
+  useEffect(
+    () => () => {
+      if (pillTimer.current) clearTimeout(pillTimer.current);
+    },
+    [],
+  );
+
+  const onStagePointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!fullscreen || document.pointerLockElement) return;
+    if (e.clientY - e.currentTarget.getBoundingClientRect().top < 40) revealPill(2500);
+  };
+
+  const onDragEnter = (e: ReactDragEvent<HTMLDivElement>) => {
+    if (!hasFiles(e) || !files) return;
+    e.preventDefault();
+    dragDepth.current++;
+    setDragging(true);
+  };
+  const onDragOver = (e: ReactDragEvent<HTMLDivElement>) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = files ? "copy" : "none";
+  };
+  const onDragLeave = () => {
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDragging(false);
+  };
+  const onDrop = (e: ReactDragEvent<HTMLDivElement>) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth.current = 0;
+    setDragging(false);
+    if (!files) return;
+    const dropped = droppedFiles(e.dataTransfer);
+    for (const f of dropped.files) files.upload(f, filesOpen ? filesFolder : null);
+    if (dropped.folders > 0) setHint(FOLDER_HINT);
+  };
 
   // Clipboard: push local clipboard to the remote when the session regains focus.
   const lastClip = useRef<string | null>(null);
@@ -201,7 +347,11 @@ export function SessionView() {
   const phase = snap?.phase ?? "preparing";
   const name = snap?.deviceName || deviceName || "Device";
   const monitors = snap?.monitors ?? [];
-  const monitorWidth = monitors[snap?.activeMonitor ?? 0]?.width ?? 0;
+  const monitor = monitors[snap?.activeMonitor ?? 0];
+  // Cursor shapes are in native pixels: prefer the agent's native size for this stream.
+  const nativeWidth = snap?.streamState?.native_width || monitor?.width || 0;
+  const filesLabel =
+    snap?.filesState === "unsupported" ? "Files (not supported by this device's agent)" : "Files";
 
   return (
     <div className="flex h-screen flex-col bg-black text-white">
@@ -243,27 +393,23 @@ export function SessionView() {
               </select>
             </label>
           )}
-          <label className="flex items-center gap-1">
-            <Icon name="speed" size={16} className="text-white/70" />
-            <span className="sr-only">Quality</span>
-            <select
-              className="rounded bg-white/10 px-2 py-1 text-xs"
-              value={
-                snap?.quality === Quality.Background
-                  ? Quality.High
-                  : (snap?.quality ?? Quality.High)
-              }
-              onChange={(e) => session?.setQuality(Number(e.target.value) as QualityTier)}
+          {snap && (
+            <StreamButton
+              prefs={snap.streamPrefs}
+              state={snap.streamState}
+              open={streamOpen}
               disabled={!live}
-            >
-              <option className="text-black" value={Quality.High}>
-                High · 60 fps
-              </option>
-              <option className="text-black" value={Quality.Balanced}>
-                Balanced · 30 fps
-              </option>
-            </select>
-          </label>
+              onClick={() => (streamOpen ? closePanel("stream") : openPanel("stream"))}
+            />
+          )}
+          <ToolButton
+            label={filesLabel}
+            icon="folder"
+            active={filesOpen}
+            onClick={() => (filesOpen ? closePanel("files") : openPanel("files"))}
+            disabled={!live || !files}
+            text="Files"
+          />
           <ToolButton
             label="Type clipboard as keystrokes"
             icon="paste"
@@ -308,7 +454,15 @@ export function SessionView() {
         </div>
       </header>
 
-      <div ref={stageRef} className="session-stage relative min-h-0 flex-1 overflow-hidden">
+      <div
+        ref={stageRef}
+        className="session-stage relative min-h-0 flex-1 overflow-hidden"
+        onPointerMove={onStagePointerMove}
+        onDragEnter={onDragEnter}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+      >
         <video
           ref={videoRef}
           className="absolute inset-0 h-full w-full"
@@ -320,7 +474,7 @@ export function SessionView() {
         <CursorLayer
           session={session}
           video={videoRef}
-          monitorWidth={monitorWidth}
+          nativeWidth={nativeWidth}
           onHasShape={setHasCursorShape}
         />
         <div
@@ -339,7 +493,72 @@ export function SessionView() {
             tabIndex={0}
           />
         </div>
-        {hud && live && snap && <Hud stats={snap.stats} encoder={snap.encoder} video={videoRef} />}
+        {hud && live && snap && (
+          <Hud
+            stats={snap.stats}
+            encoder={snap.encoder}
+            video={videoRef}
+            stream={snap.streamState}
+          />
+        )}
+
+        {fullscreen && pill && live && (
+          <div
+            className="absolute top-3 left-1/2 z-30 flex -translate-x-1/2 items-center gap-1 rounded-full bg-black/75 px-2 py-1 text-sm shadow-lg"
+            onPointerEnter={() => pillTimer.current && clearTimeout(pillTimer.current)}
+            onPointerLeave={() => revealPill(1500)}
+          >
+            <ToolButton
+              label="Stream settings (Ctrl+Alt+Shift+S)"
+              icon="speed"
+              text="Stream"
+              active={streamOpen}
+              onClick={() => openPanel("stream")}
+            />
+            <ToolButton
+              label={filesLabel}
+              icon="folder"
+              text="Files"
+              active={filesOpen}
+              onClick={() => openPanel("files")}
+              disabled={!files}
+            />
+            <ToolButton
+              label="Exit fullscreen"
+              icon="fullscreenExit"
+              text="Exit fullscreen"
+              onClick={toggleFullscreen}
+            />
+          </div>
+        )}
+
+        {filesOpen && files && (
+          <FilesPanel files={files} onClose={() => closePanel("files")} onFolder={setFilesFolder} />
+        )}
+        {streamOpen && snap && live && (
+          <StreamMenu
+            className={`top-3 ${filesOpen ? "right-3 sm:right-[25rem]" : "right-3"}`}
+            prefs={snap.streamPrefs}
+            state={snap.streamState}
+            feature={snap.streamFeature}
+            maxFps={snap.maxFps}
+            monitor={monitor}
+            onChange={(p) => session?.setStreamPrefs(p)}
+            onClose={() => closePanel("stream")}
+          />
+        )}
+        {!filesOpen && live && (
+          <TransferPill transfers={transfers} onOpen={() => openPanel("files")} />
+        )}
+        {dragging && <DropOverlay target={filesOpen ? filesFolder : null} />}
+        {hint && (
+          <div
+            role="status"
+            className="absolute bottom-16 left-1/2 z-30 -translate-x-1/2 rounded-lg bg-[#f9ab00] px-4 py-2 text-sm text-black shadow"
+          >
+            {hint}
+          </div>
+        )}
 
         {snap?.endDetail && live && (
           <div className="absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-lg bg-[#f9ab00] px-4 py-2 text-sm text-black shadow">

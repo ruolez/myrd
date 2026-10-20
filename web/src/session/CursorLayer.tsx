@@ -11,17 +11,17 @@ type Shape = { bmp: ImageBitmap; hotX: number; hotY: number; w: number; h: numbe
 export function CursorLayer({
   session,
   video,
-  monitorWidth,
+  nativeWidth,
   onHasShape,
 }: {
   session: RemoteSession | null;
   video: RefObject<HTMLVideoElement | null>;
-  monitorWidth: number;
+  nativeWidth: number;
   onHasShape: (has: boolean) => void;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
-  const widthRef = useRef(monitorWidth);
-  widthRef.current = monitorWidth;
+  const widthRef = useRef(nativeWidth);
+  widthRef.current = nativeWidth;
 
   useEffect(() => {
     const c = canvas.current;
@@ -49,6 +49,7 @@ export function CursorLayer({
       if (!current || !pos.visible) return;
       const v = video.current;
       const box = contentBox(r.width, r.height, v?.videoWidth ?? 0, v?.videoHeight ?? 0);
+      // Shapes are in native monitor pixels; the video may be encoded smaller.
       const remoteW = widthRef.current || v?.videoWidth || box.width;
       const scale = remoteW > 0 ? box.width / remoteW : 1;
       const p = denormalizePoint(pos.x, pos.y, box);

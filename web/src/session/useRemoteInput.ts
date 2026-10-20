@@ -14,7 +14,10 @@ import {
   encodeMouseWheel,
   encodeText,
 } from "../lib/input";
+import { isStreamMenuHotkey } from "../lib/stream";
 import type { RemoteSession } from "./RemoteSession";
+
+export type LocalHotkey = "streamMenu";
 
 // DOM MouseEvent.button → protocol button.
 const domButton: Record<number, number> = {
@@ -39,10 +42,13 @@ export function useRemoteInput(
   { session, surface, video, keyboard }: Refs,
   enabled: boolean,
   monitor: number,
+  onHotkey?: (hotkey: LocalHotkey) => void,
 ) {
   const keys = useRef(new KeyState());
   const monitorRef = useRef(monitor);
   monitorRef.current = monitor;
+  const hotkeyRef = useRef(onHotkey);
+  hotkeyRef.current = onHotkey;
 
   useEffect(() => {
     const el = surface.current;
@@ -105,6 +111,11 @@ export function useRemoteInput(
       const usage = hidUsage(e.code);
       e.preventDefault();
       e.stopPropagation();
+      // Local shortcuts never reach the remote; the S keyup is dropped below (S never went down).
+      if (down && hotkeyRef.current && isStreamMenuHotkey(e)) {
+        hotkeyRef.current("streamMenu");
+        return;
+      }
       if (usage === undefined) {
         if (down && e.key.length > 0 && [...e.key].length === 1)
           for (const m of encodeText(e.key)) send(m);

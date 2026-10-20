@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import type { RefObject } from "react";
+import { describeAuto } from "../lib/stream";
+import type { StreamState } from "../lib/stream";
 import type { HudStats } from "./RemoteSession";
 
 type FrameTiming = { renderMs: number | null; processingMs: number | null };
@@ -59,14 +61,39 @@ function useFrameTiming(video: RefObject<HTMLVideoElement | null>, active: boole
 const fmt = (v: number | null, unit: string, digits = 0) =>
   v === null || Number.isNaN(v) ? "—" : `${v.toFixed(digits)} ${unit}`;
 
+const int = (v: number | null | undefined) =>
+  v === null || v === undefined || Number.isNaN(v) ? "—" : String(Math.round(v));
+
+const mbps = (kbps: number | null | undefined) =>
+  kbps === null || kbps === undefined ? "—" : (kbps / 1000).toFixed(kbps < 10000 ? 2 : 1);
+
+function bitrateText(stats: HudStats) {
+  if (stats.bitrateKbps === null) return "—";
+  const extra = [
+    stats.targetKbps !== null ? `target ${mbps(stats.targetKbps)}` : "",
+    stats.bweKbps !== null ? `BWE ${mbps(stats.bweKbps)}` : "",
+  ].filter(Boolean);
+  return `${mbps(stats.bitrateKbps)} Mbps${extra.length ? ` (${extra.join(", ")})` : ""}`;
+}
+
+function encodeText(stats: HudStats, stream: StreamState | null) {
+  const w = stream?.width ?? stats.encodeWidth;
+  const h = stream?.height ?? stats.encodeHeight;
+  if (!w || !h) return "—";
+  const native = stream ? ` of ${stream.native_width}×${stream.native_height}` : "";
+  return `${w}×${h}${native}`;
+}
+
 export function Hud({
   stats,
   encoder,
   video,
+  stream,
 }: {
   stats: HudStats;
   encoder: string | null;
   video: RefObject<HTMLVideoElement | null>;
+  stream: StreamState | null;
 }) {
   const frame = useFrameTiming(video, true);
   const rows: [string, string][] = [
@@ -74,15 +101,15 @@ export function Hud({
     ["Receive→display", fmt(frame.renderMs, "ms", 1)],
     ["Decode", fmt(frame.processingMs ?? stats.decodeMs, "ms", 1)],
     [
-      "FPS",
-      stats.fps === null
-        ? "—"
-        : `${Math.round(stats.fps)}${stats.agentFps ? ` / ${Math.round(stats.agentFps)}` : ""}`,
+      "FPS recv/sent/target",
+      `${int(stats.fps)} / ${int(stats.agentFps)} / ${int(stats.targetFps ?? stream?.target_fps)}`,
     ],
-    ["Bitrate", stats.bitrateKbps === null ? "—" : `${(stats.bitrateKbps / 1000).toFixed(2)} Mbps`],
+    ["Bitrate", bitrateText(stats)],
     ["Loss", fmt(stats.packetLossPct, "%", 2)],
     ["Jitter", fmt(stats.jitterMs, "ms")],
-    ["Resolution", stats.frameWidth ? `${stats.frameWidth}×${stats.frameHeight}` : "—"],
+    ["Decoded", stats.frameWidth ? `${stats.frameWidth}×${stats.frameHeight}` : "—"],
+    ["Encoded", encodeText(stats, stream)],
+    ...(stream?.auto ? [["Auto", describeAuto(stream) ?? "—"] as [string, string]] : []),
     ["Path", stats.path ?? "—"],
     ["Encoder", encoder ?? "—"],
   ];
