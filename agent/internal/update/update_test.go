@@ -179,7 +179,7 @@ func (f *fixture) updater(pub string) *Updater {
 			f.mu.Unlock()
 			f.changed <- struct{}{}
 		},
-		Installer: f, IdlePoll: time.Millisecond,
+		Installer: f, IdlePoll: time.Millisecond, StatusEvery: -1,
 	})
 }
 

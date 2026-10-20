@@ -60,6 +60,7 @@ type Options struct {
 	OnHelloAck     func(proto.HelloAck)
 	OnDeviceUpdate func(proto.DeviceUpdate)
 	OnKeyRevoked   func(proto.KeyRevoked)
+	OnUpdateCheck  func(proto.UpdateCheck)
 	OnStatus       func(Status)
 }
 
@@ -267,6 +268,11 @@ func (c *Client) connectOnce(ctx context.Context) error {
 			var m proto.KeyRevoked
 			if json.Unmarshal(data, &m) == nil && c.o.OnKeyRevoked != nil {
 				c.o.OnKeyRevoked(m)
+			}
+		case proto.TypeUpdateCheck:
+			var m proto.UpdateCheck
+			if json.Unmarshal(data, &m) == nil && c.o.OnUpdateCheck != nil {
+				c.o.OnUpdateCheck(m)
 			}
 		case proto.TypeSessionOffer, proto.TypeICECandidate, proto.TypeSessionEnd:
 			if c.o.Handler != nil {

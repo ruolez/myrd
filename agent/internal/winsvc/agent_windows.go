@@ -119,7 +119,14 @@ func runConnected(ctx context.Context, o *Options, p *Proxy) error {
 		var s *signal.Client
 		// The service owns updates (msiexec /i new.msi /qn /norestart).
 		upd := update.New(update.Options{API: client, Token: func(c context.Context) (string, error) { return s.Token(c) },
-			Version: o.Version, DataDir: o.Settings.DataDir, Log: o.Log})
+			Version: o.Version, DataDir: o.Settings.DataDir, Log: o.Log,
+			Busy: func() bool { return len(p.ActiveSessions()) > 0 }, EndAll: p.EndAll,
+			OnStatus: func(st proto.UpdateStatus) {
+				p.SetUpdateLine(tray.UpdateLine(st))
+				if err := s.Send(proto.TypeUpdateStatus, st); err != nil {
+					o.Log.Debug("winsvc: update.status not sent", "state", st.State, "err", err)
+				}
+			}})
 		s = signal.New(signal.Options{
 			API:      client,
 			DeviceID: st.DeviceID,
@@ -148,7 +155,12 @@ func runConnected(ctx context.Context, o *Options, p *Proxy) error {
 				p.SetRevoked(a.RevokedClientKeys)
 				p.SetDevice(a.Device)
 				upd.HelloAcked()
-				go upd.CheckNow(ctx, update.Trigger{})
+				if a.Update.Available {
+					go upd.CheckNow(ctx, update.Trigger{})
+				}
+			},
+			OnUpdateCheck: func(m proto.UpdateCheck) {
+				go upd.CheckNow(ctx, update.Trigger{Explicit: m.Explicit, Force: m.Force})
 			},
 			OnDeviceUpdate: func(u proto.DeviceUpdate) {
 				p.SetDevice(proto.DeviceInfo{ID: st.DeviceID, Name: u.Name, AutoAccept: u.AutoAccept})
@@ -412,7 +424,9 @@ func RunHelper(o Options) error {
 		served <- Serve(r, mgr, HelperEvents{
 			OnDevice: func(d proto.DeviceInfo) { autoAccept.Store(d.AutoAccept) },
 			OnStatus: func(s ServiceStatus) {
-				pushTray(func(t *tray.State) { t.Enrolled, t.Online, t.Status = s.Enrolled, s.Online, s.Status })
+				pushTray(func(t *tray.State) {
+					t.Enrolled, t.Online, t.Status, t.Update = s.Enrolled, s.Online, s.Status, s.Update
+				})
 			},
 		})
 	}()

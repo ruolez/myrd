@@ -50,6 +50,9 @@ func onReady(h Hooks, ready func(update func(State))) {
 	activity := systray.AddMenuItem("", "")
 	activity.Disable()
 	activity.Hide()
+	updating := systray.AddMenuItem("", "")
+	updating.Disable()
+	updating.Hide()
 	systray.AddSeparator()
 	pause := systray.AddMenuItemCheckbox("Pause new sessions", "Refuse incoming sessions until unpaused", false)
 	end := systray.AddMenuItem("End session", "Disconnect the controlling browser now")
@@ -110,6 +113,13 @@ func onReady(h Hooks, ready func(update func(State))) {
 			tip += "\n" + s.Activity
 		} else {
 			activity.Hide()
+		}
+		if s.Update != "" {
+			updating.SetTitle(s.Update)
+			updating.Show()
+			tip += "\n" + s.Update
+		} else {
+			updating.Hide()
 		}
 		systray.SetTooltip(truncTip(tip))
 

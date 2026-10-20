@@ -60,6 +60,7 @@ type ServiceStatus struct {
 	Enrolled bool   `json:"enrolled"`
 	Online   bool   `json:"online"`
 	Status   string `json:"status"`
+	Update   string `json:"update,omitempty"` // tray.UpdateLine of the last update.status
 }
 
 func newFrame(kind, typ string, v any) (Frame, error) {

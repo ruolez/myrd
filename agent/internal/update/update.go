@@ -65,11 +65,12 @@ type Options struct {
 
 	Busy        func() bool              // a session is pending or active
 	EndAll      func(reason string)      // ends every session (forced updates)
-	OnStatus    func(proto.UpdateStatus) // every state change
+	OnStatus    func(proto.UpdateStatus) // state changes, at most one per StatusEvery (latest kept)
 	Installer   Installer                // default per OS
 	HealthProbe func(context.Context) bool
 	HTTP        *http.Client // downloads
 	IdlePoll    time.Duration
+	StatusEvery time.Duration // default StatusEvery; negative = unpaced
 }
 
 type Updater struct {
@@ -84,6 +85,7 @@ type Updater struct {
 	supersede chan struct{}
 	handedOff bool // an install was handed to the OS; this process is on its way out
 
+	pacer   *pacer
 	healthy chan struct{}
 	once    sync.Once
 }
@@ -120,7 +122,10 @@ func New(o Options) *Updater {
 	if o.Installer == nil {
 		o.Installer = newDefaultInstaller(o)
 	}
-	return &Updater{o: o, healthy: make(chan struct{})}
+	if o.StatusEvery == 0 {
+		o.StatusEvery = StatusEvery
+	}
+	return &Updater{o: o, pacer: newPacer(o.StatusEvery, o.OnStatus), healthy: make(chan struct{})}
 }
 
 // ProbeServer reports whether GET <base>/healthz answers 200 within 5 s.
@@ -222,7 +227,7 @@ func (u *Updater) emit(s proto.UpdateStatus) {
 	if len(s.Error) > proto.MaxUpdateErrorLen {
 		s.Error = s.Error[:proto.MaxUpdateErrorLen]
 	}
-	u.o.OnStatus(s)
+	u.pacer.push(s)
 }
 
 func (u *Updater) status(state, version string, err error) {
@@ -296,6 +301,7 @@ func (u *Updater) attempt(ctx context.Context, t Trigger, force, supersede <-cha
 	}
 
 	u.status(proto.UpdateInstalling, m.Version, nil)
+	u.pacer.flush(ctx) // the process may not outlive the install
 	u.mu.Lock()
 	u.handedOff = true
 	u.mu.Unlock()
