@@ -58,7 +58,17 @@ func auditEventFor(prevState string, next proto.UpdateStatus) (string, bool) {
 // reports in hello: the target means success, the old version long after
 // the install started means it failed without saying so.
 func helloOutcome(state, from, version string, at *time.Time, running string, now time.Time) (proto.UpdateStatus, string, bool) {
-	if state != proto.UpdateInstalling || version == "" {
+	if version == "" {
+		return proto.UpdateStatus{}, "", false
+	}
+	if state == proto.UpdateFailed || state == proto.UpdateRolledBack {
+		// Installed some other way (by hand, or a later release): the failure is moot.
+		if proto.CompareVersions(running, version) >= 0 {
+			return proto.UpdateStatus{State: proto.UpdateUpToDate, From: from, Version: version}, "", true
+		}
+		return proto.UpdateStatus{}, "", false
+	}
+	if state != proto.UpdateInstalling {
 		return proto.UpdateStatus{}, "", false
 	}
 	switch {

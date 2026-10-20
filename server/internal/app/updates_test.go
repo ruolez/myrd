@@ -95,6 +95,11 @@ func TestHelloOutcome(t *testing.T) {
 		{"some other version", proto.UpdateInstalling, "0.2.0", "0.3.0", &old, "0.2.5", want{}},
 		{"not installing", proto.UpdateDownloading, "0.2.0", "0.3.0", &old, "0.3.0", want{}},
 		{"no target", proto.UpdateInstalling, "", "", &old, "", want{}},
+		{"failed, then installed by hand", proto.UpdateFailed, "0.3.0", "0.3.1", &old, "0.3.1",
+			want{proto.UpdateStatus{State: proto.UpdateUpToDate, From: "0.3.0", Version: "0.3.1"}, "", true}},
+		{"rolled back, later on a newer build", proto.UpdateRolledBack, "0.3.0", "0.3.1", &old, "0.3.2",
+			want{proto.UpdateStatus{State: proto.UpdateUpToDate, From: "0.3.0", Version: "0.3.1"}, "", true}},
+		{"failed and still on the old build", proto.UpdateFailed, "0.3.0", "0.3.1", &old, "0.3.0", want{}},
 	}
 	for _, c := range cases {
 		st, ev, ok := helloOutcome(c.state, c.from, c.version, c.at, c.running, now)

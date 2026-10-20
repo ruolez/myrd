@@ -1021,7 +1021,7 @@ func (h *Hub) onHello(ac *agentConn, m proto.Hello) {
 	if st, event, ok := helloOutcome(d.UpdateState, d.UpdateFrom, d.UpdateVersion, d.UpdateAt, d.AgentVersion, time.Now()); ok {
 		if err := h.SetUpdateStatus(ctx, d.UserID, d.ID, st); err != nil {
 			a.log.Error("hello update outcome", "err", err)
-		} else {
+		} else if event != "" {
 			a.audit(ctx, store.Audit{Actor: "agent", Event: event, UserID: d.UserID, DeviceID: d.ID, IP: ac.ip,
 				Meta: map[string]any{"from": st.From, "version": st.Version, "error": st.Error}})
 		}
