@@ -544,6 +544,7 @@ export function SessionView() {
             prefs={snap.streamPrefs}
             state={snap.streamState}
             feature={snap.streamFeature}
+            canHideWallpaper={snap.features?.includes("wallpaper") ?? false}
             maxFps={snap.maxFps}
             monitor={monitor}
             onChange={(p) => session?.setStreamPrefs(p)}

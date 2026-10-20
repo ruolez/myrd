@@ -98,6 +98,8 @@ type mediaPipe struct {
 	active     int
 	settings   StreamSettings
 	background bool
+	wallpaper  bool // the browser asked to see the wallpaper
+	canHideWP  bool // the backend can hide it
 	auto       AutoState
 	ladder     []Rung
 	est        cc.BandwidthEstimator
@@ -121,6 +123,8 @@ type mediaPipe struct {
 	clipSet    string // last value we wrote from the browser (avoid echo)
 	clipXfer   uint16
 
+	wpHidden bool // hidden on the device right now; guarded by capMu
+
 	frames, keyframes, bytes atomic.Int64
 	posX, posY               atomic.Uint32
 	posVis                   atomic.Bool
@@ -134,6 +138,7 @@ func newMediaPipe(s *sess, track *webrtc.TrackLocalStaticSample) *mediaPipe {
 		sentShape: map[uint32]bool{}, kickCh: make(chan struct{}, 1), quit: make(chan struct{})}
 	p.encoder = b.EncoderName()
 	p.maxFPS = p.fpsCap(p.encoder)
+	p.canHideWP = b.HideWallpaper(false) == nil
 	mons, err := b.Monitors()
 	if err != nil {
 		s.log.Warn("monitor list failed", "err", err)
@@ -169,7 +174,7 @@ func (p *mediaPipe) nativeLocked() (uint32, uint32) {
 
 func (p *mediaPipe) inputLocked() StreamInput {
 	nw, nh := p.nativeLocked()
-	in := StreamInput{Settings: p.settings, Background: p.background, MaxFPS: p.maxFPS, NativeW: nw, NativeH: nh,
+	in := StreamInput{Settings: p.settings, Background: p.background, Wallpaper: p.wallpaper, MaxFPS: p.maxFPS, NativeW: nw, NativeH: nh,
 		MaxW: p.s.m.o.MaxWidth, MaxH: p.s.m.o.MaxHeight, Relay: p.relay, BweKbps: p.bweKbps}
 	if p.settings.Preset == proto.PresetAuto && len(p.ladder) > 0 {
 		r := p.ladder[max(0, min(p.auto.Rung, len(p.ladder)-1))]
@@ -271,6 +276,10 @@ func (p *mediaPipe) reconcile() {
 	} else {
 		p.applyEncoder(true)
 	}
+	p.mu.Lock()
+	running := p.running
+	p.mu.Unlock()
+	p.syncWallpaperLocked(running)
 	p.capMu.Unlock()
 	if err != nil {
 		p.s.log.Error("capture restart failed", "err", err)
@@ -282,7 +291,7 @@ func (p *mediaPipe) reconcile() {
 // ---- stream settings ----
 
 // setStream applies a desired state; reply asks for a `stream` answer.
-func (p *mediaPipe) setStream(s StreamSettings, background bool, id *uint32, reply bool) {
+func (p *mediaPipe) setStream(s StreamSettings, background, wallpaper bool, id *uint32, reply bool) {
 	p.mu.Lock()
 	if s != p.settings {
 		p.settings = s
@@ -291,6 +300,7 @@ func (p *mediaPipe) setStream(s StreamSettings, background bool, id *uint32, rep
 		p.auto.Since = p.now() // back from background: warm up again
 	}
 	p.background = background
+	p.wallpaper = wallpaper
 	if reply {
 		p.reply, p.replyID = true, id
 	}
@@ -301,8 +311,9 @@ func (p *mediaPipe) setStream(s StreamSettings, background bool, id *uint32, rep
 func (p *mediaPipe) setTier(t int) {
 	p.mu.Lock()
 	s, bg := LegacyTierSettings(t, p.settings)
+	wp := p.wallpaper
 	p.mu.Unlock()
-	p.setStream(s, bg, nil, false)
+	p.setStream(s, bg, wp, nil, false)
 }
 
 func (p *mediaPipe) streamStateLocked() StreamState {
@@ -392,8 +403,25 @@ func (p *mediaPipe) sampleAuto(sendKbps int) {
 
 // ---- lifecycle ----
 
+// syncWallpaperLocked hides the wallpaper while capture is active unless the
+// browser asked to see it, and shows it otherwise; caller holds capMu.
+func (p *mediaPipe) syncWallpaperLocked(active bool) {
+	p.mu.Lock()
+	hide := active && p.canHideWP && !p.wallpaper
+	p.mu.Unlock()
+	if hide == p.wpHidden {
+		return
+	}
+	if err := p.b.HideWallpaper(hide); err != nil {
+		p.s.log.Warn("wallpaper change failed", "hide", hide, "err", err)
+		return
+	}
+	p.wpHidden = hide
+}
+
 func (p *mediaPipe) start() {
 	p.capMu.Lock()
+	p.syncWallpaperLocked(true) // before the first (most expensive) keyframe
 	err := p.startCaptureLocked()
 	p.capMu.Unlock()
 	if err != nil {
@@ -468,6 +496,7 @@ func (p *mediaPipe) stop(reason string) {
 	if running {
 		p.b.StopCapture()
 	}
+	p.syncWallpaperLocked(false)
 }
 
 func (p *mediaPipe) selectMonitor(idx int) error {
@@ -607,7 +636,7 @@ func (p *mediaPipe) setControlChannel(dc *webrtc.DataChannel) {
 	p.mu.Unlock()
 	perm := p.b.Permissions()
 	p.sendControl(map[string]any{"t": "hello", "monitors": mons, "active": active, "encoder": enc,
-		"codec": "h264", "fps": plan.FPS, "max_fps": maxFPS, "features": helloFeatures(p.s.m.o),
+		"codec": "h264", "fps": plan.FPS, "max_fps": maxFPS, "features": helloFeatures(p.s.m.o, p.canHideWP),
 		"permissions":   proto.Permissions{Screen: perm.Screen, Input: perm.Input},
 		"agent_version": p.s.m.o.AgentVersion, "os": runtime.GOOS})
 	p.sendStreamState(true)
@@ -667,7 +696,7 @@ func (p *mediaPipe) onControlText(b []byte) {
 			p.rejectStream(r.ID) // not an input reject: no abuse count
 			return
 		}
-		p.setStream(SettingsFromRequest(r), r.Background, r.ID, true)
+		p.setStream(SettingsFromRequest(r), r.Background, r.Wallpaper, r.ID, true)
 	}
 }
 

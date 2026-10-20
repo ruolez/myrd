@@ -130,6 +130,20 @@ int  rc_clipboard_get_text(char **out, int32_t *len);
 int  rc_clipboard_set_text(const char *utf8, int32_t len);
 void rc_free(void *p);
 
+/* ---- wallpaper ---- */
+/* 1 hides the desktop wallpaper from the controller (solid background, far
+ * cheaper to encode), 0 shows it again. Independent of rc_capture_start/stop:
+ * the state holds until changed, and rc_shutdown shows it. 0 while it is not
+ * hidden is a no-op, so the agent probes support with it.
+ *   macos  : drops the wallpaper windows from the capture only; the device's
+ *            own screen is untouched.
+ *   windows: turns the wallpaper off for the console user's logon session
+ *            (never written to the registry, so logoff restores it); 0 reloads
+ *            it from the registry; rc_init reloads one a crashed agent left off.
+ *   linux  : RC_ERR_UNSUPPORTED for both values.
+ * Returns RC_OK, RC_ERR_UNSUPPORTED or RC_ERR. */
+int  rc_wallpaper_hide(int hide);
+
 /* ---- session UI (native so it cannot be hidden by the controller) ---- */
 /* Show/hide the always-on-top red border on every monitor. */
 void rc_indicator_show(int on);

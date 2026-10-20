@@ -18,12 +18,14 @@ int rc_init(void) {
     if (!set_ctx || !set_ctx(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) SetProcessDPIAware();
     g_probed_encoder = encoder_probe();
     enumerate_monitors(nullptr, 0);
+    wallpaper_recover();
     return RC_OK;
 }
 
 void rc_shutdown(void) {
     capture_stop();
     indicator_show(false);
+    wallpaper_hide(false);
 }
 
 const char *rc_backend_name(void) { return "windows"; }
@@ -73,6 +75,8 @@ int rc_clipboard_set_text(const char *utf8, int32_t len) { return clipboard_set_
 void rc_free(void *p) { free(p); }
 
 void rc_indicator_show(int on) { indicator_show(on != 0); }
+
+int rc_wallpaper_hide(int hide) { return wallpaper_hide(hide != 0); }
 
 int rc_consent_prompt(const char *title, const char *message, int32_t timeout_s) {
     return consent_prompt(title, message, timeout_s);

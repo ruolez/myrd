@@ -29,6 +29,10 @@ static RCStreamOutput *g_output;
 static dispatch_queue_t g_queue;        // sample handler + encode submit (serial)
 static dispatch_queue_t g_cursor_queue; // cursor polling (serial)
 static dispatch_source_t g_cursor_timer;
+static dispatch_queue_t g_wp_queue;     // wallpaper filter refresh (serial)
+static dispatch_source_t g_wp_timer;
+static atomic_bool g_hide_wp;
+static NSSet<NSNumber *> *g_wp_ids;     // windows the current filter leaves out (hidden mode)
 static VTCompressionSessionRef g_vt;
 static CVPixelBufferRef g_last;
 static int64_t g_last_pts;
@@ -302,6 +306,76 @@ static void cursor_tick(void) {
     if (g_tick++ % 6 == 0) cursor_shape_poll(); // ~20 Hz shape check
 }
 
+// ---------------- content filter ----------------
+
+// With the wallpaper hidden the filter leaves out everything below the desktop
+// icons (the Dock's Wallpaper-* windows, the wallpaper agent and the
+// WindowServer backdrop, one set per Space), so the background is solid black.
+// Excluding windows rules out excluding our app, so our own windows are left
+// out one by one and the 1 s refresh picks up new ones.
+static BOOL wp_excluded(NSInteger layer, pid_t pid) {
+    return layer < CGWindowLevelForKey(kCGDesktopIconWindowLevelKey) || pid == getpid();
+}
+
+static NSSet<NSNumber *> *wp_window_ids(void) {
+    NSMutableSet<NSNumber *> *ids = [NSMutableSet set];
+    CFArrayRef list = CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID);
+    if (!list) return ids;
+    for (NSDictionary *w in (__bridge NSArray *)list)
+        if (wp_excluded([w[(id)kCGWindowLayer] integerValue], [w[(id)kCGWindowOwnerPID] intValue]))
+            [ids addObject:w[(id)kCGWindowNumber]];
+    CFRelease(list);
+    return ids;
+}
+
+// Off-screen windows are listed too when hiding, so other Spaces' wallpapers
+// are already excluded when the user switches to them.
+static SCShareableContent *shareable_content(BOOL all_windows, NSError **err) {
+    __block SCShareableContent *content = nil;
+    __block NSError *cerr = nil;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    [SCShareableContent getShareableContentExcludingDesktopWindows:NO onScreenWindowsOnly:!all_windows
+                                                 completionHandler:^(SCShareableContent *c, NSError *e) {
+        content = c; cerr = e; dispatch_semaphore_signal(sem);
+    }];
+    if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0) return nil;
+    if (err) *err = cerr;
+    return cerr ? nil : content;
+}
+
+static SCContentFilter *make_filter(SCShareableContent *content, uint32_t display_id, BOOL hide_wp) {
+    SCDisplay *disp = nil;
+    for (SCDisplay *d in content.displays) if (d.displayID == display_id) disp = d;
+    if (!disp) return nil;
+    if (hide_wp) {
+        NSMutableArray<SCWindow *> *drop = [NSMutableArray array];
+        for (SCWindow *w in content.windows)
+            if (wp_excluded(w.windowLayer, w.owningApplication.processID)) [drop addObject:w];
+        return [[SCContentFilter alloc] initWithDisplay:disp excludingWindows:drop];
+    }
+    NSMutableArray *self_apps = [NSMutableArray array]; // never capture our own consent UI
+    for (SCRunningApplication *app in content.applications)
+        if (app.processID == getpid()) [self_apps addObject:app];
+    return [[SCContentFilter alloc] initWithDisplay:disp excludingApplications:self_apps exceptingWindows:@[]];
+}
+
+// Re-applies the filter after a toggle (force), or when the windows it must
+// leave out changed: a Space switch, a new wallpaper, a window of ours.
+// Caller holds g_ctl.
+static void wp_refresh_locked(BOOL force) {
+    if (!g_stream) return;
+    BOOL hide = atomic_load(&g_hide_wp);
+    NSSet<NSNumber *> *ids = hide ? wp_window_ids() : nil;
+    if (!force && (!hide || [ids isEqualToSet:g_wp_ids])) return;
+    SCShareableContent *content = shareable_content(hide, NULL);
+    SCContentFilter *filter = content ? make_filter(content, g_display, hide) : nil;
+    if (!filter) return;
+    g_wp_ids = ids;
+    [g_stream updateContentFilter:filter completionHandler:^(NSError *e) {
+        if (e) RCLOG(@"updateContentFilter: %@", e);
+    }];
+}
+
 // ---------------- public API ----------------
 
 static void teardown_locked(void) {
@@ -311,6 +385,12 @@ static void teardown_locked(void) {
         g_cursor_timer = nil;
         dispatch_sync(g_cursor_queue, ^{});
     }
+    if (g_wp_timer) {
+        dispatch_source_cancel(g_wp_timer);
+        g_wp_timer = nil;
+        dispatch_sync(g_wp_queue, ^{}); // ticks only trylock g_ctl, so this cannot deadlock
+    }
+    g_wp_ids = nil;
     if (g_stream) {
         dispatch_semaphore_t sem = dispatch_semaphore_create(0);
         [g_stream stopCaptureWithCompletionHandler:^(NSError *e) { dispatch_semaphore_signal(sem); }];
@@ -347,25 +427,13 @@ static int start_locked(const rc_capture_config *cfg, rc_frame_fn on_frame, rc_c
         CGRect b = rc_display_bounds(cfg->monitor_id);
         if (CGRectIsNull(b)) return RC_ERR;
 
-        __block SCShareableContent *content = nil;
-        __block NSError *cerr = nil;
-        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-        [SCShareableContent getShareableContentExcludingDesktopWindows:NO onScreenWindowsOnly:YES
-                                                     completionHandler:^(SCShareableContent *c, NSError *e) {
-            content = c; cerr = e; dispatch_semaphore_signal(sem);
-        }];
-        if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0) return RC_ERR;
-        if (cerr || !content) {
-            return (cerr.code == SCStreamErrorUserDeclined) ? RC_ERR_PERMISSION : RC_ERR;
-        }
-        SCDisplay *disp = nil;
-        for (SCDisplay *d in content.displays) if (d.displayID == cfg->monitor_id) disp = d;
-        if (!disp) return RC_ERR;
-        NSMutableArray *self_apps = [NSMutableArray array]; // never capture our own consent UI
-        for (SCRunningApplication *app in content.applications)
-            if (app.processID == getpid()) [self_apps addObject:app];
-        SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:disp excludingApplications:self_apps
-                                                          exceptingWindows:@[]];
+        BOOL hide_wp = atomic_load(&g_hide_wp);
+        NSSet<NSNumber *> *wp_ids = hide_wp ? wp_window_ids() : nil;
+        NSError *cerr = nil;
+        SCShareableContent *content = shareable_content(hide_wp, &cerr);
+        if (!content) return (cerr.code == SCStreamErrorUserDeclined) ? RC_ERR_PERMISSION : RC_ERR;
+        SCContentFilter *filter = make_filter(content, cfg->monitor_id, hide_wp);
+        if (!filter) return RC_ERR;
 
         uint32_t pw = 0, ph = 0;
         rc_display_pixels(cfg->monitor_id, &pw, &ph);
@@ -393,10 +461,12 @@ static int start_locked(const rc_capture_config *cfg, rc_frame_fn on_frame, rc_c
                                                                                  QOS_CLASS_USER_INTERACTIVE, 0);
             g_queue = dispatch_queue_create("com.remotectl.capture", attr);
             g_cursor_queue = dispatch_queue_create("com.remotectl.cursor", attr);
+            g_wp_queue = dispatch_queue_create("com.remotectl.wallpaper", DISPATCH_QUEUE_SERIAL);
         }
         if (!g_output) g_output = [[RCStreamOutput alloc] init];
 
         g_display = cfg->monitor_id;
+        g_wp_ids = wp_ids;
         g_bounds = b;
         g_capw = w; g_caph = h; g_fps = fps; g_kbps = kbps; g_gop_ms = gop; g_pw = pw;
         g_last_pts = 0;
@@ -428,6 +498,15 @@ static int start_locked(const rc_capture_config *cfg, rc_frame_fn on_frame, rc_c
             dispatch_source_set_event_handler(g_cursor_timer, ^{ cursor_tick(); });
             dispatch_resume(g_cursor_timer);
         }
+        g_wp_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, g_wp_queue);
+        dispatch_source_set_timer(g_wp_timer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), NSEC_PER_SEC,
+                                  100 * NSEC_PER_MSEC);
+        dispatch_source_set_event_handler(g_wp_timer, ^{
+            if (!atomic_load(&g_hide_wp) || pthread_mutex_trylock(&g_ctl) != 0) return;
+            @autoreleasepool { wp_refresh_locked(NO); }
+            pthread_mutex_unlock(&g_ctl);
+        });
+        dispatch_resume(g_wp_timer);
         return RC_OK;
     }
 }
@@ -477,6 +556,15 @@ void rc_request_keyframe(void) {
         if (atomic_load(&g_running) && g_last && atomic_exchange(&g_force_key, false))
             encode_pixbuf(g_last, true);
     });
+}
+
+int rc_wallpaper_hide(int hide) {
+    BOOL h = hide != 0;
+    if (atomic_exchange(&g_hide_wp, h) == h) return RC_OK;
+    pthread_mutex_lock(&g_ctl);
+    @autoreleasepool { wp_refresh_locked(YES); }
+    pthread_mutex_unlock(&g_ctl);
+    return RC_OK;
 }
 
 const char *rc_encoder_name(void) {

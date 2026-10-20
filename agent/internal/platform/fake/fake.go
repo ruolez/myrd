@@ -37,6 +37,10 @@ type Backend struct {
 	wg         sync.WaitGroup
 	sink       platform.CaptureSink
 	forceKey   bool
+
+	canHideWallpaper bool
+	wallpaperHidden  bool
+	wallpaperCalls   []bool
 }
 
 func New() *Backend {
@@ -153,6 +157,17 @@ func (b *Backend) Indicator(on bool) {
 	b.mu.Unlock()
 }
 
+func (b *Backend) HideWallpaper(hide bool) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.wallpaperCalls = append(b.wallpaperCalls, hide)
+	if !b.canHideWallpaper {
+		return platform.ErrUnsupported
+	}
+	b.wallpaperHidden = hide
+	return nil
+}
+
 func (b *Backend) ConsentPrompt(title, message string, _ int) (platform.Consent, error) {
 	if b.PromptFn == nil {
 		return platform.ConsentDeny, platform.ErrUnsupported
@@ -161,6 +176,27 @@ func (b *Backend) ConsentPrompt(title, message string, _ int) (platform.Consent,
 }
 
 // ---- test accessors ----
+
+// SetCanHideWallpaper makes HideWallpaper work; by default it reports
+// ErrUnsupported, like the Linux demo device.
+func (b *Backend) SetCanHideWallpaper(ok bool) {
+	b.mu.Lock()
+	b.canHideWallpaper = ok
+	b.mu.Unlock()
+}
+
+func (b *Backend) WallpaperHidden() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.wallpaperHidden
+}
+
+// WallpaperCalls lists every HideWallpaper argument in order.
+func (b *Backend) WallpaperCalls() []bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]bool(nil), b.wallpaperCalls...)
+}
 
 func (b *Backend) Injected() []platform.InputEvent {
 	b.mu.Lock()

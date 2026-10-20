@@ -55,6 +55,13 @@ func TestStreamRequestVectorsRejected(t *testing.T) {
 	}
 }
 
+func TestStreamRequestWithoutWallpaperHidesIt(t *testing.T) {
+	r, err := DecodeStreamRequest([]byte(`{"t":"stream","preset":"auto","fps":null,"res":null,"max_kbps":null,"background":false}`))
+	if err != nil || r.Wallpaper {
+		t.Fatalf("wallpaper = %v, err %v: want hidden for browsers that predate the field", r.Wallpaper, err)
+	}
+}
+
 func TestStreamRequestRequiresStreamType(t *testing.T) {
 	if _, err := DecodeStreamRequest([]byte(`{"t":"ping","preset":"auto"}`)); err == nil {
 		t.Fatal("non-stream message accepted")

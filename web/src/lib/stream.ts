@@ -14,6 +14,8 @@ export type StreamPrefs = {
   fps: number | null;
   res: ResolutionId | null;
   max_kbps: number | null;
+  /** Show the device's wallpaper; hidden by default (cheaper to encode). */
+  wallpaper: boolean;
 };
 
 export type ResolutionOption = { id: ResolutionId; width: number; height: number };
@@ -26,6 +28,7 @@ export type StreamState = {
   res: ResolutionId | null;
   max_kbps: number | null;
   background: boolean;
+  wallpaper: boolean;
   resolved: { fps: number; res: ResolutionId; max_kbps: number | null };
   target_fps: number;
   max_fps: number;
@@ -50,6 +53,7 @@ export const DEFAULT_STREAM_PREFS: StreamPrefs = {
   fps: null,
   res: null,
   max_kbps: null,
+  wallpaper: false,
 };
 
 const PRESETS: readonly StreamPreset[] = [...NAMED_PRESETS, "custom"];
@@ -104,6 +108,7 @@ export function encodeStreamRequest(
     res: prefs.res,
     max_kbps: prefs.max_kbps,
     background: hidden,
+    wallpaper: prefs.wallpaper,
   });
 }
 
@@ -145,6 +150,7 @@ export function parseStreamState(m: unknown): StreamState | null {
     res: resOrNull(m.res),
     max_kbps: kbpsOrNull(m.max_kbps),
     background: m.background === true,
+    wallpaper: m.wallpaper === true,
     resolved: { fps: r.fps, res: r.res, max_kbps: isNum(r.max_kbps) ? r.max_kbps : null },
     target_fps: m.target_fps as number,
     max_fps: m.max_fps as number,
@@ -161,17 +167,18 @@ export function parseStreamState(m: unknown): StreamState | null {
 
 /**
  * Picking a named preset drops every override; picking Custom starts from what
- * the agent resolved for the current settings.
+ * the agent resolved for the current settings. The wallpaper choice stays.
  */
 export function selectPreset(
   prefs: StreamPrefs,
   preset: StreamPreset,
   state: StreamState | null,
 ): StreamPrefs {
-  if (preset !== "custom") return { ...DEFAULT_STREAM_PREFS, preset };
+  const { wallpaper } = prefs;
+  if (preset !== "custom") return { ...DEFAULT_STREAM_PREFS, preset, wallpaper };
   if (prefs.preset === "custom") return prefs;
   const base = state?.resolved ?? prefs;
-  return { preset: "custom", fps: base.fps, res: base.res, max_kbps: base.max_kbps };
+  return { preset: "custom", fps: base.fps, res: base.res, max_kbps: base.max_kbps, wallpaper };
 }
 
 type Field = "fps" | "res" | "max_kbps";
@@ -207,6 +214,7 @@ export function parseStreamPrefs(raw: string | null): StreamPrefs {
     fps: fpsOrNull(v.fps),
     res: resOrNull(v.res),
     max_kbps: kbpsOrNull(v.max_kbps),
+    wallpaper: v.wallpaper === true,
   };
 }
 

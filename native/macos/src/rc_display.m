@@ -19,6 +19,7 @@ int rc_init(void) {
 
 void rc_shutdown(void) {
     rc_capture_stop();
+    rc_wallpaper_hide(0);
     rc_indicator_show(0);
     rc_input_reset();
 }

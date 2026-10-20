@@ -19,3 +19,4 @@ EXPORTS
     rc_request_keyframe
     rc_request_permission
     rc_shutdown
+    rc_wallpaper_hide

@@ -11,7 +11,7 @@ package native
 
 /*
 #cgo windows LDFLAGS: -L${SRCDIR}/../../../native/windows/build -lrcnative
-#cgo windows LDFLAGS: -ld3d11 -ldxgi -lmfuuid -lole32 -loleaut32 -luser32 -lgdi32 -lwinmm
+#cgo windows LDFLAGS: -ld3d11 -ldxgi -lmfuuid -lole32 -loleaut32 -luser32 -lgdi32 -lwinmm -lwtsapi32 -ladvapi32
 #cgo windows LDFLAGS: -Wl,-Bstatic -lstdc++ -lwinpthread -Wl,-Bdynamic
 */
 import "C"

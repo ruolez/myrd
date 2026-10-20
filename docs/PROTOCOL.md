@@ -266,7 +266,7 @@ JSON text messages, `{"t": "...", ...}`:
 
 | t | dir | fields |
 |---|---|---|
-| `hello` | A→B on open | `monitors:[Monitor]`, `active:index`, `encoder`, `codec:"h264"`, `fps` (current target), `max_fps` (encoder cap), `features:[string]` (`"stream"`, `"files"`; absent on old agents), `permissions:{screen,input}`, `agent_version`, `os` |
+| `hello` | A→B on open | `monitors:[Monitor]`, `active:index`, `encoder`, `codec:"h264"`, `fps` (current target), `max_fps` (encoder cap), `features:[string]` (`"stream"`, `"files"`, `"wallpaper"`; absent on old agents), `permissions:{screen,input}`, `agent_version`, `os` |
 | `monitor` | A→B | `active:index`, `width`, `height` (native pixels, after a switch) |
 | `stream` | B→A | desired stream settings, see below |
 | `stream` | A→B | stream state, see below |
@@ -285,7 +285,7 @@ Monitor sizes in `hello.monitors` and `monitor` are always native pixels (physic
 B→A, the full desired state each time (idempotent; the latest wins). The browser sends it when `hello` arrives, on every change (debounced), and when the tab is hidden or shown. It never sends `0x20 op 3` to an agent with the `stream` feature.
 
 ```json
-{"t":"stream","id":7,"preset":"auto","fps":null,"res":null,"max_kbps":null,"background":false}
+{"t":"stream","id":7,"preset":"auto","fps":null,"res":null,"max_kbps":null,"background":false,"wallpaper":false}
 ```
 
 | field | type | meaning |
@@ -296,6 +296,7 @@ B→A, the full desired state each time (idempotent; the latest wins). The brows
 | `res` | null \| `native` \| `1440p` \| `1080p` \| `720p` \| `half` | null = preset default. Named sizes cap the **short edge** (1080p on 3440×1440 → 2580×1080), `half` halves both edges, nothing upscales. In `auto` a ceiling |
 | `max_kbps` | null \| 1000..20000 | null = automatic ceiling; otherwise a cap (sent bitrate = min(estimate, cap)); relay paths are capped at 6000 |
 | `background` | bool | hidden tab: 5 fps / 1 Mbps at the current size, Auto frozen |
+| `wallpaper` | bool, optional | show the device's wallpaper; false or absent hides it while the session runs (feature `"wallpaper"`, see below) |
 
 Presets (`max` = the encoder cap, 60 on hardware, 30 on software encoders):
 
@@ -312,7 +313,7 @@ An invalid message (unknown enum, wrong type, out of range) is ignored and answe
 A→B state, sent after `hello`, after every request, and when the monitor, Auto step, path or `max_fps` changes:
 
 ```json
-{"t":"stream","id":7,"ok":true,"preset":"auto","fps":null,"res":null,"max_kbps":null,"background":false,
+{"t":"stream","id":7,"ok":true,"preset":"auto","fps":null,"res":null,"max_kbps":null,"background":false,"wallpaper":false,
  "resolved":{"fps":60,"res":"native","max_kbps":null},
  "target_fps":30,"max_fps":60,"width":2560,"height":1440,"native_width":5120,"native_height":2880,
  "ceil_kbps":8000,"relay":false,
@@ -321,6 +322,8 @@ A→B state, sent after `hello`, after every request, and when the monitor, Auto
 ```
 
 `resolved` is what the preset and overrides came to (so the browser can switch to `custom` without its own preset table); `width`/`height` are the encoded size; `auto` is null unless `preset` is `auto` (`reason`: `steady`, `warmup`, `congestion`, `loss`, `starved`, `probe`); `options.fps` lists only values ≤ `max_fps`.
+
+Wallpaper (feature `"wallpaper"`, advertised when the agent's platform can hide it: macOS and Windows, not the Linux demo device): a solid background costs almost nothing to encode, so the bits go to what changes. The agent hides the wallpaper from capture start until the session ends and restores it then; toggling never restarts capture. macOS leaves the wallpaper windows out of the capture only, so the device's own screen is unchanged; Windows turns it off for the user's logon session without touching the registry (logoff, or the next agent start after a crash, brings it back), so the person at the device sees a plain background during the session. The browser shows the switch only with the feature and keeps the choice per device.
 
 Compatibility: a browser seeing no `features` in `hello` falls back to `0x20 op 3` (hidden → 0; 30-fps presets and fps ≤ 30 → 1; otherwise 2; see `legacy_tier` vectors). An agent receiving `op 3` maps 0 → background, 1 → `custom` 30 fps native, 2 → `auto`.
 

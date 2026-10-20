@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/ruolez/remotectl/agent/internal/inputproto"
 	"github.com/ruolez/remotectl/agent/internal/platform"
+	"github.com/ruolez/remotectl/proto"
 )
 
 // waitStreamReply returns the `stream` state answering request id.
@@ -28,6 +30,15 @@ func (h *harness) sendStream(t *testing.T, id int, preset, fps, res, maxKbps str
 	t.Helper()
 	msg := fmt.Sprintf(`{"t":"stream","id":%d,"preset":"%s","fps":%s,"res":%s,"max_kbps":%s,"background":false}`,
 		id, preset, fps, res, maxKbps)
+	if err := h.control.SendText(msg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (h *harness) sendWallpaper(t *testing.T, id int, show bool) {
+	t.Helper()
+	msg := fmt.Sprintf(`{"t":"stream","id":%d,"preset":"auto","fps":null,"res":null,"max_kbps":null,"background":false,"wallpaper":%v}`,
+		id, show)
 	if err := h.control.SendText(msg); err != nil {
 		t.Fatal(err)
 	}
@@ -63,6 +74,9 @@ func TestLoopbackStreamSettings(t *testing.T) {
 		t.Fatalf("auto = %v", st["auto"])
 	}
 	waitFor(t, "capture", func() bool { return len(h.backend.Starts()) == 1 })
+	if calls := h.backend.WallpaperCalls(); !reflect.DeepEqual(calls, []bool{false}) {
+		t.Fatalf("wallpaper calls = %v, want only the support probe on a backend that cannot hide it", calls)
+	}
 
 	h.sendStream(t, 3, "custom", "15", `"720p"`, "5000")
 	st = h.waitStreamReply(t, 3)
@@ -96,5 +110,39 @@ func TestLoopbackStreamSettings(t *testing.T) {
 	h.mgr.mu.Unlock()
 	if n := cur.in.rejects(); n != 0 {
 		t.Fatalf("invalid stream request counted as input abuse: %d", n)
+	}
+}
+
+func TestLoopbackWallpaperHiddenWhileSessionRuns(t *testing.T) {
+	h := newHarness(t, platform.ConsentOnce)
+	h.backend.SetCanHideWallpaper(true)
+	h.offer(false)
+	if err := <-h.answerOK; err != nil {
+		t.Fatal(err)
+	}
+	if hello := h.waitControl(t, "hello"); fmt.Sprint(hello["features"]) != "[stream wallpaper]" {
+		t.Fatalf("hello features = %v", hello["features"])
+	}
+	waitFor(t, "capture", func() bool { return len(h.backend.Starts()) == 1 })
+	if !h.backend.WallpaperHidden() {
+		t.Fatal("wallpaper visible although the browser never asked for it")
+	}
+
+	h.sendWallpaper(t, 5, true)
+	expectFields(t, "show", h.waitStreamReply(t, 5), map[string]any{"ok": true, "wallpaper": true})
+	waitFor(t, "wallpaper shown", func() bool { return !h.backend.WallpaperHidden() })
+
+	h.sendWallpaper(t, 6, false)
+	expectFields(t, "hide", h.waitStreamReply(t, 6), map[string]any{"ok": true, "wallpaper": false})
+	waitFor(t, "wallpaper hidden", h.backend.WallpaperHidden)
+	if n := len(h.backend.Starts()); n != 1 {
+		t.Fatalf("toggling the wallpaper restarted capture: %d starts", n)
+	}
+
+	end, _ := proto.Encode(proto.TypeSessionEnd, proto.SessionEnd{SessionID: sessionID, Reason: proto.EndUserHangup})
+	h.mgr.HandleSignal(proto.TypeSessionEnd, end)
+	waitFor(t, "teardown", func() bool { return !h.backend.Capturing() })
+	if calls := h.backend.WallpaperCalls(); !reflect.DeepEqual(calls, []bool{false, true, false, true, false}) {
+		t.Fatalf("wallpaper calls = %v, want probe, hide, show, hide, restore at the end", calls)
 	}
 }

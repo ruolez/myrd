@@ -173,6 +173,7 @@ func FPSOptions(maxFPS int) []int {
 type StreamInput struct {
 	Settings         StreamSettings
 	Background       bool
+	Wallpaper        bool // shown; does not change the plan
 	MaxFPS           int
 	NativeW, NativeH uint32
 	MaxW, MaxH       int // Options caps
@@ -242,6 +243,7 @@ type StreamState struct {
 	Res          *string        `json:"res"`
 	MaxKbps      *int           `json:"max_kbps"`
 	Background   bool           `json:"background"`
+	Wallpaper    bool           `json:"wallpaper"`
 	Resolved     streamResolved `json:"resolved"`
 	TargetFPS    int            `json:"target_fps"`
 	MaxFPS       int            `json:"max_fps"`
@@ -267,9 +269,9 @@ func nonZero[T comparable](v T) *T {
 func BuildStreamState(in StreamInput, plan StreamPlan, auto *AutoInfo) StreamState {
 	s := in.Settings
 	return StreamState{T: "stream", Preset: s.Preset, FPS: nonZero(s.FPS), Res: nonZero(s.Res), MaxKbps: nonZero(s.MaxKbps),
-		Background: in.Background,
-		Resolved:   streamResolved{plan.Resolved.FPS, plan.Resolved.Res, nonZero(plan.Resolved.MaxKbps)},
-		TargetFPS:  plan.FPS, MaxFPS: in.MaxFPS, Width: plan.W, Height: plan.H, NativeWidth: in.NativeW, NativeHeight: in.NativeH,
+		Background: in.Background, Wallpaper: in.Wallpaper,
+		Resolved:  streamResolved{plan.Resolved.FPS, plan.Resolved.Res, nonZero(plan.Resolved.MaxKbps)},
+		TargetFPS: plan.FPS, MaxFPS: in.MaxFPS, Width: plan.W, Height: plan.H, NativeWidth: in.NativeW, NativeHeight: in.NativeH,
 		CeilKbps: plan.CeilKbps, Relay: in.Relay, Auto: auto,
 		Options: streamOptions{FPSOptions(in.MaxFPS), ResolutionOptions(in.NativeW, in.NativeH, in.MaxW, in.MaxH)}}
 }

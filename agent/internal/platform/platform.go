@@ -106,6 +106,11 @@ type Backend interface {
 	ClipboardText() (string, error)
 	SetClipboardText(s string) error
 
+	// HideWallpaper hides or shows the desktop wallpaper in what the
+	// controller sees; the state outlives capture restarts. ErrUnsupported
+	// when the platform cannot hide it.
+	HideWallpaper(hide bool) error
+
 	// Indicator shows/hides the native always-on-top session border.
 	Indicator(on bool)
 	// ConsentPrompt blocks until the owner answers on the device screen or the

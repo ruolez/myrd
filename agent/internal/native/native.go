@@ -171,6 +171,14 @@ func (b *Backend) SetClipboardText(s string) error {
 	return rcErr(C.rc_clipboard_set_text(cs, C.int32_t(len(s))))
 }
 
+func (b *Backend) HideWallpaper(hide bool) error {
+	v := C.int(0)
+	if hide {
+		v = 1
+	}
+	return rcErr(C.rc_wallpaper_hide(v))
+}
+
 func (b *Backend) Indicator(on bool) {
 	v := C.int(0)
 	if on {

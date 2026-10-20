@@ -28,6 +28,7 @@ const wireState = {
   res: null,
   max_kbps: null,
   background: false,
+  wallpaper: false,
   resolved: { fps: 60, res: "native", max_kbps: null },
   target_fps: 30,
   max_fps: 60,
@@ -58,6 +59,7 @@ const parsedState: StreamState = {
   res: null,
   max_kbps: null,
   background: false,
+  wallpaper: false,
   resolved: { fps: 60, res: "native", max_kbps: null },
   target_fps: 30,
   max_fps: 60,
@@ -109,6 +111,10 @@ describe("parseStreamState", () => {
     expect(parseStreamState(wireState)).toEqual(parsedState);
   });
 
+  test("reports the wallpaper the agent shows", () => {
+    expect(parseStreamState({ ...wireState, wallpaper: true })?.wallpaper).toEqual(true);
+  });
+
   test("defaults optional fields an agent may omit", () => {
     const minimal = {
       t: "stream",
@@ -129,6 +135,7 @@ describe("parseStreamState", () => {
       res: null,
       max_kbps: null,
       background: false,
+      wallpaper: false,
       resolved: { fps: 30, res: "720p", max_kbps: 4000 },
       target_fps: 30,
       max_fps: 30,
@@ -196,8 +203,17 @@ describe("selectPreset", () => {
       fps: 30,
       res: "1080p",
       max_kbps: 8000,
+      wallpaper: false,
     });
   });
+
+  test.each(["auto", "speed", "custom"] as const)(
+    "switching to %s keeps the wallpaper choice",
+    (preset) => {
+      const shown = prefs({ preset: "quality", wallpaper: true });
+      expect(selectPreset(shown, preset, state()).wallpaper).toEqual(true);
+    },
+  );
 
   test("custom without agent state keeps the current overrides", () => {
     expect(selectPreset(prefs({ preset: "speed", fps: 10 }), "custom", null)).toEqual(
@@ -218,6 +234,7 @@ describe("editStreamField", () => {
       fps: 60,
       res: "1080p",
       max_kbps: 4000,
+      wallpaper: false,
     });
   });
 
@@ -246,7 +263,18 @@ describe("parseStreamPrefs / serializeStreamPrefs", () => {
       fps: null,
       res: null,
       max_kbps: null,
+      wallpaper: false,
     });
+  });
+
+  test("prefs saved before the wallpaper switch keep it hidden", () => {
+    const raw = JSON.stringify({ v: 1, preset: "speed", fps: null, res: null, max_kbps: null });
+    expect(parseStreamPrefs(raw)).toEqual(prefs({ preset: "speed" }));
+  });
+
+  test("round-trips a shown wallpaper", () => {
+    const p = prefs({ wallpaper: true });
+    expect(parseStreamPrefs(serializeStreamPrefs(p))).toEqual(p);
   });
 
   test.each([

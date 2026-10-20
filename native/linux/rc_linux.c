@@ -737,6 +737,12 @@ int rc_clipboard_set_text(const char *utf8, int32_t len) {
 
 void rc_free(void *p) { free(p); }
 
+/* xfdesktop draws the wallpaper into an ordinary window XShm cannot leave out. */
+int rc_wallpaper_hide(int hide) {
+    (void)hide;
+    return RC_ERR_UNSUPPORTED;
+}
+
 /* ---------------- indicator ---------------- */
 
 void rc_indicator_show(int on) {

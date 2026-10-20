@@ -10,7 +10,7 @@
 #include "rc_native.h"
 
 static atomic_int frames, keyframes, bad_annexb, key_without_ps, shapes, positions;
-static atomic_long bytes;
+static atomic_long bytes, last_key_len;
 static FILE *dump; // RC_HARNESS_DUMP=<file.h264> writes the elementary stream
 
 static void on_frame(void *u, const uint8_t *d, int32_t len, int64_t pts, int32_t key) {
@@ -29,6 +29,7 @@ static void on_frame(void *u, const uint8_t *d, int32_t len, int64_t pts, int32_
     }
     if (key) {
         atomic_fetch_add(&keyframes, 1);
+        atomic_store(&last_key_len, len);
         if (!(has_sps && has_pps && has_idr)) atomic_fetch_add(&key_without_ps, 1);
     }
 }
@@ -96,6 +97,8 @@ int main(void) {
             CHECK(irc == RC_ERR_PERMISSION, "inject without Accessibility -> RC_ERR_PERMISSION (%d)", irc);
         }
 
+        CHECK(rc_wallpaper_hide(0) == RC_OK, "rc_wallpaper_hide(0) probe before capture");
+
         rc_capture_config cfg = {.monitor_id = mons[0].id, .fps = 60, .bitrate_kbps = 6000,
                                  .keyframe_interval_ms = 2000, .max_width = 1920, .max_height = 1080};
         int crc = rc_capture_start(&cfg, on_frame, on_shape, on_pos, NULL);
@@ -109,6 +112,15 @@ int main(void) {
             rc_request_keyframe();
             usleep(200 * 1000);
             CHECK(atomic_load(&keyframes) > before, "keyframe on request (static screen re-encode)");
+            long shown = atomic_load(&last_key_len);
+            CHECK(rc_wallpaper_hide(1) == RC_OK, "rc_wallpaper_hide(1) while capturing");
+            usleep(500 * 1000); // the filter update is asynchronous
+            before = atomic_load(&keyframes);
+            rc_request_keyframe();
+            usleep(300 * 1000);
+            CHECK(atomic_load(&keyframes) > before, "keyframe with the wallpaper hidden (%ld -> %ld bytes)", shown,
+                  atomic_load(&last_key_len));
+            CHECK(rc_wallpaper_hide(0) == RC_OK, "rc_wallpaper_hide(0) while capturing");
             rc_encode_configure(2000, 30);
             usleep(800 * 1000);
             rc_capture_stop();

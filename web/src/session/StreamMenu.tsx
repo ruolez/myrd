@@ -3,6 +3,7 @@
 
 import { useEffect, useRef } from "react";
 import { Icon } from "../components/icons";
+import { Toggle } from "../components/ui";
 import {
   describeAuto,
   editStreamField,
@@ -26,6 +27,8 @@ type Props = {
   state: StreamState | null;
   /** null until hello; false = agent without the `stream` feature (presets only). */
   feature: boolean | null;
+  /** The agent advertises `wallpaper`: it can hide the device's wallpaper. */
+  canHideWallpaper: boolean;
   maxFps: number | null;
   monitor: Monitor | undefined;
   onChange: (prefs: StreamPrefs) => void;
@@ -70,6 +73,7 @@ export function StreamMenu({
   prefs,
   state,
   feature,
+  canHideWallpaper,
   maxFps,
   monitor,
   onChange,
@@ -234,6 +238,22 @@ export function StreamMenu({
             )}
           </fieldset>
         </>
+      )}
+
+      {canHideWallpaper && (
+        <div className="flex items-center gap-3">
+          <div className="flex-1">
+            <div className="text-xs">Show wallpaper</div>
+            <p className="text-xs text-white/50">
+              Off: a plain background, faster and sharper to stream.
+            </p>
+          </div>
+          <Toggle
+            label="Show wallpaper"
+            checked={prefs.wallpaper}
+            onChange={(wallpaper) => onChange({ ...prefs, wallpaper })}
+          />
+        </div>
       )}
 
       <div className="space-y-0.5 border-t border-white/10 pt-3 text-xs text-white/60">

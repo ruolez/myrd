@@ -12,6 +12,7 @@ only, so the same sources build with MSVC and mingw-w64's win32 thread model).
 | Input | `SendInput`: absolute moves mapped into the monitor rect over `MOUSEEVENTF_VIRTUALDESK`, X buttons, wheel/hwheel with pixel → `WHEEL_DELTA` accumulation (100 px per notch), keys by set-1 scancode (`KEYEVENTF_SCANCODE` + `EXTENDEDKEY`; Pause uses the sentinel `0xE11D45` → `VK_PAUSE`), text via `KEYEVENTF_UNICODE`. |
 | Clipboard | `CF_UNICODETEXT`. |
 | Indicator | Per-monitor layered, topmost, click-through windows drawing a red border, `WDA_EXCLUDEFROMCAPTURE` so the controller does not see it; own UI thread. |
+| Wallpaper | `rc_wallpaper_hide`: `SPI_SETDESKWALLPAPER` `""` / `NULL` without `SPIF_UPDATEINIFILE` (session only, logoff restores it), impersonating the console user (`WTSQueryUserToken`) so the reload reads their hive. `rc_init` reloads a wallpaper a crashed helper left off. |
 | Consent | Topmost window on the input desktop with Deny / Allow once / Allow and remember and a countdown; returns 0/1/2. |
 | Permissions | Always granted (no TCC equivalent; the helper runs as SYSTEM). |
 | DPI | Per-monitor-aware v2, so every coordinate is physical pixels. |
@@ -47,4 +48,6 @@ Compiles and links (mingw-w64 cross build) but has **not been run on
 Windows**. First things to verify on real hardware: hardware MFT
 negotiation on Intel/AMD/NVIDIA, SPS/PPS placement, DXGI re-creation across
 UAC/lock, the helper spawn as SYSTEM, `WDA_EXCLUDEFROMCAPTURE` with
-duplication, and the WGC path under MSVC (never compiled here).
+duplication, the WGC path under MSVC (never compiled here), and that hiding
+and reloading the wallpaper as SYSTEM-impersonating-the-user brings per-monitor
+and slideshow wallpapers back as they were.

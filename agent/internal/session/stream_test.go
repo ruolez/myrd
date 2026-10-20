@@ -142,10 +142,11 @@ func TestSettingsFromRequestVectors(t *testing.T) {
 			JSON   string `json:"json"`
 			Hidden bool   `json:"hidden"`
 			Prefs  struct {
-				Preset  string  `json:"preset"`
-				FPS     *int    `json:"fps"`
-				Res     *string `json:"res"`
-				MaxKbps *int    `json:"max_kbps"`
+				Preset    string  `json:"preset"`
+				FPS       *int    `json:"fps"`
+				Res       *string `json:"res"`
+				MaxKbps   *int    `json:"max_kbps"`
+				Wallpaper bool    `json:"wallpaper"`
 			} `json:"prefs"`
 		} `json:"stream_request"`
 	}
@@ -171,8 +172,9 @@ func TestSettingsFromRequestVectors(t *testing.T) {
 		if c.Prefs.MaxKbps != nil {
 			want.MaxKbps = *c.Prefs.MaxKbps
 		}
-		if got := SettingsFromRequest(r); got != want || r.Background != c.Hidden {
-			t.Errorf("%s: settings %+v (bg %v), want %+v (bg %v)", c.Name, got, r.Background, want, c.Hidden)
+		if got := SettingsFromRequest(r); got != want || r.Background != c.Hidden || r.Wallpaper != c.Prefs.Wallpaper {
+			t.Errorf("%s: settings %+v (bg %v, wallpaper %v), want %+v (bg %v, wallpaper %v)",
+				c.Name, got, r.Background, r.Wallpaper, want, c.Hidden, c.Prefs.Wallpaper)
 		}
 	}
 }
@@ -232,7 +234,7 @@ func TestBuildStreamStateJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"t":"stream","id":7,"ok":true,"preset":"auto","fps":null,"res":"1440p","max_kbps":null,"background":false,` +
+	want := `{"t":"stream","id":7,"ok":true,"preset":"auto","fps":null,"res":"1440p","max_kbps":null,"background":false,"wallpaper":false,` +
 		`"resolved":{"fps":30,"res":"1440p","max_kbps":null},` +
 		`"target_fps":15,"max_fps":30,"width":2560,"height":1440,"native_width":5120,"native_height":2880,` +
 		`"ceil_kbps":14222,"relay":false,"auto":{"rung":2,"rungs":6,"reason":"congestion"},` +

@@ -165,6 +165,11 @@ void cursor_stop();
 
 // ---- ui ----
 void indicator_show(bool on);
+
+// ---- wallpaper.cpp ----
+int wallpaper_hide(bool hide);
+// Shows a wallpaper an earlier, crashed helper left hidden (rc_init).
+void wallpaper_recover();
 int consent_prompt(const char *title, const char *message, int timeout_s);
 
 } // namespace rcw

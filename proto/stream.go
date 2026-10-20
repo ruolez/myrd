@@ -38,6 +38,7 @@ type StreamRequest struct {
 	Res        *string `json:"res"`
 	MaxKbps    *int    `json:"max_kbps"`
 	Background bool    `json:"background"`
+	Wallpaper  bool    `json:"wallpaper"` // show the desktop wallpaper; absent = hidden
 }
 
 var errNotStream = errors.New("not a stream message")

@@ -8,6 +8,7 @@ type VectorPrefs = {
   fps: number | null;
   res: string | null;
   max_kbps: number | null;
+  wallpaper?: boolean;
 };
 
 export type Vectors = {
