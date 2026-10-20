@@ -88,7 +88,7 @@ macOS notes:
 **Distributing the agent.** Upload the installers under **Admin → System → Client downloads**:
 
 - macOS: `.pkg`, `.dmg` or `.zip`. Build it with `SERVER_URL=<PUBLIC_URL>`.
-- Windows: `.msi`, `.exe` or `.zip`.
+- Windows: `.msi`, `.exe` or `.zip`. Double-clicking the MSI shows an **Add this PC** page for the server address and the enrollment token. The address is pre-filled when it is built with `SERVER_URL` (`build.ps1 -ServerUrl`, the repo variable `SERVER_URL`, or the `server_url` input of the `agent-windows` workflow). `msiexec … /qn` skips that page.
 - At most 512 MB each.
 
 Files are stored in the `downloads` volume and survive updates. **Add device** then shows a download button and a public link (`/v1/downloads/macos`, `/v1/downloads/windows`) that works without signing in, so you can open it on the machine being enrolled. Enrolling still needs the one-time token. With no upload, the page falls back to the external installer URLs set on the same Admin page.

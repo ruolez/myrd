@@ -80,13 +80,16 @@ export function AddDevice() {
         : null;
   const downloadUrl = link ? new URL(link.url, window.location.origin).toString() : null;
   const osLabel = target === "darwin" ? "macOS" : "Windows";
+  const serverUrl = config?.webauthn.origin ?? window.location.origin;
+  // The MSI asks for the token itself; a bare .exe or .zip needs the command.
+  const windowsMsi = !link?.file || link.file.filename.toLowerCase().endsWith(".msi");
   const snippet =
     target === "linux"
       ? ""
       : installSnippet({
           target,
           token: t,
-          serverUrl: config?.webauthn.origin ?? window.location.origin,
+          serverUrl,
           downloadUrl,
           filename: link?.file?.filename ?? null,
         });
@@ -214,27 +217,33 @@ export function AddDevice() {
                     exact System Settings pane.
                   </li>
                 </ol>
+              ) : windowsMsi ? (
+                <ol className="list-decimal space-y-2 pl-5 text-sm">
+                  <li>
+                    On the PC you are adding, download and run the Windows installer
+                    {link?.file ? ` (${link.file.filename})` : ""}.
+                  </li>
+                  <li>
+                    On the <strong>Add this PC</strong> page, check the server address (
+                    <span className="font-mono">{serverUrl}</span>) and enter the token above, then
+                    click Install.
+                  </li>
+                  <li>
+                    The PC appears here a few seconds after setup finishes. No extra permissions are
+                    needed.
+                  </li>
+                </ol>
               ) : (
-                <>
-                  <ol className="list-decimal space-y-2 pl-5 text-sm">
-                    <li>
-                      On the PC you are adding, open <strong>PowerShell as Administrator</strong>{" "}
-                      (Start → type PowerShell → Run as administrator).
-                    </li>
-                    <li>
-                      Paste the command below. It downloads the installer, installs the service and
-                      enrolls with the token above; the PC appears here within seconds.
-                    </li>
-                  </ol>
-                  <p className="rounded-xl bg-surface-2 p-3 text-sm">
-                    Windows has no token prompt: double-clicking the installer alone installs the
-                    service but does not add the PC.
-                  </p>
-                  <div>
-                    <div className="mb-2 text-sm font-medium">Install command</div>
-                    <Snippet code={snippet} />
-                  </div>
-                </>
+                <ol className="list-decimal space-y-2 pl-5 text-sm">
+                  <li>
+                    On the PC you are adding, open <strong>PowerShell as Administrator</strong>{" "}
+                    (Start → type PowerShell → Run as administrator).
+                  </li>
+                  <li>
+                    Paste the command below. It downloads the agent, enrolls with the token above
+                    and installs the service; the PC appears here within seconds.
+                  </li>
+                </ol>
               )}
               {link && downloadUrl ? (
                 <div className="space-y-2">
@@ -269,12 +278,16 @@ export function AddDevice() {
                   )}
                 </p>
               )}
-              {target === "darwin" && (
-                <div>
-                  <div className="mb-2 text-sm font-medium">Scripted install</div>
-                  <Snippet code={snippet} />
+              <div>
+                <div className="mb-2 text-sm font-medium">
+                  {target === "darwin"
+                    ? "Scripted install"
+                    : windowsMsi
+                      ? "Or install from PowerShell as Administrator, without clicks"
+                      : "Install command"}
                 </div>
-              )}
+                <Snippet code={snippet} />
+              </div>
             </>
           )}
         </section>
