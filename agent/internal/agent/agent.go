@@ -34,12 +34,11 @@ import (
 )
 
 type Config struct {
-	Settings      config.Settings
-	Version       string
-	ReleasePubKey string
-	Backend       platform.Backend
-	Keystore      identity.Keystore // default identity.Default(DataDir)
-	Log           *slog.Logger
+	Settings config.Settings
+	Version  string
+	Backend  platform.Backend
+	Keystore identity.Keystore // default identity.Default(DataDir)
+	Log      *slog.Logger
 
 	// Windows service mode: the service holds the socket but the session runs
 	// in agent-session.exe. When Handler is set it replaces the in-process
@@ -429,7 +428,7 @@ func (a *Agent) runConnected(ctx context.Context) error {
 
 	var sigClient *signal.Client
 	upd := update.New(update.Options{API: client, Token: func(c context.Context) (string, error) { return sigClient.Token(c) },
-		DeviceID: st.DeviceID, Version: a.cfg.Version, ReleasePubKey: a.cfg.ReleasePubKey, DataDir: a.cfg.Settings.DataDir, Log: a.log})
+		Version: a.cfg.Version, DataDir: a.cfg.Settings.DataDir, Log: a.log})
 	sigClient = signal.New(signal.Options{
 		API: client, DeviceID: st.DeviceID, Key: key, Handler: handler, Log: a.log, Hello: a.hello,
 		OnHelloAck: func(m proto.HelloAck) {
@@ -439,7 +438,7 @@ func (a *Agent) runConnected(ctx context.Context) error {
 				mgr.SetRevoked(m.RevokedClientKeys)
 			}
 			upd.HelloAcked()
-			go upd.CheckNow(ctx)
+			go upd.CheckNow(ctx, update.Trigger{})
 		},
 		OnDeviceUpdate: func(m proto.DeviceUpdate) {
 			a.autoAccept.Store(m.AutoAccept)

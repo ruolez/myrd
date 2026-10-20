@@ -136,26 +136,49 @@ func (c *Client) Authenticate(ctx context.Context, deviceID string, key ed25519.
 	return out.Token, exp, nil
 }
 
-// Manifest is a signed release manifest.
+// Manifest is the release offered by GET /v1/agent/update. URL is relative
+// to the server (see ResolveURL); the signature covers everything else.
 type Manifest struct {
-	Version    string `json:"version"`
-	OS         string `json:"os"`
-	Arch       string `json:"arch"`
-	URL        string `json:"url"`
-	SHA256     string `json:"sha256"`
-	Signature  string `json:"signature"`
-	RolloutPct int    `json:"rollout_pct"`
+	Version   string `json:"version"`
+	OS        string `json:"os"`
+	Arch      string `json:"arch"`
+	URL       string `json:"url"`
+	SHA256    string `json:"sha256"`
+	Size      int64  `json:"size"`
+	Signature string `json:"signature"`
 }
 
-// CheckUpdate returns nil when nothing newer exists (204).
-func (c *Client) CheckUpdate(ctx context.Context, token, goos, arch, version string) (*Manifest, error) {
-	q := url.Values{"os": {goos}, "arch": {arch}, "version": {version}}
+// CheckUpdate returns nil when nothing newer exists for this device (204).
+// explicit asks the server to ignore the rollout cohort.
+func (c *Client) CheckUpdate(ctx context.Context, token, goos, arch, version string, explicit bool) (*Manifest, error) {
+	q := url.Values{"os": {goos}, "arch": {arch}, "version": {version}, "explicit": {"0"}}
+	if explicit {
+		q.Set("explicit", "1")
+	}
 	var m Manifest
 	status, err := c.do(ctx, http.MethodGet, "/v1/agent/update?"+q.Encode(), token, nil, &m)
 	if err != nil || status == http.StatusNoContent || m.Version == "" {
 		return nil, err
 	}
 	return &m, nil
+}
+
+// ResolveURL resolves a release URL against the server base URL; only
+// http(s) results are allowed.
+func ResolveURL(base, ref string) (string, error) {
+	b, err := url.Parse(base)
+	if err != nil || b.Host == "" {
+		return "", fmt.Errorf("bad server URL %q", base)
+	}
+	r, err := url.Parse(ref)
+	if err != nil || ref == "" {
+		return "", fmt.Errorf("bad release URL %q", ref)
+	}
+	u := b.ResolveReference(r)
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return "", fmt.Errorf("release URL scheme %q not allowed", u.Scheme)
+	}
+	return u.String(), nil
 }
 
 func (c *Client) DeleteSelf(ctx context.Context, token string) error {

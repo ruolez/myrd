@@ -32,12 +32,11 @@ import (
 
 // Options shared by the service and the helper.
 type Options struct {
-	Settings      config.Settings
-	Version       string
-	ReleasePubKey string // Ed25519, base64; verifies update manifests
-	Log           *slog.Logger
-	PinsPath      string                  // default <data dir>/pinned-clients.json (same as internal/agent)
-	NewBackend    func() platform.Backend // helper only
+	Settings   config.Settings
+	Version    string
+	Log        *slog.Logger
+	PinsPath   string                  // default <data dir>/pinned-clients.json (same as internal/agent)
+	NewBackend func() platform.Backend // helper only
 }
 
 func (o *Options) defaults() {
@@ -120,7 +119,7 @@ func runConnected(ctx context.Context, o *Options, p *Proxy) error {
 		var s *signal.Client
 		// The service owns updates (msiexec /i new.msi /qn /norestart).
 		upd := update.New(update.Options{API: client, Token: func(c context.Context) (string, error) { return s.Token(c) },
-			DeviceID: st.DeviceID, Version: o.Version, ReleasePubKey: o.ReleasePubKey, DataDir: o.Settings.DataDir, Log: o.Log})
+			Version: o.Version, DataDir: o.Settings.DataDir, Log: o.Log})
 		s = signal.New(signal.Options{
 			API:      client,
 			DeviceID: st.DeviceID,
@@ -149,7 +148,7 @@ func runConnected(ctx context.Context, o *Options, p *Proxy) error {
 				p.SetRevoked(a.RevokedClientKeys)
 				p.SetDevice(a.Device)
 				upd.HelloAcked()
-				go upd.CheckNow(ctx)
+				go upd.CheckNow(ctx, update.Trigger{})
 			},
 			OnDeviceUpdate: func(u proto.DeviceUpdate) {
 				p.SetDevice(proto.DeviceInfo{ID: st.DeviceID, Name: u.Name, AutoAccept: u.AutoAccept})
