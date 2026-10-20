@@ -34,12 +34,11 @@ import (
 )
 
 type Config struct {
-	Settings      config.Settings
-	Version       string
-	ReleasePubKey string
-	Backend       platform.Backend
-	Keystore      identity.Keystore // default identity.Default(DataDir)
-	Log           *slog.Logger
+	Settings config.Settings
+	Version  string
+	Backend  platform.Backend
+	Keystore identity.Keystore // default identity.Default(DataDir)
+	Log      *slog.Logger
 
 	// Windows service mode: the service holds the socket but the session runs
 	// in agent-session.exe. When Handler is set it replaces the in-process
@@ -66,12 +65,14 @@ type Agent struct {
 	sigState signal.Status
 	enrolled chan struct{}
 	activity string // tray line from fileFeed
+	updLine  string // tray line from update.status
 
 	fileFeed  *tray.ActivityFeed
 	transfers devconsole.TransferLog
 
 	autoAccept atomic.Bool
 	paused     atomic.Bool
+	installing atomic.Bool // refuse new sessions while the OS installer runs
 }
 
 func New(cfg Config) (*Agent, error) {
@@ -232,7 +233,8 @@ func (a *Agent) setActivity(line string) {
 func (a *Agent) pushTray() {
 	a.mu.Lock()
 	up := a.trayUp
-	st := tray.State{Enrolled: a.state.Enrolled(), Online: a.sigState.Online, Paused: a.paused.Load(), Activity: a.activity}
+	st := tray.State{Enrolled: a.state.Enrolled(), Online: a.sigState.Online, Paused: a.paused.Load(), Activity: a.activity,
+		Update: a.updLine}
 	mgr := a.mgr
 	sigState := a.sigState
 	a.mu.Unlock()
@@ -314,6 +316,22 @@ func (a *Agent) send(typ string, msg any) error {
 		return signal.ErrNotConnected
 	}
 	return s.Send(typ, msg)
+}
+
+// onUpdateStatus reports update progress to the server and in the tray.
+func (a *Agent) onUpdateStatus(s proto.UpdateStatus) {
+	a.installing.Store(s.State == proto.UpdateInstalling)
+	line := tray.UpdateLine(s)
+	a.mu.Lock()
+	a.updLine = line
+	a.mu.Unlock()
+	a.pushTray()
+	if s.State == proto.UpdateInstalling {
+		tray.Notify(tray.ProductName, line)
+	}
+	if err := a.send(proto.TypeUpdateStatus, s); err != nil {
+		a.log.Debug("update.status not sent", "state", s.State, "err", err)
+	}
 }
 
 func (a *Agent) syncPins() {
@@ -414,7 +432,8 @@ func (a *Agent) runConnected(ctx context.Context) error {
 		}
 		mgr, err = session.NewManager(session.Options{
 			Backend: a.cfg.Backend, DeviceKey: key, Pins: a.pins, Send: a.send, Prompter: prompter,
-			AutoAccept: a.autoAccept.Load, Paused: a.paused.Load, OnPinsChanged: a.syncPins,
+			AutoAccept: a.autoAccept.Load, Paused: func() bool { return a.paused.Load() || a.installing.Load() },
+			OnPinsChanged:   a.syncPins,
 			OnSessionChange: func(*session.Info) { a.pushTray() },
 			UDPPort:         a.cfg.Settings.UDPPort, NAT1To1IPs: a.cfg.Settings.NAT1To1IPs,
 			AgentVersion: a.cfg.Version, Log: a.log, // MaxFPS unset: the session follows the live encoder
@@ -428,8 +447,13 @@ func (a *Agent) runConnected(ctx context.Context) error {
 	}
 
 	var sigClient *signal.Client
+	busy := func() bool { return len(handler.ActiveSessions()) > 0 }
+	if mgr != nil {
+		busy = func() bool { return mgr.Current() != nil } // pending and awaiting approval count too
+	}
 	upd := update.New(update.Options{API: client, Token: func(c context.Context) (string, error) { return sigClient.Token(c) },
-		DeviceID: st.DeviceID, Version: a.cfg.Version, ReleasePubKey: a.cfg.ReleasePubKey, DataDir: a.cfg.Settings.DataDir, Log: a.log})
+		Version: a.cfg.Version, DataDir: a.cfg.Settings.DataDir, Log: a.log,
+		Busy: busy, EndAll: handler.EndAll, OnStatus: a.onUpdateStatus})
 	sigClient = signal.New(signal.Options{
 		API: client, DeviceID: st.DeviceID, Key: key, Handler: handler, Log: a.log, Hello: a.hello,
 		OnHelloAck: func(m proto.HelloAck) {
@@ -439,7 +463,12 @@ func (a *Agent) runConnected(ctx context.Context) error {
 				mgr.SetRevoked(m.RevokedClientKeys)
 			}
 			upd.HelloAcked()
-			go upd.CheckNow(ctx)
+			if m.Update.Available {
+				go upd.CheckNow(ctx, update.Trigger{})
+			}
+		},
+		OnUpdateCheck: func(m proto.UpdateCheck) {
+			go upd.CheckNow(ctx, update.Trigger{Explicit: m.Explicit, Force: m.Force})
 		},
 		OnDeviceUpdate: func(m proto.DeviceUpdate) {
 			a.autoAccept.Store(m.AutoAccept)

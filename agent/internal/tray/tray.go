@@ -16,6 +16,7 @@ type State struct {
 	Peer      string // "<label> (<email>)" of the controlling browser
 	Status    string // one-line human status, e.g. "Online", "Waiting for enrollment"
 	Activity  string // file transfer line, e.g. "Receiving report.pdf (42%)"; see ActivityFeed
+	Update    string // agent update line, e.g. "Updating to 0.3.1…"; see UpdateLine
 }
 
 type Hooks struct {

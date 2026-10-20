@@ -29,11 +29,8 @@ import (
 	"github.com/ruolez/remotectl/agent/internal/tray"
 )
 
-// Set with -ldflags "-X main.version=… -X main.releasePublicKey=…".
-var (
-	version          = "dev"
-	releasePublicKey = ""
-)
+// Set with -ldflags "-X main.version=…".
+var version = "dev"
 
 // Cocoa (tray, overlay, prompts) needs the process main thread.
 func init() { runtime.LockOSThread() }
@@ -109,7 +106,7 @@ func settings(fs *flag.FlagSet, args []string) (config.Settings, error) {
 }
 
 func newAgent(log *slog.Logger, s config.Settings) (*agent.Agent, error) {
-	return agent.New(agent.Config{Settings: s, Version: version, ReleasePubKey: releasePublicKey,
+	return agent.New(agent.Config{Settings: s, Version: version,
 		Backend: native.New(), Keystore: identity.Default(s.DataDir), Log: log})
 }
 

@@ -95,6 +95,8 @@ func fakeServer(t *testing.T, pub ed25519.PublicKey, closeCode websocket.StatusC
 		_ = c.Write(ctx, websocket.MessageText, ack)
 		offer, _ := proto.Encode(proto.TypeSessionOffer, proto.SessionOffer{SessionID: "s1", SDP: "v=0"})
 		_ = c.Write(ctx, websocket.MessageText, offer)
+		check, _ := proto.Encode(proto.TypeUpdateCheck, proto.UpdateCheck{Explicit: true, Force: true})
+		_ = c.Write(ctx, websocket.MessageText, check)
 		for {
 			if _, _, err := c.Read(ctx); err != nil {
 				return
@@ -111,9 +113,11 @@ func TestHelloAckAndRouting(t *testing.T) {
 	srv := fakeServer(t, pub, 0)
 	h := &recHandler{}
 	acks := make(chan proto.HelloAck, 1)
+	checks := make(chan proto.UpdateCheck, 1)
 	c := New(Options{API: api.New(srv.URL), DeviceID: "dev1", Key: priv, Handler: h,
-		Hello:      func() proto.Hello { return proto.Hello{AgentVersion: "t"} },
-		OnHelloAck: func(m proto.HelloAck) { acks <- m }})
+		Hello:         func() proto.Hello { return proto.Hello{AgentVersion: "t"} },
+		OnHelloAck:    func(m proto.HelloAck) { acks <- m },
+		OnUpdateCheck: func(m proto.UpdateCheck) { checks <- m }})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go c.Run(ctx)
@@ -131,6 +135,14 @@ func TestHelloAckAndRouting(t *testing.T) {
 	}
 	if got := h.got(); len(got) != 1 || got[0] != proto.TypeSessionOffer {
 		t.Fatalf("routed = %v", got)
+	}
+	select {
+	case m := <-checks:
+		if want := (proto.UpdateCheck{V: 1, Type: proto.TypeUpdateCheck, Explicit: true, Force: true}); m != want {
+			t.Fatalf("update.check = %+v, want %+v", m, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("update.check not dispatched")
 	}
 	if !c.Status().Online {
 		t.Fatal("status not online")

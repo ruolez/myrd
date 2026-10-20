@@ -208,9 +208,26 @@ func (p *Proxy) SetDevice(d proto.DeviceInfo) {
 	p.write(KindDevice, "", d)
 }
 
-// SetStatus forwards the connection status for the helper's tray.
+// SetStatus forwards the connection status for the helper's tray; the
+// update line set by SetUpdateLine is kept.
 func (p *Proxy) SetStatus(s ServiceStatus) {
 	p.mu.Lock()
+	if p.status != nil {
+		s.Update = p.status.Update
+	}
+	p.status = &s
+	p.mu.Unlock()
+	p.write(KindStatus, "", s)
+}
+
+// SetUpdateLine shows update progress in the helper's tray.
+func (p *Proxy) SetUpdateLine(line string) {
+	p.mu.Lock()
+	s := ServiceStatus{}
+	if p.status != nil {
+		s = *p.status
+	}
+	s.Update = line
 	p.status = &s
 	p.mu.Unlock()
 	p.write(KindStatus, "", s)

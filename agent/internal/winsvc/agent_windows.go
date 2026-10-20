@@ -32,12 +32,11 @@ import (
 
 // Options shared by the service and the helper.
 type Options struct {
-	Settings      config.Settings
-	Version       string
-	ReleasePubKey string // Ed25519, base64; verifies update manifests
-	Log           *slog.Logger
-	PinsPath      string                  // default <data dir>/pinned-clients.json (same as internal/agent)
-	NewBackend    func() platform.Backend // helper only
+	Settings   config.Settings
+	Version    string
+	Log        *slog.Logger
+	PinsPath   string                  // default <data dir>/pinned-clients.json (same as internal/agent)
+	NewBackend func() platform.Backend // helper only
 }
 
 func (o *Options) defaults() {
@@ -57,6 +56,7 @@ func (o *Options) defaults() {
 func ServiceCore(o Options) Core {
 	o.defaults()
 	return func(ctx context.Context, p *Proxy) error {
+		update.CountServiceStart(o.Settings.DataDir) // crash-loop detection for a pending update
 		for ctx.Err() == nil {
 			err := runConnected(ctx, &o, p)
 			if ctx.Err() != nil {
@@ -118,9 +118,16 @@ func runConnected(ctx context.Context, o *Options, p *Proxy) error {
 			hostname, _ = os.Hostname()
 		}
 		var s *signal.Client
-		// The service owns updates (msiexec /i new.msi /qn /norestart).
+		// The service owns updates: detached msiexec, health check and rollback.
 		upd := update.New(update.Options{API: client, Token: func(c context.Context) (string, error) { return s.Token(c) },
-			DeviceID: st.DeviceID, Version: o.Version, ReleasePubKey: o.ReleasePubKey, DataDir: o.Settings.DataDir, Log: o.Log})
+			Version: o.Version, DataDir: o.Settings.DataDir, Log: o.Log,
+			Busy: func() bool { return len(p.ActiveSessions()) > 0 }, EndAll: p.EndAll,
+			OnStatus: func(st proto.UpdateStatus) {
+				p.SetUpdateLine(tray.UpdateLine(st))
+				if err := s.Send(proto.TypeUpdateStatus, st); err != nil {
+					o.Log.Debug("winsvc: update.status not sent", "state", st.State, "err", err)
+				}
+			}})
 		s = signal.New(signal.Options{
 			API:      client,
 			DeviceID: st.DeviceID,
@@ -149,7 +156,12 @@ func runConnected(ctx context.Context, o *Options, p *Proxy) error {
 				p.SetRevoked(a.RevokedClientKeys)
 				p.SetDevice(a.Device)
 				upd.HelloAcked()
-				go upd.CheckNow(ctx)
+				if a.Update.Available {
+					go upd.CheckNow(ctx, update.Trigger{})
+				}
+			},
+			OnUpdateCheck: func(m proto.UpdateCheck) {
+				go upd.CheckNow(ctx, update.Trigger{Explicit: m.Explicit, Force: m.Force})
 			},
 			OnDeviceUpdate: func(u proto.DeviceUpdate) {
 				p.SetDevice(proto.DeviceInfo{ID: st.DeviceID, Name: u.Name, AutoAccept: u.AutoAccept})
@@ -413,7 +425,9 @@ func RunHelper(o Options) error {
 		served <- Serve(r, mgr, HelperEvents{
 			OnDevice: func(d proto.DeviceInfo) { autoAccept.Store(d.AutoAccept) },
 			OnStatus: func(s ServiceStatus) {
-				pushTray(func(t *tray.State) { t.Enrolled, t.Online, t.Status = s.Enrolled, s.Online, s.Status })
+				pushTray(func(t *tray.State) {
+					t.Enrolled, t.Online, t.Status, t.Update = s.Enrolled, s.Online, s.Status, s.Update
+				})
 			},
 		})
 	}()

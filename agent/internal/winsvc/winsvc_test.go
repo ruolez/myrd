@@ -265,3 +265,27 @@ func TestProxyRestartsHelperWithStaleDeviceKey(t *testing.T) {
 		})
 	}
 }
+
+func TestStatusKeepsTheUpdateLine(t *testing.T) {
+	p := &Proxy{}
+	p.SetStatus(ServiceStatus{Enrolled: true, Status: "Connecting…"})
+	p.SetUpdateLine("Updating to 0.3.1…")
+	p.SetStatus(ServiceStatus{Enrolled: true, Online: true, Status: "Online"})
+
+	s2hR, s2hW := io.Pipe()
+	h2sR, h2sW := io.Pipe()
+	defer h2sW.Close()
+	defer s2hW.Close()
+	go p.Attach(h2sR, s2hW)
+	statuses := make(chan ServiceStatus, 1)
+	go Serve(s2hR, &fakeTarget{}, HelperEvents{OnStatus: func(s ServiceStatus) { statuses <- s }})
+	select {
+	case got := <-statuses:
+		want := ServiceStatus{Enrolled: true, Online: true, Status: "Online", Update: "Updating to 0.3.1…"}
+		if got != want {
+			t.Fatalf("replayed status %+v, want %+v", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no status replayed to the helper")
+	}
+}
