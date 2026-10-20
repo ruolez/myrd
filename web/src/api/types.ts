@@ -1,0 +1,182 @@
+// REST object shapes (docs/PROTOCOL.md §1).
+
+export type Brand<T, B extends string> = T & { readonly __brand: B };
+export type UserId = Brand<string, "UserId">;
+export type DeviceId = Brand<string, "DeviceId">;
+export type SessionId = Brand<string, "SessionId">;
+export type ClientKeyId = Brand<string, "ClientKeyId">;
+
+export type User = {
+  id: UserId;
+  email: string;
+  is_admin: boolean;
+  disabled: boolean;
+  totp_enabled: boolean;
+  has_password: boolean;
+  passkey_count: number;
+  created_at: string;
+  last_login_at: string | null;
+  device_count?: number;
+};
+
+export type Monitor = {
+  id: number;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  scale: number;
+  primary: boolean;
+};
+
+export type DeviceStatusValue = "online" | "offline" | "disabled";
+export type OS = "darwin" | "windows" | "linux";
+
+export type Device = {
+  id: DeviceId;
+  name: string;
+  hostname: string;
+  os: OS;
+  arch: string;
+  agent_version: string;
+  public_key: string;
+  status: DeviceStatusValue;
+  online: boolean;
+  busy: boolean;
+  auto_accept: boolean;
+  last_seen_at: string | null;
+  created_at: string;
+  monitors: Monitor[] | null;
+  permissions: { screen: boolean; input: boolean } | null;
+  encoder: string | null;
+  pinned_clients: { client_key_id: ClientKeyId; label: string; approved_at: string }[] | null;
+  owner_email?: string;
+};
+
+export type SessionState = "pending" | "active" | "ended" | "failed";
+export type IcePath = "host" | "srflx" | "relay";
+
+export type Session = {
+  id: SessionId;
+  device_id: DeviceId;
+  device_name: string;
+  user_id: UserId;
+  user_email: string;
+  client_key_id: ClientKeyId | null;
+  client_key_label: string | null;
+  state: SessionState;
+  created_at: string;
+  connected_at: string | null;
+  ended_at: string | null;
+  end_reason: string | null;
+  ice_path: IcePath | null;
+  bytes_sent: number;
+  bytes_recv: number;
+  client_ip: string | null;
+  agent_ip: string | null;
+  duration_s: number | null;
+};
+
+export type AuditEvent = {
+  id: number;
+  ts: string;
+  actor: "user" | "agent" | "admin" | "system";
+  event: string;
+  user_id: UserId | null;
+  user_email: string | null;
+  device_id: DeviceId | null;
+  device_name: string | null;
+  session_id: SessionId | null;
+  ip: string | null;
+  meta: Record<string, unknown> | null;
+};
+
+export type ClientKey = {
+  id: ClientKeyId;
+  label: string;
+  public_key: string;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+};
+
+export type Passkey = {
+  id: string;
+  name: string;
+  created_at: string;
+  last_used_at: string | null;
+  transports: string[] | null;
+};
+
+export type LoginSession = {
+  id: string;
+  ip: string | null;
+  user_agent: string | null;
+  created_at: string;
+  last_seen_at: string | null;
+  expires_at: string;
+  current: boolean;
+};
+
+export type Release = {
+  id: string;
+  version: string;
+  os: OS;
+  arch: string;
+  url: string;
+  sha256: string;
+  signature: string;
+  rollout_pct: number;
+  published_at: string | null;
+  created_at: string;
+};
+
+export type Page<T> = { items: T[]; next_before: string | null };
+
+export type AppConfig = {
+  product_name: string;
+  version: string;
+  signup_allowed: boolean;
+  webauthn: { rp_id: string; origin: string };
+  downloads: { macos: string | null; windows: string | null };
+};
+
+export type AdminOverview = {
+  server: {
+    version: string;
+    started_at: string;
+    uptime_s: number;
+    go_version: string;
+    db_ok: boolean;
+  };
+  users: { total: number; admins: number; disabled: number };
+  devices: {
+    total: number;
+    online: number;
+    disabled: number;
+    by_os: Partial<Record<OS, number>>;
+  };
+  sessions: {
+    active: number;
+    pending: number;
+    today: number;
+    relay_share_24h: number;
+    avg_duration_s_24h: number;
+    by_path_24h: Partial<Record<IcePath, number>>;
+    failed_24h: number;
+  };
+  ws: { agents: number; browsers: number; reconnects_per_min: number };
+  series: { hour: string; sessions: number; relay: number; failed: number }[];
+  recent_audit: AuditEvent[];
+};
+
+export type AdminSettings = {
+  signup_allowed: boolean;
+  default_auto_accept: boolean;
+  max_session_hours: number;
+  download_macos_url: string;
+  download_windows_url: string;
+};
+
+export type ICEServer = { urls: string[]; username?: string; credential?: string };

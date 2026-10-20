@@ -1,0 +1,49 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 3s --health-timeout 3s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://postgres:test@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - name: proto
+        run: cd proto && go vet ./... && go test ./...
+      - name: server
+        run: cd server && go vet ./... && go test -race ./...
+      - name: agent (pure Go, no cgo)
+        run: cd agent && CGO_ENABLED=0 go vet ./... && CGO_ENABLED=0 go test ./...
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: cd web && npm ci && npm run lint && npm test && npm run build
+
+  images:
+    runs-on: ubuntu-latest
+    needs: [go, web]
+    steps:
+      - uses: actions/checkout@v4
+      - run: printf 'POSTGRES_PASSWORD=x\nJWT_SECRET=x\nTURN_SECRET=x\nTOTP_ENC_KEY=x\nADMIN_INITIAL_PASSWORD=x\n' > .env
+      - run: docker compose --profile demo build

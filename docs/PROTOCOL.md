@@ -1,0 +1,267 @@
+# remotectl protocol contract (v1)
+
+Source-of-truth companions:
+- Go wire types: `proto/messages.go`, signing helpers: `proto/fingerprint.go`
+- Native ABI: `native/include/rc_native.h`, Go side: `agent/internal/platform/platform.go`
+- Byte-exact test vectors: `docs/test-vectors.json` (both the web encoder and the agent decoder MUST pass them)
+
+Everything lives under one origin. In dev that is `http://localhost:5560` (Caddy). Caddy serves the SPA and proxies `/v1/*` to the API (`api:8080`).
+
+---
+
+## 1. Conventions (REST)
+
+- JSON in and out, `Content-Type: application/json`. State-changing requests are `POST/PATCH/PUT/DELETE` only; no state-changing GET.
+- Browser auth: cookie `rc_session` (32 random bytes, base64url; server stores SHA-256). `HttpOnly; SameSite=Strict; Path=/`; `Secure` when `PUBLIC_URL` is https. Login sessions last 30 days sliding.
+- CSRF: SameSite=Strict + the server rejects state-changing requests whose `Origin` header is present and not equal to `PUBLIC_URL`.
+- Agent auth: `Authorization: Bearer <jwt>` (HS256, claims `sub`=device_id, `typ`="agent", `exp` = now+10 min).
+- Errors: HTTP status + `{"error":{"code":"<code>","message":"<human text>"}}`. Codes: `bad_request`, `unauthorized`, `forbidden`, `not_found`, `conflict`, `rate_limited`, `totp_required`, `invalid_credentials`, `internal`.
+- Timestamps RFC3339 (UTC). IDs are UUIDv4 strings. `null` for absent optional values.
+- Lists: `{"items":[...], "next_before": "<cursor>|null"}`; query `?limit=50&before=<cursor>` (cursor = opaque string from the previous page).
+
+### Objects
+
+```jsonc
+User      { "id","email","is_admin":bool,"disabled":bool,"totp_enabled":bool,"has_password":bool,
+            "passkey_count":int,"created_at","last_login_at":ts|null }
+Device    { "id","name","hostname","os":"darwin|windows|linux","arch","agent_version",
+            "public_key":"<b64 raw ed25519>","status":"online|offline|disabled",
+            "online":bool,"busy":bool,            // busy = has a pending/active session
+            "auto_accept":bool,"last_seen_at":ts|null,"created_at",
+            "monitors":[Monitor],"permissions":{"screen":bool,"input":bool},"encoder":"x264|videotoolbox|mf-hw|..."|null,
+            "pinned_clients":[{"client_key_id","label","approved_at"}] }   // informational mirror
+Monitor   { "id":int,"name","x","y","width","height","scale":float,"primary":bool }
+Session   { "id","device_id","device_name","user_id","user_email","client_key_id","client_key_label",
+            "state":"pending|active|ended|failed","created_at","connected_at","ended_at","end_reason",
+            "ice_path":"host|srflx|relay"|null,"bytes_sent","bytes_recv","client_ip","agent_ip","duration_s":int|null }
+AuditEvent{ "id":int,"ts","actor":"user|agent|admin|system","event","user_id","user_email",
+            "device_id","device_name","session_id","ip","meta":{} }
+ClientKey { "id","label","public_key":"<b64 SPKI>","created_at","last_used_at","revoked_at" }
+Passkey   { "id","name","created_at","last_used_at","transports":[string] }
+LoginSession { "id","ip","user_agent","created_at","last_seen_at","expires_at","current":bool }
+Release   { "id","version","os","arch","url","sha256","signature","rollout_pct":0..100,"published_at":ts|null,"created_at" }
+```
+
+## 2. REST endpoints
+
+### Public
+| Method | Path | Body → Response |
+|---|---|---|
+| GET | `/healthz` (via Caddy also `/v1/healthz`) | `{"ok":true,"db":true}` |
+| GET | `/v1/config` | `{"product_name":"remotectl","version","signup_allowed":bool,"webauthn":{"rp_id","origin"},"downloads":{"macos":url\|null,"windows":url\|null}}` |
+
+### Auth
+| Method | Path | Body → Response |
+|---|---|---|
+| POST | `/v1/auth/signup` | `{email,password}` → `{user}` + cookie. 403 unless signup allowed. |
+| POST | `/v1/auth/login` | `{email,password}` → `{user}` + cookie, **or** `{"totp_required":true,"ticket":"..."}` (ticket TTL 5 min) |
+| POST | `/v1/auth/login/totp` | `{ticket,code}` → `{user}` + cookie |
+| POST | `/v1/auth/passkey/begin` | `{}` → `{ticket, publicKey: <PublicKeyCredentialRequestOptions JSON, base64url buffers>}` (discoverable login) |
+| POST | `/v1/auth/passkey/finish` | `{ticket, credential: <PublicKeyCredential JSON (toJSON form)>}` → `{user}` + cookie |
+| POST | `/v1/auth/logout` | → `{}` |
+| GET | `/v1/auth/me` | → `{user}` or 401 |
+
+Rate limit: 10 failed attempts / 15 min per IP and per email → 429.
+
+### Account (logged in)
+| Method | Path | Body → Response |
+|---|---|---|
+| POST | `/v1/account/password` | `{current_password\|null, new_password}` → `{}` (min 10 chars) |
+| GET | `/v1/account/passkeys` | → `{items:[Passkey]}` |
+| POST | `/v1/account/passkeys/begin` | `{}` → `{ticket, publicKey:<CredentialCreationOptions JSON>}` (resident key required, UV preferred) |
+| POST | `/v1/account/passkeys/finish` | `{ticket, name, credential}` → `{passkey}` |
+| DELETE | `/v1/account/passkeys/{id}` | → `{}` (refused if it would leave the account with no password and no passkey) |
+| POST | `/v1/account/totp/setup` | `{}` → `{secret, otpauth_url, qr_png: "data:image/png;base64,..."}` (pending until enabled) |
+| POST | `/v1/account/totp/enable` | `{code}` → `{}` |
+| POST | `/v1/account/totp/disable` | `{code}` → `{}` |
+| GET | `/v1/account/sessions` | → `{items:[LoginSession]}` |
+| DELETE | `/v1/account/sessions/{id}` | → `{}` |
+
+### Client keys (browser signing keys)
+| Method | Path | Body → Response |
+|---|---|---|
+| GET | `/v1/client-keys` | → `{items:[ClientKey]}` |
+| POST | `/v1/client-keys` | `{public_key: b64 SPKI P-256, label}` → `{client_key}` (idempotent on public_key for the same user) |
+| DELETE | `/v1/client-keys/{id}` | revoke → `{}`; server pushes `client_key.revoked` to the user's online agents |
+
+### Devices
+| Method | Path | Body → Response |
+|---|---|---|
+| GET | `/v1/devices` | → `{items:[Device]}` (only the caller's) |
+| GET | `/v1/devices/{id}` | → `{device}` |
+| PATCH | `/v1/devices/{id}` | `{name?, auto_accept?}` → `{device}`; pushes `device.update` to the agent |
+| DELETE | `/v1/devices/{id}` | → `{}`; marks removed, closes its socket, agent auth refused afterwards |
+| POST | `/v1/enroll-tokens` | `{}` → `{token:"XXXX-XXXX", expires_at}` (charset `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`, 15 min, single use, stored hashed) |
+| GET | `/v1/sessions?device_id=&limit=&before=` | → paged `Session` |
+| GET | `/v1/audit?device_id=&limit=&before=` | → paged `AuditEvent` for the caller |
+
+### Agent
+| Method | Path | Body → Response |
+|---|---|---|
+| POST | `/v1/agent/enroll` | `{token, public_key:<b64 raw ed25519>, hostname, os, arch, version}` → `{device_id, name}` (name defaults to hostname) |
+| POST | `/v1/agent/challenge` | `{device_id}` → `{nonce}` (b64 32 bytes, TTL 60 s, single use) |
+| POST | `/v1/agent/auth` | `{device_id, nonce, signature}` → `{token, expires_at}`; signature = Ed25519 over `proto.AuthChallengeMessage`. 403 `{"error":{"code":"device_removed"\|"device_disabled"}}` |
+| GET | `/v1/agent/ws` | WebSocket, Bearer JWT. One socket per device (a new one replaces the old). |
+| GET | `/v1/agent/update?os=&arch=&version=` | Bearer. 204 when nothing newer; else `{version,os,arch,url,sha256,signature,rollout_pct}`. Signature = Ed25519 (offline release key) over `proto.ReleaseManifestMessage`. The agent applies `rollout_pct`: bucket = big-endian uint32 of first 4 bytes of `sha256(device_id)` mod 100; update iff bucket < rollout_pct. |
+| DELETE | `/v1/agent/self` | Bearer → `{}`; device marked removed (uninstall). |
+
+### Admin (`is_admin` only; 403 otherwise; every mutation audited with actor `admin`)
+| Method | Path | Body → Response |
+|---|---|---|
+| GET | `/v1/admin/overview` | see below |
+| GET | `/v1/admin/users?q=&limit=&before=` | paged `User` (+ `device_count`) |
+| POST | `/v1/admin/users` | `{email,password,is_admin}` → `{user}` |
+| PATCH | `/v1/admin/users/{id}` | `{is_admin?, disabled?}` → `{user}` (disabling revokes login sessions, ends its live sessions). An admin cannot demote/disable themselves. |
+| POST | `/v1/admin/users/{id}/password` | `{password}` → `{}` |
+| POST | `/v1/admin/users/{id}/reset-mfa` | → `{}` (clears TOTP) |
+| POST | `/v1/admin/users/{id}/logout` | → `{}` (revokes login sessions) |
+| DELETE | `/v1/admin/users/{id}` | → `{}` |
+| GET | `/v1/admin/devices?q=&status=&limit=&before=` | paged `Device` + `owner_email` |
+| PATCH | `/v1/admin/devices/{id}` | `{disabled: bool}` → `{device}` (disable closes its socket + ends sessions) |
+| DELETE | `/v1/admin/devices/{id}` | → `{}` |
+| GET | `/v1/admin/sessions?state=&limit=&before=` | paged `Session` |
+| POST | `/v1/admin/sessions/{id}/end` | → `{}` (sends `session.end` reason `admin_terminated` to both ends) |
+| GET | `/v1/admin/audit?user_id=&device_id=&event=&actor=&limit=&before=` | paged `AuditEvent` |
+| GET | `/v1/admin/releases` | `{items:[Release]}` |
+| POST | `/v1/admin/releases` | `{version,os,arch,url,sha256,signature,rollout_pct}` → `{release}`; signature verified against `RELEASE_PUBLIC_KEY` when set |
+| PATCH | `/v1/admin/releases/{id}` | `{rollout_pct?, published?:bool}` → `{release}` |
+| DELETE | `/v1/admin/releases/{id}` | → `{}` |
+| GET / PUT | `/v1/admin/settings` | `{signup_allowed:bool, default_auto_accept:bool, max_session_hours:int, download_macos_url, download_windows_url}` |
+
+`GET /v1/admin/overview` →
+```jsonc
+{ "server": {"version","started_at","uptime_s","go_version","db_ok":bool},
+  "users": {"total","admins","disabled"},
+  "devices": {"total","online","disabled","by_os":{"darwin":n,"windows":n,"linux":n}},
+  "sessions": {"active","pending","today","relay_share_24h":0..1,"avg_duration_s_24h","by_path_24h":{"host":n,"srflx":n,"relay":n},
+               "failed_24h":n},
+  "ws": {"agents":n,"browsers":n,"reconnects_per_min":float},
+  "series": [{"hour":ts,"sessions":n,"relay":n,"failed":n}],      // last 24 hours, oldest first, 24 entries
+  "recent_audit": [AuditEvent]                                    // latest 15
+}
+```
+
+Prometheus text metrics at `GET /metrics` on the API's internal listener `:9090` (not proxied by Caddy): `remotectl_agents_online`, `remotectl_browsers_connected`, `remotectl_sessions_active`, `remotectl_sessions_total{path,result}`, `remotectl_ws_reconnects_total`, `remotectl_signaling_latency_seconds` (histogram), `remotectl_db_pool_conns`.
+
+## 3. Signaling WebSocket
+
+- Browser: `GET /v1/ws` with the cookie. Server checks `Origin == PUBLIC_URL`. Max 5 per user.
+- Agent: `GET /v1/agent/ws` with Bearer JWT.
+- Every message is a JSON object with `"v":1` and `"type"`. Max 64 KB (larger → close 1009). Max 20 msg/s per connection (excess → `error` `rate_limited`, sustained → close).
+- Keepalive: server sends WS-level pings every 25 s; two misses = dead. Clients may also send `{"type":"ping","ts"}` and get `{"type":"pong","ts"}`.
+- Close codes: 4001 unauthorized, 4003 device disabled/removed, 4008 replaced by newer connection.
+- Agent reconnect: jittered backoff 1 s → 30 s (full jitter), reset after 60 s connected.
+
+### Session sequence
+
+```
+Browser                         Server                              Agent
+ ── session.create{req,device_id,client_key_id,force_relay} ─▶
+                                checks owner / online / not busy / key not revoked
+                                inserts sessions(state=pending), audit session.created
+ ◀─ session.created{req,session_id,ice_servers,device{id,name,public_key}}
+ ── session.offer{session_id,sdp,fp_sig} ─▶
+                                adds client_key, user, ice_servers(agent creds)
+                                ─────────── session.offer{...} ────────────────▶
+                                                                     verify fp_sig over offer fingerprint
+                                                                     pinned? auto_accept? else prompt on device
+                                ◀── session.status{awaiting_approval} ─────────
+ ◀─ session.status ───
+                                ◀── session.answer{session_id,sdp,fp_sig} ─────
+ ◀─ session.answer ── verify device sig with pinned device key (TOFU)
+ ◀─▶ ice.candidate (trickled both ways, forwarded verbatim; agent buffers until the offer is applied)
+                                ◀── session.state{connected:true,path,...} ────
+                                sessions.state=active, ice_path, IPs; audit session.connected
+ ◀─ session.state ───
+ ── session.end{reason} ─▶   (either side)  ─── session.end ───▶
+                                state=ended, end_reason, bytes; audit session.ended
+```
+
+Rules:
+- One pending/active session per device (`device_busy` otherwise).
+- Pending sessions not active within 90 s → `failed` / `timeout`, `session.end` to both.
+- A second `session.offer` for an **active** session is an ICE restart; the server forwards it, the agent renegotiates on the existing peer connection (same fingerprint checks).
+- Browser socket closes → its pending/active sessions get `session.end{peer_disconnected}` to the agent **only for pending** sessions; active P2P sessions continue (the media path does not need the server). The agent ends the session itself when ICE fails.
+- Agent socket closes → pending sessions fail (`device_offline`). Active sessions are kept; on reconnect the agent's `hello.active_sessions` reconciles: any active row for that device not listed is ended `peer_disconnected`.
+- Server boot: every `pending` row → `failed/server_restart`; `active` rows survive until reconciled by the agent's next `hello` (or ended after 2 min if the device never returns).
+- Session `max_session_hours` (admin setting) enforced by the server sending `session.end{timeout}`.
+- Server writes audit: `session.created`, `session.connected` (meta: path, client_ip, agent_ip, local/remote candidate), `session.ended` (meta: reason, duration_s, bytes), `session.failed`, `input.rejected` (when reason = `input_abuse`).
+- Server→agent `session.offer` carries `ice_servers` minted for the agent (separate TURN username), `client_key` and `user`.
+- TURN credentials: coturn REST scheme — `username = "<unix_expiry>:<session_id>:<b|a>"`, `credential = base64(HMAC-SHA1(TURN_SECRET, username))`, TTL ≤ 2 h. URLs from `TURN_URLS` (browser) and `TURN_URLS_AGENT` (agent; defaults to `TURN_URLS`). STUN URL included as a separate entry without credentials. `force_relay` is passed back unchanged so the browser sets `iceTransportPolicy:"relay"`.
+
+### Agent extras
+- `hello` → `hello_ack{server_time, device{id,name,auto_accept}, update{available,version}, revoked_client_keys:[spki b64]}`. The agent drops revoked keys from its pinned list.
+- `permissions{permissions}` whenever TCC state changes; `pins.sync{pinned_client_keys}` after any pin change.
+- `token.renew{}` → `token{token,expires_at}` (the agent keeps it for the next reconnect).
+- Server pushes `device.update{name,auto_accept}`, `client_key.revoked{public_key}`.
+
+### Browser extras
+- Server pushes `device.status{device_id,online,status,last_seen_at}` to all of the owner's browser sockets on connect/disconnect/disable/remove.
+
+## 4. End-to-end trust (DTLS fingerprint signing)
+
+- Fingerprint = the first `a=fingerprint:sha-256 XX:XX…` value of the **local** SDP, uppercased.
+- Signed message (UTF-8): `"remotectl-fp-v1\n" + session_id + "\n" + role + "\n" + FINGERPRINT`, role ∈ `offer` (browser) | `answer` (agent). (`proto.FingerprintMessage`)
+- Browser: non-extractable ECDSA P-256 key in WebCrypto, stored in IndexedDB per user id (`remotectl` DB, store `client_keys`, key = user id). Public half exported as SPKI DER → base64 → `POST /v1/client-keys`. Signature: `ECDSA {hash:SHA-256}` → 64-byte P1363 → base64 std.
+- Agent: Ed25519 device key → 64-byte sig → base64 std.
+- Each side recomputes the fingerprint from the **remote** SDP it received and verifies the remote's signature over it. Mismatch → `session.end{bad_signature}`, nothing is connected.
+- Browser pins `device.public_key` per device id in IndexedDB store `device_pins` on first session; a different key later → hard warning screen; the user may explicitly re-trust.
+- Agent pins client keys by `sha256(SPKI DER)` hex in its local store (authoritative). Unknown key → device prompt "Allow this new browser: <label>, first seen <created_at>? (user <email>)" with Deny / Allow once / Allow and remember. Pinned key + `auto_accept` → no prompt; pinned + !auto_accept → light prompt "Allow session from <label>?". Prompt timeout 60 s → `not_approved`.
+
+## 5. Data channels
+
+The browser creates the offer with one `recvonly` video transceiver (H.264 preferred: packetization-mode=1, profile 42e01f/4d001f/640c1f) and three data channels (exact labels):
+
+| label | options | direction |
+|---|---|---|
+| `input` | ordered, reliable | browser → agent, binary |
+| `cursor` | `ordered:false, maxRetransmits:0` | agent → browser, binary |
+| `control` | ordered, reliable | both; JSON text + binary clipboard frames |
+
+### `input` (binary, little-endian, first byte = type)
+
+| type | name | layout after the type byte | total |
+|---|---|---|---|
+| `0x01` | MouseMove | `x u16, y u16, monitor u8` (normalized 0..65535 of the monitor's content box) | 6 |
+| `0x06` | MouseMoveRel | `dx i16, dy i16` (Pointer Lock) | 5 |
+| `0x02` | MouseButton | `button u8 (0 L,1 R,2 M,3 back,4 fwd), down u8 (0/1)` | 3 |
+| `0x03` | MouseWheel | `dx i16, dy i16` pixels, DOM sign (dy>0 = scroll down) | 5 |
+| `0x04` | Key | `usage u16 (HID page 0x07 usage), down u8, mods u8 (HID modifier byte)` | 5 |
+| `0x05` | Text | UTF-8 bytes, 1..1024 | 2..1025 |
+| `0x10` | ClipboardBegin | `xfer u16, mime u8 (1 text/plain;utf-8, 2 image/png), total u32` (total ≤ 1 MiB) | 8 |
+| `0x11` | ClipboardData | `xfer u16, bytes (1..16384)`; complete when `total` bytes received | 4..16387 |
+| `0x20` | Control | `op u8, arg u8`: op 1 select monitor (arg = monitor index in `hello.monitors`), 2 request keyframe, 3 set quality tier (0 background 5 fps, 1 balanced 30 fps, 2 high 60 fps), 4 release all keys | 3 |
+
+HID modifier byte: bit0 LCtrl, bit1 LShift, bit2 LAlt, bit3 LGUI, bit4 RCtrl, bit5 RShift, bit6 RAlt, bit7 RGUI. The agent tracks pressed keys itself and releases every pressed key on session end, on `0x20 op 4`, and on blur-triggered release from the browser.
+
+Validation on the agent: wrong length, unknown type, button > 4, monitor out of range, usage not in the keymap, text > 1024 or invalid UTF-8, clipboard over size, unknown xfer → message dropped and the session's abuse counter incremented; > 200 rejects in a session → `session.end{input_abuse}`.
+
+### `cursor` (agent → browser)
+
+| type | name | layout | total |
+|---|---|---|---|
+| `0x30` | CursorShape | `id u32, w u16, h u16, hot_x u16, hot_y u16, png bytes` | 13 + png |
+| `0x31` | CursorPos | `x u16, y u16, visible u8` (normalized; up to 120 Hz) | 6 |
+
+Shapes are sent on change; the browser caches by id (re-send of a known id with zero-length png means "use cached").
+
+### `control`
+
+JSON text messages, `{"t": "...", ...}`:
+
+| t | dir | fields |
+|---|---|---|
+| `hello` | A→B on open | `monitors:[Monitor]`, `active:index`, `encoder`, `codec:"h264"`, `fps`, `permissions:{screen,input}`, `agent_version`, `os` |
+| `monitor` | A→B | `active:index`, `width`, `height` (after a switch) |
+| `ping` | B→A | `id`, `ts` (ms, browser clock) |
+| `pong` | A→B | `id`, `ts` (echo) |
+| `stats` | A→B every 2 s | `bitrate_kbps`, `fps`, `encoder`, `width`, `height`, `keyframes` |
+| `error` | A→B | `code` (`permission_missing`, `capture_failed`, `encoder_failed`), `detail` |
+| `bye` | A→B | `reason` (just before closing) |
+
+Binary frames on `control` (A→B) carry the remote clipboard using the same `0x10`/`0x11` encoding as `input`.
+
+## 6. Agent device-local surfaces
+
+- macOS/Windows: tray icon (red during a session) with Pause / End session (kill switch) / Quit, native border overlay, native consent prompt.
+- Linux Docker demo device: a local "device console" web page (port 5562 on the host) stands in for the physical screen: enrollment token entry, consent prompts, kill switch, pinned browsers list, session indicator.

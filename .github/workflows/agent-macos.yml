@@ -1,0 +1,84 @@
+name: agent-macos
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths: ["agent/**", "proto/**", "native/**", "packaging/macos/**", ".github/workflows/agent-macos.yml"]
+  pull_request:
+    paths: ["agent/**", "proto/**", "native/**", "packaging/macos/**", ".github/workflows/agent-macos.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    env:
+      GO: go
+      UNIVERSAL: "1"
+      HAS_CERTS: ${{ secrets.MACOS_CERTS_P12 != '' }}
+      HAS_NOTARY: ${{ secrets.NOTARY_KEY_P8 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+
+      - name: Version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF#refs/tags/v}"; else v="0.0.0-${GITHUB_SHA::8}"; fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+
+      - name: "Native library (universal)"
+        run: |
+          UNIVERSAL=1 native/macos/build.sh
+          lipo -info native/macos/build/librcnative.a
+
+      - name: Go tests (darwin)
+        working-directory: agent
+        run: CGO_ENABLED=1 go test ./internal/keymap/... ./internal/tray/... ./internal/identity/...
+
+      - name: Import signing certificates
+        if: env.HAS_CERTS == 'true'
+        env:
+          CERTS_P12: ${{ secrets.MACOS_CERTS_P12 }}
+          CERTS_PASSWORD: ${{ secrets.MACOS_CERTS_PASSWORD }}
+        run: |
+          KC="$RUNNER_TEMP/build.keychain-db"
+          KCPW="$(openssl rand -hex 16)"
+          echo "$CERTS_P12" | base64 --decode > "$RUNNER_TEMP/certs.p12"
+          security create-keychain -p "$KCPW" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KCPW" "$KC"
+          security import "$RUNNER_TEMP/certs.p12" -k "$KC" -P "$CERTS_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productbuild
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPW" "$KC"
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/certs.p12"
+
+      - name: Notary API key
+        if: env.HAS_NOTARY == 'true'
+        env:
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+        run: |
+          echo "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          echo "NOTARY_KEY_PATH=$RUNNER_TEMP/notary.p8" >> "$GITHUB_ENV"
+
+      - name: Build RemoteAgent.app (universal)
+        env:
+          DEVELOPER_ID_APP: ${{ secrets.DEVELOPER_ID_APP }}
+          RELEASE_PUBLIC_KEY: ${{ vars.RELEASE_PUBLIC_KEY }}
+        run: packaging/macos/build-app.sh
+
+      - name: Build pkg (signed + notarized when secrets exist)
+        env:
+          SERVER_URL: ${{ vars.SERVER_URL || 'https://remote.example.com' }}
+          DEVELOPER_ID_INSTALLER: ${{ secrets.DEVELOPER_ID_INSTALLER }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+        run: packaging/macos/build-pkg.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: remote-agent-macos-${{ env.VERSION }}
+          path: dist/macos/*.pkg

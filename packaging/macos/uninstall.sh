@@ -1,0 +1,31 @@
+#!/bin/sh
+# Removes the agent: unloads the LaunchAgent, deregisters the device
+# (DELETE /v1/agent/self), deletes the Keychain item, app and data.
+# Shipped as RemoteAgent.app/Contents/Resources/uninstall.sh; needs root
+# (re-launches itself through an admin prompt when started from the tray).
+LABEL="com.remotectl.agent"
+APP="/Applications/RemoteAgent.app"
+BIN="$APP/Contents/MacOS/remote-agent"
+
+if [ "$(id -u)" != "0" ]; then
+  if [ -t 0 ]; then exec sudo "$0" "$@"; fi
+  exec osascript -e "do shell script quoted form of \"$0\" with administrator privileges"
+fi
+
+user=$(stat -f %Su /dev/console)
+if [ -n "$user" ] && [ "$user" != "root" ]; then
+  uid=$(id -u "$user")
+  home=$(dscl . -read "/Users/$user" NFSHomeDirectory | awk '{print $2}')
+  launchctl bootout "gui/$uid/$LABEL" 2>/dev/null || true
+  if [ -x "$BIN" ]; then
+    launchctl asuser "$uid" sudo -u "$user" "$BIN" uninstall || echo "server deregistration failed (continuing)"
+  fi
+  launchctl asuser "$uid" sudo -u "$user" security delete-generic-password -s "$LABEL" -a device-key >/dev/null 2>&1 || true
+  rm -rf "$home/Library/Application Support/RemoteAgent"
+fi
+
+rm -f "/Library/LaunchAgents/$LABEL.plist"
+rm -rf "$APP"
+defaults delete "/Library/Preferences/$LABEL" 2>/dev/null || true
+pkgutil --forget "$LABEL.pkg" >/dev/null 2>&1 || true
+echo "RemoteAgent removed."

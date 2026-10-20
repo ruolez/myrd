@@ -1,0 +1,49 @@
+# remotectl edge: serves the SPA and proxies the API (REST + signaling WebSocket).
+# SITE_ADDRESS=":5560" serves plain HTTP for local dev (localhost is a secure
+# context, so WebCrypto and passkeys work). Set it to a domain in production
+# for automatic TLS, HTTP/2 and HTTP/3.
+{
+	admin off
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+{$SITE_ADDRESS::5560} {
+	encode zstd gzip
+
+	header {
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' ws://{http.request.hostport} wss://{http.request.hostport}; font-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+		Cross-Origin-Opener-Policy "same-origin"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		Permissions-Policy "keyboard-map=(self), clipboard-read=(self), clipboard-write=(self), fullscreen=(self), publickey-credentials-get=(self), publickey-credentials-create=(self), camera=(), microphone=(), geolocation=(), payment=()"
+		-Server
+	}
+
+	@https protocol https
+	header @https Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+	@api path /v1/* /healthz
+	handle @api {
+		reverse_proxy api:8080 {
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	handle {
+		root * /srv
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		@app not path /assets/*
+		header @app Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

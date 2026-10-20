@@ -1,0 +1,32 @@
+# Cross build of librcnative.a with mingw-w64 (used by xbuild.sh / CI smoke).
+# The release build uses CMakeLists.txt with MSVC (adds the WGC path).
+# make's built-in CXX/AR defaults (g++/ar) are the host tools; replace them
+# unless set on the command line or in the environment.
+ifneq ($(filter default undefined,$(origin CXX)),)
+CXX := x86_64-w64-mingw32-g++
+endif
+ifneq ($(filter default undefined,$(origin AR)),)
+AR := x86_64-w64-mingw32-ar
+endif
+CXXFLAGS ?= -O2 -g0
+CXXFLAGS += -std=c++17 -Wall -Wno-unknown-pragmas -Wno-missing-braces -DUNICODE -D_UNICODE \
+            -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -fno-exceptions
+SRC  := $(wildcard src/*.cpp)
+OBJ  := $(patsubst src/%.cpp,build/obj/%.o,$(SRC))
+LIB  := build/librcnative.a
+
+all: $(LIB)
+
+build/obj/%.o: src/%.cpp src/rc_win.h ../include/rc_native.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(LIB): $(OBJ)
+	@mkdir -p build
+	rm -f $@
+	$(AR) rcs $@ $^
+
+clean:
+	rm -rf build
+
+.PHONY: all clean

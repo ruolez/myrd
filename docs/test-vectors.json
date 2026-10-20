@@ -1,0 +1,36 @@
+{
+  "input": [
+    { "name": "mouse move abs", "event": { "type": "move", "x": 32768, "y": 16384, "monitor": 1 }, "hex": "010080004001" },
+    { "name": "mouse move rel", "event": { "type": "move_rel", "dx": -5, "dy": 10 }, "hex": "06fbff0a00" },
+    { "name": "right button down", "event": { "type": "button", "button": 1, "down": true }, "hex": "020101" },
+    { "name": "left button up", "event": { "type": "button", "button": 0, "down": false }, "hex": "020000" },
+    { "name": "wheel up 120px", "event": { "type": "wheel", "dx": 0, "dy": -120 }, "hex": "03000088ff" },
+    { "name": "key A down with LShift", "event": { "type": "key", "usage": 4, "down": true, "mods": 2 }, "hex": "0404000102" },
+    { "name": "key Enter up", "event": { "type": "key", "usage": 40, "down": false, "mods": 0 }, "hex": "0428000000" },
+    { "name": "text h-e-acute", "event": { "type": "text", "text": "hé" }, "hex": "0568c3a9" },
+    { "name": "clipboard begin", "event": { "type": "clip_begin", "xfer": 7, "mime": 1, "total": 5 }, "hex": "1007000105000000" },
+    { "name": "clipboard data", "event": { "type": "clip_data", "xfer": 7, "text": "hello" }, "hex": "11070068656c6c6f" },
+    { "name": "select monitor 2", "event": { "type": "control", "op": 1, "arg": 2 }, "hex": "200102" },
+    { "name": "request keyframe", "event": { "type": "control", "op": 2, "arg": 0 }, "hex": "200200" },
+    { "name": "quality background", "event": { "type": "control", "op": 3, "arg": 0 }, "hex": "200300" },
+    { "name": "release all keys", "event": { "type": "control", "op": 4, "arg": 0 }, "hex": "200400" }
+  ],
+  "input_invalid": [
+    { "name": "truncated move", "hex": "0100800040" },
+    { "name": "unknown type", "hex": "7f00" },
+    { "name": "button out of range", "hex": "020901" },
+    { "name": "empty", "hex": "" },
+    { "name": "text empty", "hex": "05" },
+    { "name": "text invalid utf8", "hex": "05ff" }
+  ],
+  "cursor": [
+    { "name": "cursor pos", "event": { "type": "pos", "x": 100, "y": 200, "visible": true }, "hex": "316400c80001" },
+    { "name": "cursor shape header (png bytes 89504e47)", "event": { "type": "shape", "id": 9, "w": 2, "h": 1, "hot_x": 0, "hot_y": 0, "png_hex": "89504e47" }, "hex": "3009000000020001000000000089504e47" }
+  ],
+  "fingerprint_message": [
+    { "session_id": "3f0c6c1e-6c55-4c3a-9a39-0a3f8d0e2b11", "role": "offer", "fingerprint": "ab:cd:ef", "utf8": "remotectl-fp-v1\n3f0c6c1e-6c55-4c3a-9a39-0a3f8d0e2b11\noffer\nAB:CD:EF" }
+  ],
+  "rollout_bucket": [
+    { "device_id": "00000000-0000-4000-8000-000000000000", "note": "bucket = uint32_be(sha256(device_id)[0:4]) % 100; compute in tests, do not hardcode" }
+  ]
+}

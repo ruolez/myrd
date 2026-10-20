@@ -1,0 +1,446 @@
+package winsvc
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
+
+	"github.com/ruolez/remotectl/agent/internal/api"
+	"github.com/ruolez/remotectl/agent/internal/config"
+	"github.com/ruolez/remotectl/agent/internal/identity"
+	"github.com/ruolez/remotectl/agent/internal/pins"
+	"github.com/ruolez/remotectl/agent/internal/platform"
+	"github.com/ruolez/remotectl/agent/internal/session"
+	"github.com/ruolez/remotectl/agent/internal/signal"
+	"github.com/ruolez/remotectl/agent/internal/tray"
+	"github.com/ruolez/remotectl/agent/internal/update"
+	"github.com/ruolez/remotectl/proto"
+)
+
+// regKey is written by the MSI (EnrollToken, ServerURL).
+const regKey = `SOFTWARE\RemoteAgent`
+
+// Options shared by the service and the helper.
+type Options struct {
+	Settings      config.Settings
+	Version       string
+	ReleasePubKey string // Ed25519, base64; verifies update manifests
+	Log           *slog.Logger
+	PinsPath      string                  // default <data dir>/pinned-clients.json (same as internal/agent)
+	NewBackend    func() platform.Backend // helper only
+}
+
+func (o *Options) defaults() {
+	if o.Log == nil {
+		o.Log = slog.Default()
+	}
+	if o.PinsPath == "" {
+		o.PinsPath = filepath.Join(o.Settings.DataDir, "pinned-clients.json")
+	}
+}
+
+// ---------------------------------------------------------------- service
+
+// ServiceCore returns the Core run by the LocalSystem service: enroll (from
+// the MSI's one-time registry token), then keep the signaling socket up with
+// the Proxy as its session handler.
+func ServiceCore(o Options) Core {
+	o.defaults()
+	return func(ctx context.Context, p *Proxy) error {
+		for ctx.Err() == nil {
+			err := runConnected(ctx, &o, p)
+			if ctx.Err() != nil {
+				break
+			}
+			switch {
+			case api.IsCode(err, "device_removed", "not_found"):
+				// Same as internal/agent: forget the identity and wait for a new token.
+				o.Log.Warn("winsvc: device removed on the server; returning to enrollment")
+				config.Remove(o.Settings.DataDir)
+				identity.Default(o.Settings.DataDir).Delete()
+				o.Settings.EnrollToken = ""
+				p.SetStatus(ServiceStatus{Status: "Removed — waiting for enrollment"})
+			default:
+				o.Log.Warn("winsvc: refused by server; retrying in 5 minutes", "err", err)
+				select {
+				case <-ctx.Done():
+				case <-time.After(5 * time.Minute):
+				}
+			}
+		}
+		return nil
+	}
+}
+
+func runConnected(ctx context.Context, o *Options, p *Proxy) error {
+	{
+		st, key, err := ensureEnrolled(ctx, o)
+		if err != nil {
+			return err
+		}
+		client := api.New(st.ServerURL)
+
+		// Capabilities come from the helper; give it a moment so the first
+		// hello carries real monitors and encoder.
+		capsReady := make(chan struct{})
+		var capsOnce sync.Once
+		var sc *signal.Client
+		var scMu sync.Mutex
+		p.OnCaps = func(c HelperCaps) {
+			capsOnce.Do(func() { close(capsReady) })
+			scMu.Lock()
+			s := sc
+			scMu.Unlock()
+			if s != nil {
+				s.Send(proto.TypePermissions, proto.PermissionsMsg{Permissions: c.Permissions})
+			}
+		}
+		select {
+		case <-capsReady:
+		case <-time.After(10 * time.Second):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
+		hostname := o.Settings.Hostname
+		if hostname == "" {
+			hostname, _ = os.Hostname()
+		}
+		var s *signal.Client
+		// The service owns updates (msiexec /i new.msi /qn /norestart).
+		upd := update.New(update.Options{API: client, Token: func(c context.Context) (string, error) { return s.Token(c) },
+			DeviceID: st.DeviceID, Version: o.Version, ReleasePubKey: o.ReleasePubKey, DataDir: o.Settings.DataDir, Log: o.Log})
+		s = signal.New(signal.Options{
+			API:      client,
+			DeviceID: st.DeviceID,
+			Key:      key,
+			Handler:  p,
+			Log:      o.Log,
+			Hello: func() proto.Hello {
+				h := proto.Hello{
+					AgentVersion:   o.Version,
+					OS:             runtime.GOOS,
+					Arch:           runtime.GOARCH,
+					Hostname:       hostname,
+					ActiveSessions: p.ActiveSessions(),
+				}
+				if c, ok := p.Caps(); ok {
+					h.Capabilities = c.Capabilities
+					h.Permissions = c.Permissions
+				}
+				// The helper owns the pin store; re-read it for every hello.
+				if ps, err := pins.Open(o.PinsPath); err == nil {
+					h.PinnedClientKeys = ps.List()
+				}
+				return h
+			},
+			OnHelloAck: func(a proto.HelloAck) {
+				p.SetRevoked(a.RevokedClientKeys)
+				p.SetDevice(a.Device)
+				upd.HelloAcked()
+				go upd.CheckNow(ctx)
+			},
+			OnDeviceUpdate: func(u proto.DeviceUpdate) {
+				p.SetDevice(proto.DeviceInfo{ID: st.DeviceID, Name: u.Name, AutoAccept: u.AutoAccept})
+			},
+			OnKeyRevoked: func(k proto.KeyRevoked) { p.Revoke(k.PublicKey) },
+			OnStatus: func(s signal.Status) {
+				status := "Online"
+				switch {
+				case s.Fatal != "":
+					status = "Refused by server: " + s.Fatal
+				case !s.Online && s.LastError != "":
+					status = "Reconnecting…"
+				case !s.Online:
+					status = "Connecting…"
+				}
+				p.SetStatus(ServiceStatus{Enrolled: true, Online: s.Online, Status: status})
+			},
+		})
+		p.Send = s.Send
+		scMu.Lock()
+		sc = s
+		scMu.Unlock()
+		go upd.Run(ctx)
+		return s.Run(ctx)
+	}
+}
+
+// ensureEnrolled returns the persisted state and device key, enrolling with
+// the registry token (msiexec ENROLL_TOKEN=...) or RC_ENROLL_TOKEN when not
+// enrolled yet. Without a token it waits, polling the registry.
+func ensureEnrolled(ctx context.Context, o *Options) (config.State, ed25519.PrivateKey, error) {
+	ks := identity.Default(o.Settings.DataDir)
+	for {
+		st, err := config.Load(o.Settings.DataDir)
+		if err != nil {
+			return st, nil, err
+		}
+		if st.Enrolled() {
+			key, err := ks.Load()
+			if err != nil {
+				return st, nil, fmt.Errorf("device key: %w", err)
+			}
+			if st.ServerURL == "" {
+				st.ServerURL = serverURL(o)
+			}
+			return st, key, nil
+		}
+		token := o.Settings.EnrollToken
+		fromRegistry := false
+		if token == "" {
+			token = regString("EnrollToken")
+			fromRegistry = token != ""
+		}
+		url := serverURL(o)
+		if token != "" && url != "" {
+			st, key, err := enroll(ctx, o, ks, url, token)
+			if err == nil || api.IsCode(err, "not_found", "bad_request", "conflict", "forbidden") {
+				// Single-use token: drop it whether it worked or was rejected.
+				if fromRegistry {
+					regDelete("EnrollToken")
+				}
+				o.Settings.EnrollToken = ""
+			}
+			if err == nil {
+				return st, key, nil
+			}
+			o.Log.Error("winsvc: enrollment failed", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return config.State{}, nil, ctx.Err()
+		case <-time.After(10 * time.Second):
+		}
+	}
+}
+
+func enroll(ctx context.Context, o *Options, ks identity.Keystore, url, token string) (config.State, ed25519.PrivateKey, error) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return config.State{}, nil, err
+	}
+	hostname := o.Settings.Hostname
+	if hostname == "" {
+		hostname, _ = os.Hostname()
+	}
+	res, err := api.New(url).Enroll(ctx, api.EnrollRequest{
+		Token:     token,
+		PublicKey: base64.StdEncoding.EncodeToString(pub),
+		Hostname:  hostname,
+		OS:        runtime.GOOS,
+		Arch:      runtime.GOARCH,
+		Version:   o.Version,
+	})
+	if err != nil {
+		return config.State{}, nil, err
+	}
+	if err := ks.Save(priv); err != nil {
+		return config.State{}, nil, err
+	}
+	st := config.State{ServerURL: url, DeviceID: res.DeviceID, Name: res.Name}
+	if err := config.Save(o.Settings.DataDir, st); err != nil {
+		return config.State{}, nil, err
+	}
+	o.Log.Info("winsvc: enrolled", "device_id", res.DeviceID)
+	return st, priv, nil
+}
+
+func serverURL(o *Options) string {
+	if o.Settings.ServerURL != "" {
+		return o.Settings.ServerURL
+	}
+	return regString("ServerURL")
+}
+
+func regString(name string) string {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, regKey, registry.QUERY_VALUE)
+	if err != nil {
+		return ""
+	}
+	defer k.Close()
+	v, _, err := k.GetStringValue(name)
+	if err != nil {
+		return ""
+	}
+	return v
+}
+
+func regDelete(name string) {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, regKey, registry.SET_VALUE)
+	if err != nil {
+		return
+	}
+	defer k.Close()
+	k.DeleteValue(name)
+}
+
+// ---------------------------------------------------------------- helper
+
+// RunHelper is `remote-agent.exe helper`: it runs in the console session as
+// SYSTEM, connects to the service's pipes and runs the real session.Manager
+// with the native backend, plus the tray. It returns when the service asks
+// it to stop, the pipes break, or the owner picks Quit.
+func RunHelper(o Options) error {
+	o.defaults()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	r, w, err := dialService(ctx)
+	if err != nil {
+		return fmt.Errorf("connect to service: %w", err)
+	}
+	defer r.Close()
+	defer w.Close()
+	link := NewLink(w)
+
+	backend := o.NewBackend()
+	if err := backend.Init(); err != nil {
+		return fmt.Errorf("native backend: %w", err)
+	}
+	defer backend.Shutdown()
+
+	key, err := identity.Default(o.Settings.DataDir).Load()
+	if err != nil {
+		return fmt.Errorf("device key: %w", err)
+	}
+	ps, err := pins.Open(o.PinsPath)
+	if err != nil {
+		return fmt.Errorf("pins: %w", err)
+	}
+
+	var autoAccept, paused atomic.Bool
+	var trayUpdate atomic.Pointer[func(tray.State)]
+	var trayMu sync.Mutex
+	trayState := tray.State{Enrolled: true, Status: "Connecting…"}
+	pushTray := func(f func(*tray.State)) {
+		trayMu.Lock()
+		f(&trayState)
+		s := trayState
+		trayMu.Unlock()
+		if u := trayUpdate.Load(); u != nil {
+			(*u)(s)
+		}
+	}
+
+	var mgr *session.Manager
+	mgr, err = session.NewManager(session.Options{
+		Backend:    backend,
+		DeviceKey:  key,
+		Pins:       ps,
+		Send:       link.Send,
+		AutoAccept: autoAccept.Load,
+		Paused:     paused.Load,
+		OnPinsChanged: func() {
+			link.Send(proto.TypePinsSync, proto.PinsSync{PinnedClientKeys: ps.List()})
+		},
+		OnSessionChange: func(i *session.Info) {
+			if mgr != nil {
+				link.Active(mgr.ActiveSessions())
+			}
+			pushTray(func(s *tray.State) {
+				s.InSession = i != nil && i.State == "active"
+				s.Peer = ""
+				if i != nil {
+					s.Peer = fmt.Sprintf("%s (%s)", i.Label, i.Email)
+				}
+			})
+		},
+		UDPPort:      o.Settings.UDPPort,
+		NAT1To1IPs:   o.Settings.NAT1To1IPs,
+		AgentVersion: o.Version,
+		MaxFPS:       maxFPS(backend),
+		Log:          o.Log,
+	})
+	if err != nil {
+		return err
+	}
+	defer mgr.Close()
+
+	if err := link.Caps(helperCaps(backend)); err != nil {
+		return err
+	}
+
+	served := make(chan error, 1)
+	go func() {
+		served <- Serve(r, mgr, HelperEvents{
+			OnDevice: func(d proto.DeviceInfo) { autoAccept.Store(d.AutoAccept) },
+			OnStatus: func(s ServiceStatus) {
+				pushTray(func(t *tray.State) { t.Enrolled, t.Online, t.Status = s.Enrolled, s.Online, s.Status })
+			},
+		})
+	}()
+
+	// The tray owns this (locked) OS thread until the process exits.
+	exit := func(code int) {
+		mgr.EndAll(proto.EndAgentKill)
+		mgr.Close()
+		backend.Shutdown()
+		os.Exit(code)
+	}
+	go func() {
+		err := <-served
+		if err != nil && !errors.Is(err, os.ErrClosed) {
+			o.Log.Info("winsvc: service link closed", "err", err)
+		}
+		exit(0)
+	}()
+	runtime.LockOSThread()
+	tray.Run(tray.Hooks{
+		OnEndSession: func() { mgr.EndAll(proto.EndAgentKill) },
+		OnPause: func(p bool) {
+			paused.Store(p)
+			pushTray(func(s *tray.State) { s.Paused = p })
+		},
+		OnQuit: func() {
+			link.Quit()
+			exit(0)
+		},
+	}, func(update func(tray.State)) {
+		trayUpdate.Store(&update)
+		pushTray(func(*tray.State) {})
+	})
+	// tray.Run can return without Quit when there is no shell to host the icon
+	// (logon screen); keep serving sessions until the service link closes.
+	select {}
+}
+
+// maxFPS matches internal/agent: software encoders are capped at 30 fps.
+func maxFPS(b platform.Backend) int {
+	switch b.EncoderName() {
+	case "mf-sw", "x264", "openh264", "none":
+		return 30
+	}
+	return 60
+}
+
+func helperCaps(b platform.Backend) HelperCaps {
+	c := HelperCaps{Capabilities: proto.Capabilities{Codecs: []string{"h264"}, MaxFPS: maxFPS(b), Encoder: b.EncoderName()}}
+	if mons, err := b.Monitors(); err == nil {
+		for _, m := range mons {
+			c.Capabilities.Monitors = append(c.Capabilities.Monitors, proto.Monitor{
+				ID: m.ID, Name: m.Name, X: m.X, Y: m.Y, Width: m.Width, Height: m.Height, Scale: m.Scale, Primary: m.Primary,
+			})
+		}
+	}
+	perm := b.Permissions()
+	c.Permissions = proto.Permissions{Screen: perm.Screen, Input: perm.Input}
+	var sid uint32
+	if windows.ProcessIdToSessionId(windows.GetCurrentProcessId(), &sid) == nil {
+		c.SessionID = sid
+	}
+	return c
+}

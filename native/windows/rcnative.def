@@ -1,0 +1,21 @@
+; Exports of rcnative.dll (MSVC build). Keep in sync with native/include/rc_native.h.
+LIBRARY rcnative
+EXPORTS
+    rc_backend_name
+    rc_capture_start
+    rc_capture_stop
+    rc_check_permissions
+    rc_clipboard_get_text
+    rc_clipboard_set_text
+    rc_consent_prompt
+    rc_encode_configure
+    rc_encoder_name
+    rc_free
+    rc_indicator_show
+    rc_init
+    rc_input_inject
+    rc_input_text
+    rc_list_monitors
+    rc_request_keyframe
+    rc_request_permission
+    rc_shutdown

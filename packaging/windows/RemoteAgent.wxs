@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  RemoteAgent MSI (WiX v5). Per-machine, x64. Installs remote-agent.exe as the
+  LocalSystem service "RemoteAgent" (`remote-agent.exe service`), which spawns
+  `remote-agent.exe helper` into the active console session.
+
+  Build (see build.ps1):
+    wix build RemoteAgent.wxs -arch x64 -ext WixToolset.Util.wixext
+      -d Version=1.2.3 -d BinDir=..\..\agent\dist\windows -o RemoteAgent.msi
+
+  Scripted install:
+    msiexec /i RemoteAgent.msi ENROLL_TOKEN=XXXX-XXXX SERVER_URL=https://remote.example.com /qn
+
+  The product name is still an open decision (docs plan); everything that
+  depends on it is a define below. UpgradeCode must never change once shipped.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <?ifndef ProductName ?><?define ProductName = "RemoteAgent" ?><?endif?>
+  <?ifndef Manufacturer ?><?define Manufacturer = "remotectl" ?><?endif?>
+  <?ifndef UpgradeCode ?><?define UpgradeCode = "6B1E9D2A-3C4F-4E8B-9A70-5D2C8F1B7E43" ?><?endif?>
+  <?ifndef Version ?><?define Version = "0.0.1" ?><?endif?>
+  <?ifndef BinDir ?><?define BinDir = "..\..\agent\dist\windows" ?><?endif?>
+  <?ifndef IncludeNativeDll ?><?define IncludeNativeDll = "no" ?><?endif?>
+  <?define ServiceName = "RemoteAgent" ?>
+  <?define RegKey = "SOFTWARE\RemoteAgent" ?>
+
+  <Package Name="$(ProductName)"
+           Manufacturer="$(Manufacturer)"
+           Version="$(Version)"
+           UpgradeCode="$(UpgradeCode)"
+           Scope="perMachine"
+           Compressed="yes"
+           InstallerVersion="500">
+
+    <MajorUpgrade Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Hidden keeps the one-time token out of verbose MSI logs. -->
+    <Property Id="ENROLL_TOKEN" Secure="yes" Hidden="yes" />
+    <Property Id="SERVER_URL" Secure="yes" />
+    <!-- Must be set before util's RemoveFoldersEx action, which runs just before CostInitialize. -->
+    <SetProperty Id="DATADIR" Value="[CommonAppDataFolder]RemoteAgent" After="AppSearch" Sequence="both" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="$(ProductName)">
+
+        <Component Id="AgentService" Bitness="always64">
+          <File Id="AgentExe" Source="$(BinDir)\remote-agent.exe" KeyPath="yes" />
+          <ServiceInstall Id="AgentServiceInstall"
+                          Name="$(ServiceName)"
+                          DisplayName="$(ProductName)"
+                          Description="Remote control agent: keeps this device reachable for its owner and shows a visible indicator during sessions."
+                          Type="ownProcess"
+                          Start="auto"
+                          Account="LocalSystem"
+                          ErrorControl="normal"
+                          Arguments="service"
+                          Vital="yes">
+            <util:ServiceConfig FirstFailureActionType="restart"
+                                SecondFailureActionType="restart"
+                                ThirdFailureActionType="restart"
+                                RestartServiceDelayInSeconds="5"
+                                ResetPeriodInDays="1" />
+          </ServiceInstall>
+          <ServiceControl Id="AgentServiceControl"
+                          Name="$(ServiceName)"
+                          Start="install"
+                          Stop="both"
+                          Remove="uninstall"
+                          Wait="yes" />
+        </Component>
+
+        <?if $(IncludeNativeDll) = "yes" ?>
+        <!-- MSVC build variant (-tags rcnative_msvc): the WGC-capable backend DLL. -->
+        <Component Id="NativeDll" Bitness="always64">
+          <File Id="RcNativeDll" Source="$(BinDir)\rcnative.dll" KeyPath="yes" />
+        </Component>
+        <?endif?>
+
+        <!-- Data dir (%ProgramData%\RemoteAgent: config, DPAPI key blob, pins, logs) is removed on uninstall. -->
+        <Component Id="DataDirCleanup" Guid="3E7A51C4-8B2D-4F6A-9C15-7D0E2B4A6F91" Bitness="always64">
+          <RegistryValue Root="HKLM" Key="$(RegKey)" Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+          <util:RemoveFolderEx On="uninstall" Property="DATADIR" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <!-- One-time enrollment token: the service reads it, enrolls, then deletes the value. -->
+    <Component Id="EnrollTokenValue" Directory="INSTALLFOLDER" Guid="9C4D2E7B-1A5F-4B83-8E60-2F7A9D3C5B18"
+               Condition="ENROLL_TOKEN" Bitness="always64" Transitive="yes">
+      <RegistryValue Root="HKLM" Key="$(RegKey)" Name="EnrollToken" Type="string" Value="[ENROLL_TOKEN]" KeyPath="yes" />
+    </Component>
+    <Component Id="ServerUrlValue" Directory="INSTALLFOLDER" Guid="5A8F3B1D-7E2C-4D96-A1B4-6C9E0F2D8A37"
+               Condition="SERVER_URL" Bitness="always64">
+      <RegistryValue Root="HKLM" Key="$(RegKey)" Name="ServerURL" Type="string" Value="[SERVER_URL]" KeyPath="yes" />
+    </Component>
+    <Component Id="RegKeyCleanup" Directory="INSTALLFOLDER" Guid="B2E6C9A4-0D3F-4A71-8B5E-1F4C7A9D2E60" Bitness="always64">
+      <RegistryKey Root="HKLM" Key="$(RegKey)" ForceDeleteOnUninstall="yes">
+        <RegistryValue Name="Product" Type="string" Value="$(ProductName)" KeyPath="yes" />
+      </RegistryKey>
+    </Component>
+
+    <!-- On full uninstall (not upgrade) tell the server the device is removed, not offline. -->
+    <CustomAction Id="AgentSelfRemove" FileRef="AgentExe" ExeCommand="uninstall"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom Action="AgentSelfRemove" Before="StopServices"
+              Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+
+    <Feature Id="Main" Title="$(ProductName)" Level="1">
+      <ComponentRef Id="AgentService" />
+      <?if $(IncludeNativeDll) = "yes" ?>
+      <ComponentRef Id="NativeDll" />
+      <?endif?>
+      <ComponentRef Id="DataDirCleanup" />
+      <ComponentRef Id="EnrollTokenValue" />
+      <ComponentRef Id="ServerUrlValue" />
+      <ComponentRef Id="RegKeyCleanup" />
+    </Feature>
+  </Package>
+</Wix>

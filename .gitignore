@@ -1,0 +1,13 @@
+**/build/
+*.a
+*.lib
+*.o
+*.obj
+.DS_Store
+.env
+.tools/
+/dist/
+agent/dist/
+data/
+node_modules/
+web/dist/

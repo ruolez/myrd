@@ -1,0 +1,7 @@
+**
+!proto/**
+!agent/**
+!native/include/**
+!native/linux/**
+!deploy/demo-device/**
+native/linux/build/

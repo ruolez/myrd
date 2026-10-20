@@ -1,0 +1,118 @@
+name: agent-windows
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths: ["agent/**", "native/**", "proto/**", "packaging/windows/**", ".github/workflows/agent-windows.yml"]
+  pull_request:
+    paths: ["agent/**", "native/**", "proto/**", "packaging/windows/**", ".github/workflows/agent-windows.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Fast smoke: the whole Windows agent cross-compiles and links with mingw-w64.
+  cross-compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mingw-w64
+      - run: make -C native/windows -f Makefile.mingw
+      - name: go build (windows/amd64, cgo)
+        working-directory: agent
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: "1"
+          CC: x86_64-w64-mingw32-gcc
+          CXX: x86_64-w64-mingw32-g++
+        run: go build -trimpath -o dist/windows/remote-agent.exe ./cmd/remote-agent
+      - name: keymap tests
+        working-directory: agent
+        run: go test ./internal/keymap/
+
+  msi:
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '0.0.0-dev' }}
+      RELEASE_PUBLIC_KEY: ${{ secrets.RELEASE_PUBLIC_KEY }}
+      HAS_AZURE_SIGNING: ${{ secrets.AZURE_CLIENT_ID != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-gcc make
+          path-type: inherit
+      - name: Put mingw on PATH
+        shell: pwsh
+        run: |
+          $p = (msys2 -c 'cygpath -w /ucrt64/bin').Trim()
+          Add-Content $env:GITHUB_PATH $p
+          $u = (msys2 -c 'cygpath -w /usr/bin').Trim()
+          Add-Content $env:GITHUB_PATH $u
+      - name: Install WiX v5
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add --global WixToolset.Util.wixext/5.0.2
+      - name: Build native + exe
+        shell: pwsh
+        run: ./packaging/windows/build.ps1 -Version ($env:VERSION -replace '^v','') -Stage exe
+      - name: Sign exe (Azure Artifact Signing)
+        if: env.HAS_AZURE_SIGNING == 'true'
+        uses: azure/trusted-signing-action@v0.5.1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files-folder: agent/dist/windows
+          files-folder-filter: exe,dll
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Build MSI
+        shell: pwsh
+        run: ./packaging/windows/build.ps1 -Version ($env:VERSION -replace '^v','') -Stage msi
+      - name: Sign MSI (Azure Artifact Signing)
+        if: env.HAS_AZURE_SIGNING == 'true'
+        uses: azure/trusted-signing-action@v0.5.1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files-folder: dist
+          files-folder-filter: msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Re-hash signed MSI
+        shell: pwsh
+        run: |
+          Get-ChildItem dist/*.msi | ForEach-Object {
+            $h = (Get-FileHash -Algorithm SHA256 $_).Hash.ToLower()
+            Set-Content "$($_.FullName).sha256" "$h  $($_.Name)" -NoNewline
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: remote-agent-windows-${{ env.VERSION }}
+          path: |
+            dist/*.msi
+            dist/*.sha256
+            agent/dist/windows/remote-agent.exe

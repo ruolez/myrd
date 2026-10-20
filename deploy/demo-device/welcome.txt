@@ -1,0 +1,11 @@
+remotectl demo device
+=====================
+
+This is a Linux desktop running inside Docker with the real remotectl
+agent (X11 capture, x264 software encoder, XTest input).
+
+Try typing here, opening the terminal, or copying text between this
+desktop and your own computer: the clipboard syncs both ways.
+
+The red border means a remote session is active. End it from the
+device console (http://localhost:5562) with "End session".

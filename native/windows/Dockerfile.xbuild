@@ -1,0 +1,4 @@
+# Cross-compile toolchain for the Windows agent (mingw-w64 + Go).
+FROM golang:1.27-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      mingw-w64 make cmake && rm -rf /var/lib/apt/lists/*

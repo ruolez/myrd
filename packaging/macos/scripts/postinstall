@@ -1,0 +1,30 @@
+#!/bin/sh
+# Loads the LaunchAgent for the logged-in user and enrolls when a token was
+# provided via: defaults write /Library/Preferences/@BUNDLE_ID@ EnrollToken XXXX-XXXX
+LABEL="@BUNDLE_ID@"
+APP="/Applications/@APP_NAME@.app"
+BIN="$APP/Contents/MacOS/@EXECUTABLE@"
+PLIST="/Library/LaunchAgents/$LABEL.plist"
+PREFS="/Library/Preferences/$LABEL"
+
+chown root:wheel "$PLIST"
+chmod 644 "$PLIST"
+
+user=$(stat -f %Su /dev/console)
+if [ -z "$user" ] || [ "$user" = "root" ] || [ "$user" = "loginwindow" ]; then
+  exit 0 # no GUI user right now; launchd loads the agent at next login
+fi
+uid=$(id -u "$user")
+server=$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:RC_SERVER_URL" "$PLIST" 2>/dev/null)
+
+token=$(defaults read "$PREFS" EnrollToken 2>/dev/null || true)
+if [ -n "$token" ]; then
+  # Run in the user's GUI bootstrap so the device key lands in their login Keychain.
+  launchctl asuser "$uid" sudo -u "$user" env RC_SERVER_URL="$server" RC_ENROLL_TOKEN="$token" \
+    "$BIN" enroll || echo "enrollment failed; the agent will ask for a token on first run"
+  defaults delete "$PREFS" EnrollToken 2>/dev/null || true
+fi
+
+launchctl bootout "gui/$uid/$LABEL" 2>/dev/null || true
+launchctl bootstrap "gui/$uid" "$PLIST" || launchctl asuser "$uid" launchctl load -w "$PLIST"
+exit 0

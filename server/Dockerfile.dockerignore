@@ -1,0 +1,6 @@
+# BuildKit reads this instead of a root .dockerignore for server/Dockerfile.
+*
+!proto/
+!server/
+server/**/*_test.go
+server/Dockerfile*

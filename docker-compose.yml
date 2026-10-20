@@ -1,0 +1,138 @@
+# remotectl — local/dev stack. `make up` (or `docker compose --profile demo up -d --build`)
+#   http://localhost:5560   web app + admin (Caddy → SPA + /v1 → api)
+#   http://localhost:5562   demo device console (the "physical screen" of the Docker test device)
+# Production on a VPS: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+name: remotectl
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: remotectl
+      POSTGRES_USER: remotectl
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run make env}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-256MB}
+      - -c
+      - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-1GB}
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - max_connections=50
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - wal_compression=on
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - log_min_duration_statement=200ms
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U remotectl -d remotectl"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://remotectl:${POSTGRES_PASSWORD}@postgres:5432/remotectl?sslmode=disable
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:5560}
+      LISTEN_ADDR: ":8080"
+      METRICS_ADDR: ":9090"
+      TRUST_PROXY: "true"
+      JWT_SECRET: ${JWT_SECRET:?run make env}
+      TURN_SECRET: ${TURN_SECRET:?run make env}
+      TOTP_ENC_KEY: ${TOTP_ENC_KEY:?run make env}
+      TURN_URLS: ${TURN_URLS:-stun:localhost:${TURN_PORT:-3478},turn:localhost:${TURN_PORT:-3478}?transport=udp,turn:localhost:${TURN_PORT:-3478}?transport=tcp}
+      TURN_URLS_AGENT: ${TURN_URLS_AGENT:-stun:coturn:3478,turn:coturn:3478?transport=udp,turn:coturn:3478?transport=tcp}
+      TURN_TTL: ${TURN_TTL:-2h}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:?run make env}
+      RELEASE_PUBLIC_KEY: ${RELEASE_PUBLIC_KEY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    expose:
+      - "8080"
+    ports:
+      - "127.0.0.1:${METRICS_PORT:-9190}:9090" # Prometheus /metrics, localhost only
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:5560}
+      TURN_HOSTS: ${TURN_HOSTS:-localhost:${TURN_PORT:-3478}}
+    ports:
+      - "${HTTP_PORT:-5560}:5560"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+
+  coturn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/etc/coturn/entrypoint.sh"]
+    environment:
+      TURN_SECRET: ${TURN_SECRET}
+      TURN_REALM: ${TURN_REALM:-remotectl.local}
+      TURN_EXTERNAL_IP: ${TURN_EXTERNAL_IP:-}
+      TURN_MIN_PORT: ${TURN_MIN_PORT:-49160}
+      TURN_MAX_PORT: ${TURN_MAX_PORT:-49200}
+      # dev only: the demo device lives on a private Docker subnet. Production MUST be false.
+      TURN_ALLOW_PRIVATE_PEERS: ${TURN_ALLOW_PRIVATE_PEERS:-true}
+      TURN_TLS_CERT: ${TURN_TLS_CERT:-}
+      TURN_TLS_KEY: ${TURN_TLS_KEY:-}
+    volumes:
+      - ./deploy/coturn/entrypoint.sh:/etc/coturn/entrypoint.sh:ro
+    ports:
+      - "${TURN_PORT:-3478}:3478/udp"
+      - "${TURN_PORT:-3478}:3478/tcp"
+
+  # Docker "demo device": a Linux desktop (Xvfb + XFCE) running the real agent
+  # with the x264 software backend. Enroll it from the device console.
+  demo-device:
+    profiles: ["demo"]
+    build:
+      context: .
+      dockerfile: deploy/demo-device/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - web
+    shm_size: 512mb
+    environment:
+      RC_SERVER_URL: http://web:5560
+      RC_DATA_DIR: /data
+      RC_CONSOLE_ADDR: ":5562"
+      RC_UDP_PORT: "5561"
+      RC_NAT1TO1_IPS: ${DEMO_NAT1TO1_IPS:-127.0.0.1}
+      RC_ENROLL_TOKEN: ${DEMO_ENROLL_TOKEN:-}
+      RC_SCREEN: ${DEMO_SCREEN:-1920x1080}
+      RC_HOSTNAME: ${DEMO_HOSTNAME:-demo-device}
+    ports:
+      - "5561:5561/udp"
+      - "127.0.0.1:5562:5562"
+    volumes:
+      - demo_data:/data
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
+  demo_data:

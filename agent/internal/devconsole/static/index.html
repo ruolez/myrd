@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Device Console</title>
+<link rel="stylesheet" href="console.css">
+</head>
+<body>
+<header>
+  <div class="brand"><span class="dot" id="dot"></span><span>remotectl · demo device</span></div>
+  <span class="sub" id="hostline"></span>
+</header>
+<main>
+  <section id="session-banner" class="banner hidden">
+    <div>
+      <strong>Remote session in progress</strong>
+      <div class="muted" id="session-detail"></div>
+    </div>
+    <button class="danger" id="end-btn">End session</button>
+  </section>
+
+  <section id="prompts"></section>
+
+  <section class="card" id="enroll-card">
+    <h2>Enroll this device</h2>
+    <p class="muted">In the web app open <b>Devices → Add device</b>, then enter the token shown there.</p>
+    <form id="enroll-form">
+      <label>Server URL<input id="server-url" placeholder="http://web:5560" autocomplete="off"></label>
+      <label>Enrollment token<input id="token" placeholder="XXXX-XXXX" maxlength="9" autocomplete="off" spellcheck="false"></label>
+      <button class="primary" type="submit">Enroll</button>
+      <div class="error" id="enroll-error"></div>
+    </form>
+  </section>
+
+  <section class="card hidden" id="status-card">
+    <h2>Status</h2>
+    <dl class="grid">
+      <dt>Device</dt><dd id="s-name"></dd>
+      <dt>Server</dt><dd id="s-server"></dd>
+      <dt>Connection</dt><dd id="s-conn"></dd>
+      <dt>Encoder</dt><dd id="s-encoder"></dd>
+      <dt>Agent</dt><dd id="s-version"></dd>
+    </dl>
+    <label class="toggle"><input type="checkbox" id="pause"> Pause — refuse new sessions</label>
+  </section>
+
+  <section class="card hidden" id="pins-card">
+    <h2>Approved browsers</h2>
+    <p class="muted">Browsers you allowed with “Allow and remember”. Removing one makes it ask again.</p>
+    <ul id="pins" class="list"></ul>
+  </section>
+</main>
+<script src="console.js"></script>
+</body>
+</html>

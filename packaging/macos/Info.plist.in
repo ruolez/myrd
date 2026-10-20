@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>@BUNDLE_ID@</string>
+	<key>CFBundleName</key>
+	<string>@APP_NAME@</string>
+	<key>CFBundleDisplayName</key>
+	<string>@APP_NAME@</string>
+	<key>CFBundleExecutable</key>
+	<string>@EXECUTABLE@</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>@MIN_MACOS@</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>LSEnvironment</key>
+	<dict>
+		<key>RC_SERVER_URL</key>
+		<string>@SERVER_URL@</string>
+	</dict>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSSupportsAutomaticTermination</key>
+	<false/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>@APP_NAME@ shows its enrollment and consent dialogs.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>@PRODUCT_NAME@ remote access agent. A red border is shown on screen whenever a remote session is active.</string>
+</dict>
+</plist>
