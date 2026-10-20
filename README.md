@@ -21,7 +21,24 @@ To try a session:
 1. Sign in, go to **Devices → Add device → Docker demo**, and copy the token.
 2. Open the device console at http://localhost:5562, paste the token and click **Enroll**. The device shows as online.
 3. Click **Connect**. The device console asks *"Allow this new browser?"*; choose **Allow and remember**.
-4. You now control a 1080p XFCE desktop. Use the toolbar for the HUD, quality, fullscreen (adds pointer and keyboard lock), clipboard and **Reconnect via relay** (forces TURN).
+4. You now control a 1080p XFCE desktop. Use the toolbar for the HUD, **Stream** settings, **Files**, fullscreen (adds pointer and keyboard lock), clipboard and **Reconnect via relay** (forces TURN).
+
+### Session controls
+
+- **Stream** (toolbar, or Ctrl+Alt+Shift+S; in fullscreen also from the pill at the top edge):
+  - **Presets.** Auto lowers frame rate first, then resolution, when the network is congested, and raises them again once it recovers. It never reacts to an idle screen. Speed is 720p at the maximum fps with a 4 Mbps cap; Balanced is 1080p30 at 8 Mbps; Quality is native at 30 fps and 20 Mbps.
+  - **Frame rate:** 5–60 fps, capped at the device encoder's maximum (30 on software encoders).
+  - **Resolution:** Native, 1440p, 1080p, 720p or 50%. The cap applies to the short edge, and the stream is never upscaled.
+  - **Bitrate:** Auto, or a manual cap of 1–20 Mbps. Relayed sessions are capped at 6 Mbps.
+  - Settings are remembered per device. A hidden tab drops to 5 fps.
+  - The HUD shows target vs sent fps, target bitrate and bandwidth estimate, encoded size and Auto's state.
+- **Files:**
+  - Browse the device as its signed-in user, upload by button or by dragging files onto the session, and download any file.
+  - No size limit. Transfers stream to and from disk, flow-controlled and SHA-256 verified. Uploads go to the open folder, or to the user's Downloads.
+  - Downloads save through the browser's save dialog (Chromium), a streamed download (Firefox and Safari), or memory as a last resort.
+  - Every transfer is shown on the device (tray, macOS notification, demo console) and written to the audit log as `file.*` events.
+  - The agent's own data directory is never accessible. On Windows, file operations impersonate the signed-in user and are refused when nobody is signed in.
+  - On the demo device, `/home/device/Downloads` lives in the container, so recreating the container empties it.
 
 `make down` stops the stack, `make clean` also deletes its volumes, and `make logs` follows the logs.
 
@@ -169,4 +186,6 @@ Ports: 80/443 tcp+udp, 3478 tcp+udp, 5349/tcp, and 49152–65535/udp for the TUR
 - Email alerts on login and new devices are not implemented; those events are only audited. (TOTP codes are single-use: the accepted time step is stored per user.)
 - Passkey ceremonies are implemented on both sides but were not exercised with a real authenticator.
 - PNG clipboard is ignored; text clipboard works both ways.
+- File transfer: no folder transfer, resume, or delete/rename on the device. It has not been tried on a real Windows PC (impersonation), and the macOS privacy-prompt handling is untested.
+- The Linux x264 backend keeps a constant-rate setup. Variable-frame-rate input corrupted frames on the demo device, so the agent instead enforces a keyframe at least every 2 s.
 - On the Linux demo, the red session border is visible in the captured video. On macOS and Windows it is excluded from capture.
