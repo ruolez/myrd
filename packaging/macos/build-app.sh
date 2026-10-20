@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds dist/macos/RemoteAgent.app.
 #   VERSION=1.2.3          bundle + agent version (default 0.0.0-dev)
-#   SERVER_URL=https://...  control plane URL baked into Info.plist (LSEnvironment) + LaunchAgent
+#   SERVER_URL=https://…   control plane URL baked into Info.plist (LSEnvironment) + LaunchAgent
 #   UNIVERSAL=1            arm64 + x86_64 (lipo); default host arch only
 #   DEVELOPER_ID_APP="Developer ID Application: Org (TEAMID)"  real signing; else ad-hoc
 #   RELEASE_PUBLIC_KEY=<b64 ed25519>  compiled in for update-manifest verification
@@ -12,6 +12,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck disable=SC1091
 source "$HERE/product.env"
 export VERSION="${VERSION:-0.0.0-dev}"
+export SERVER_URL="${SERVER_URL:-https://remote.example.com}"
 GO="${GO:-$ROOT/scripts/gohost.sh}"
 if [[ "${UNIVERSAL:-0}" == "1" ]]; then ARCHS="arm64 x86_64"; fi
 ARCHS="${ARCHS:-$(uname -m)}"
@@ -47,6 +48,9 @@ chmod 755 "$APP/Contents/Resources/uninstall.sh"
 [[ -f "$HERE/AppIcon.icns" ]] && cp "$HERE/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
+# A Finder launch gets its server URL only from LSEnvironment.
+BAKED_URL="$(plutil -extract LSEnvironment.RC_SERVER_URL raw "$APP/Contents/Info.plist")"
+[[ "$BAKED_URL" == "$SERVER_URL" ]] || { echo "Info.plist RC_SERVER_URL is '$BAKED_URL'" >&2; exit 1; }
 
 if [[ -n "${DEVELOPER_ID_APP:-}" ]]; then
   codesign --force --options runtime --timestamp --entitlements "$HERE/entitlements.plist" \
@@ -56,4 +60,4 @@ else
   codesign --force --options runtime --entitlements "$HERE/entitlements.plist" --sign - "$APP"
 fi
 codesign --verify --strict --verbose=1 "$APP"
-echo "built $APP ($ARCHS, $VERSION)"
+echo "built $APP ($ARCHS, $VERSION, server $BAKED_URL)"

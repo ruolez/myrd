@@ -66,13 +66,13 @@ jobs:
 
       - name: Build RemoteAgent.app (universal)
         env:
+          SERVER_URL: ${{ vars.SERVER_URL || 'https://remote.example.com' }}
           DEVELOPER_ID_APP: ${{ secrets.DEVELOPER_ID_APP }}
           RELEASE_PUBLIC_KEY: ${{ vars.RELEASE_PUBLIC_KEY }}
         run: packaging/macos/build-app.sh
 
       - name: Build pkg (signed + notarized when secrets exist)
         env:
-          SERVER_URL: ${{ vars.SERVER_URL || 'https://remote.example.com' }}
           DEVELOPER_ID_INSTALLER: ${{ secrets.DEVELOPER_ID_INSTALLER }}
           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
