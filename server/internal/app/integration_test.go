@@ -928,3 +928,25 @@ func TestFileAuditFromAgent(t *testing.T) {
 	agent.send(proto.TypeSessionFile, proto.SessionFile{SessionID: "not-a-uuid", Files: []proto.FileRecord{upload}})
 	expectErr(agent, proto.ErrNotFound)
 }
+
+// "Allow and remember" on the device means the browser connects without a
+// prompt from then on, unless the owner turns on "ask every time".
+func TestRememberedBrowsersSkipPromptByDefault(t *testing.T) {
+	e := newEnv(t)
+	c := e.login(adminEmail, adminPass)
+	var s struct {
+		DefaultAutoAccept bool `json:"default_auto_accept"`
+	}
+	if st := e.call(c, "GET", "/v1/admin/settings", nil, &s); st != 200 || !s.DefaultAutoAccept {
+		t.Fatalf("settings: %d default_auto_accept=%v, want true", st, s.DefaultAutoAccept)
+	}
+	ag := e.enroll(c)
+	var d struct {
+		Device struct {
+			AutoAccept bool `json:"auto_accept"`
+		} `json:"device"`
+	}
+	if st := e.call(c, "GET", "/v1/devices/"+ag.id, nil, &d); st != 200 || !d.Device.AutoAccept {
+		t.Fatalf("device: %d auto_accept=%v, want true", st, d.Device.AutoAccept)
+	}
+}

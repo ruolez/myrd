@@ -142,16 +142,16 @@ export function DeviceDetail() {
           </div>
           <div className="flex items-start justify-between gap-4">
             <div>
-              <div className="text-sm font-medium">Auto-accept pinned browsers</div>
+              <div className="text-sm font-medium">Ask every time</div>
               <p className="text-sm text-muted">
-                Browsers already approved on the device connect without a prompt. New browsers
-                always need approval on the device's own screen.
+                Show the prompt on the device for every session, even for browsers approved with
+                “Allow and remember”. New browsers always need approval on the device's own screen.
               </p>
             </div>
             <Toggle
-              label="Auto-accept pinned browsers"
-              checked={d.auto_accept}
-              onChange={(v) => void save({ auto_accept: v })}
+              label="Ask every time"
+              checked={!d.auto_accept}
+              onChange={(v) => void save({ auto_accept: !v })}
             />
           </div>
           <div>

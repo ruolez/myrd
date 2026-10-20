@@ -59,13 +59,13 @@ export function AdminSettingsPage() {
           />
         </Row>
         <Row
-          title="Auto-accept pinned browsers by default"
-          description="Initial value for newly enrolled devices. Owners can change it per device; unknown browsers always need on-device approval."
+          title="Ask every time by default"
+          description="Initial value for newly enrolled devices: prompt on the device for every session, even for remembered browsers. Owners can change it per device; unknown browsers always need on-device approval."
         >
           <Toggle
-            label="Default auto-accept"
-            checked={f.default_auto_accept}
-            onChange={(v) => setF({ ...f, default_auto_accept: v })}
+            label="Ask every time by default"
+            checked={!f.default_auto_accept}
+            onChange={(v) => setF({ ...f, default_auto_accept: !v })}
           />
         </Row>
         <Field

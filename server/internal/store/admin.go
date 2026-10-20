@@ -87,7 +87,7 @@ type Settings struct {
 }
 
 func LoadSettings(ctx context.Context, q db.Querier) (Settings, error) {
-	s := Settings{MaxSessionHours: 12}
+	s := Settings{MaxSessionHours: 12, DefaultAutoAccept: true}
 	rows, err := q.Query(ctx, `SELECT key, value FROM app_settings`)
 	if err != nil {
 		return s, err
