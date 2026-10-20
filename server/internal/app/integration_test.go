@@ -830,3 +830,101 @@ func TestHelloReconcilesActiveSessions(t *testing.T) {
 		t.Fatalf("live active sessions = %d, want 1", e.app.hub.ActiveCount())
 	}
 }
+
+func TestFileAuditFromAgent(t *testing.T) {
+	e := newEnv(t)
+	c := e.login(adminEmail, adminPass)
+	ag := e.enroll(c)
+	other := e.enroll(c)
+	keyID := e.registerClientKey(c)
+	browser := e.dialBrowser(c)
+	agent := e.dialAgent(ag)
+	agent.send(proto.TypeHello, proto.Hello{OS: "linux", Arch: "amd64", ActiveSessions: []string{}})
+	agent.expect(proto.TypeHelloAck, nil)
+
+	browser.send(proto.TypeSessionCreate, proto.SessionCreate{Req: "r1", DeviceID: ag.id, ClientKeyID: keyID})
+	var created proto.SessionCreated
+	browser.expect(proto.TypeSessionCreated, &created)
+	sid := created.SessionID
+
+	upload := proto.FileRecord{Xfer: 7, Direction: "upload", Name: "a (1).txt", Dir: "/home/device/Downloads", Size: 5, Bytes: 5,
+		SHA256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", Result: "ok", DurationMS: 40}
+	failed := proto.FileRecord{Xfer: 8, Direction: "download", Name: "big.iso", Dir: "/home/device", Size: 900, Bytes: 100,
+		Result: "error", Error: "stalled", DurationMS: 60000}
+	expectErr := func(w *wsClient, code string) {
+		t.Helper()
+		var er proto.Error
+		w.expect(proto.TypeError, &er)
+		if er.Code != code {
+			t.Fatalf("error %+v, want %s", er, code)
+		}
+	}
+	fileEvents := func() string {
+		var out []string
+		for _, ev := range e.auditEvents(sid) {
+			if strings.HasPrefix(ev, "file.") {
+				out = append(out, ev)
+			}
+		}
+		return strings.Join(out, ",")
+	}
+	waitEvents := func(want string) {
+		t.Helper()
+		for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline) && fileEvents() != want; time.Sleep(20 * time.Millisecond) {
+		}
+		if got := fileEvents(); got != want {
+			t.Fatalf("file audit events = %q, want %q", got, want)
+		}
+	}
+
+	// A pending session never connected: no file records yet.
+	agent.send(proto.TypeSessionFile, proto.SessionFile{SessionID: sid, Files: []proto.FileRecord{upload}})
+	expectErr(agent, proto.ErrNotFound)
+
+	agent.send(proto.TypeSessionState, proto.SessionState{SessionID: sid, Connected: true, Path: proto.PathHost})
+	browser.expect(proto.TypeSessionState, nil)
+
+	invalid := upload
+	invalid.Direction = "sideways"
+	agent.send(proto.TypeSessionFile, proto.SessionFile{SessionID: sid, Files: []proto.FileRecord{upload, invalid, failed}})
+	waitEvents("file.uploaded,file.download_failed")
+	var meta map[string]any
+	var actor string
+	_ = e.pool.QueryRow(context.Background(), `SELECT actor, meta FROM audit_events WHERE session_id = $1 AND event = 'file.uploaded'`, sid).Scan(&actor, &meta)
+	want := map[string]any{"name": "a (1).txt", "dir": "/home/device/Downloads", "size": float64(5), "bytes": float64(5),
+		"sha256": upload.SHA256, "result": "ok", "error": "", "duration_ms": float64(40), "xfer": float64(7)}
+	if actor != "agent" || fmt.Sprint(meta) != fmt.Sprint(want) {
+		t.Fatalf("file.uploaded actor %s meta %v", actor, meta)
+	}
+
+	// Another device cannot write into this session's audit trail.
+	stranger := e.dialAgent(other)
+	stranger.send(proto.TypeSessionFile, proto.SessionFile{SessionID: sid, Files: []proto.FileRecord{upload}})
+	expectErr(stranger, proto.ErrNotFound)
+
+	tooMany := make([]proto.FileRecord, proto.MaxFileRecords+1)
+	for i := range tooMany {
+		tooMany[i] = upload
+	}
+	agent.send(proto.TypeSessionFile, proto.SessionFile{SessionID: sid, Files: tooMany})
+	expectErr(agent, proto.ErrBadRequest)
+	waitEvents("file.uploaded,file.download_failed")
+
+	// Records flushed right after the session ended are still accepted.
+	agent.send(proto.TypeSessionEnd, proto.SessionEnd{SessionID: sid, Reason: proto.EndUserHangup})
+	browser.expect(proto.TypeSessionEnd, nil)
+	cancelled := proto.FileRecord{Xfer: 9, Direction: "upload", Name: "late.bin", Dir: "/tmp", Size: 10, Bytes: 2,
+		Result: "cancelled", Error: "cancelled", DurationMS: 5}
+	agent.send(proto.TypeSessionFile, proto.SessionFile{SessionID: sid, Files: []proto.FileRecord{cancelled}})
+	waitEvents("file.uploaded,file.download_failed,file.upload_failed")
+
+	// A session that failed before connecting stays closed to file records.
+	browser.send(proto.TypeSessionCreate, proto.SessionCreate{Req: "r2", DeviceID: ag.id, ClientKeyID: keyID})
+	browser.expect(proto.TypeSessionCreated, &created)
+	browser.send(proto.TypeSessionEnd, proto.SessionEnd{SessionID: created.SessionID, Reason: proto.EndUserHangup})
+	agent.expect(proto.TypeSessionEnd, nil)
+	agent.send(proto.TypeSessionFile, proto.SessionFile{SessionID: created.SessionID, Files: []proto.FileRecord{upload}})
+	expectErr(agent, proto.ErrNotFound)
+	agent.send(proto.TypeSessionFile, proto.SessionFile{SessionID: "not-a-uuid", Files: []proto.FileRecord{upload}})
+	expectErr(agent, proto.ErrNotFound)
+}

@@ -703,6 +703,24 @@ func (h *Hub) agentSession(ac *agentConn, id string) *liveSession {
 	return s
 }
 
+// fileSessionUser returns the user of a session of the agent's device
+// that connected. File records are flushed just before session.end, so a
+// session that has already ended is accepted from its stored row.
+func (h *Hub) fileSessionUser(ac *agentConn, id string) (string, bool) {
+	if s := h.agentSession(ac, id); s != nil {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return s.userID, s.state == "active"
+	}
+	ctx, cancel := dbctx()
+	defer cancel()
+	row, err := store.SessionByID(ctx, h.app.pool, id)
+	if err != nil || row.DeviceID != ac.deviceID || row.ConnectedAt == nil {
+		return "", false
+	}
+	return row.UserID, true
+}
+
 func (h *Hub) onAgent(ac *agentConn, typ string, raw []byte) {
 	a := h.app
 	switch typ {
@@ -774,6 +792,31 @@ func (h *Hub) onAgent(ac *agentConn, typ string, raw []byte) {
 			reason = proto.EndAgentKill
 		}
 		h.EndSession(m.SessionID, reason, fromAgent, m.BytesSent, m.BytesRecv)
+	case proto.TypeSessionFile:
+		var m proto.SessionFile
+		if json.Unmarshal(raw, &m) != nil {
+			h.sendErr(ac.wsConn, "", "", proto.ErrBadRequest, "invalid session.file")
+			return
+		}
+		if len(m.Files) > proto.MaxFileRecords {
+			h.sendErr(ac.wsConn, "", m.SessionID, proto.ErrBadRequest, "too many file records")
+			return
+		}
+		userID, ok := h.fileSessionUser(ac, m.SessionID)
+		if !ok {
+			h.sendErr(ac.wsConn, "", m.SessionID, proto.ErrNotFound, "unknown session")
+			return
+		}
+		ctx, cancel := dbctx()
+		defer cancel()
+		for _, r := range m.Files {
+			if !validFileRecord(r) {
+				a.log.Warn("invalid file record", "session", m.SessionID, "xfer", r.Xfer)
+				continue
+			}
+			a.audit(ctx, store.Audit{Actor: "agent", Event: fileEvent(r), UserID: userID, DeviceID: ac.deviceID,
+				SessionID: m.SessionID, IP: ac.ip, Meta: fileMeta(r)})
+		}
 	case proto.TypeTokenRenew:
 		tok, exp, err := security.IssueAgentJWT(a.cfg.JWTSecret, ac.deviceID, time.Now(), agentJWTTTL)
 		if err != nil {
