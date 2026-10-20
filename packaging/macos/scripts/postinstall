@@ -25,6 +25,15 @@ if [ -n "$token" ]; then
   defaults delete "$PREFS" EnrollToken 2>/dev/null || true
 fi
 
+# An ad-hoc signed build is a new app to macOS: grants made for the previous
+# build stay listed as "on" in System Settings but no longer apply. Clear them
+# so the agent's first start asks again. Developer ID builds keep their grants.
+if codesign -dv "$APP" 2>&1 | grep -q '^Signature=adhoc'; then
+  for service in ScreenCapture Accessibility; do
+    launchctl asuser "$uid" sudo -u "$user" tccutil reset "$service" "$LABEL" >/dev/null 2>&1 || true
+  done
+fi
+
 launchctl bootout "gui/$uid/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$uid" "$PLIST" || launchctl asuser "$uid" launchctl load -w "$PLIST"
 exit 0
