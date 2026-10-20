@@ -155,6 +155,7 @@ export const END_REASONS: Record<string, string> = {
   forbidden: "You do not have access to this device.",
   capture_failed: "The device could not capture its screen.",
   encoder_failed: "The device's video encoder failed.",
+  agent_update: "The device is installing an update. Reconnect in a minute.",
 };
 
 type Options = {

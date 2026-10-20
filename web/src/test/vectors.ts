@@ -22,6 +22,19 @@ export type Vectors = {
   file_data_invalid: { name: string; hex: string }[];
   file_messages: { name: string; json: Json }[];
   file_sha256: { name: string; chunks_hex: string[]; sha256: string }[];
+  versions: string[];
+  release: {
+    public_key: string;
+    key_id: string;
+    cases: {
+      version: string;
+      os: string;
+      arch: string;
+      sha256: string;
+      message: string;
+      signature: string;
+    }[];
+  };
 };
 
 export const vectors: Vectors = JSON.parse(

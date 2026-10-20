@@ -11,6 +11,8 @@ import type {
   Page,
   Passkey,
   Release,
+  ReleaseId,
+  ReleaseOS,
   Session,
   User,
 } from "./types";
@@ -63,17 +65,18 @@ function parseResponse<T>(status: number, text: string): T {
   return data as T;
 }
 
-/** PUTs a file as the raw body; XHR because fetch has no upload progress. */
-export function uploadFile<T>(
+/** XHR because fetch has no upload progress. */
+function sendWithProgress<T>(
+  method: Method,
   path: string,
-  file: Blob,
+  body: Blob | FormData,
   onProgress?: (fraction: number) => void,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("PUT", path);
+    xhr.open(method, path);
     xhr.withCredentials = true;
-    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    if (body instanceof Blob) xhr.setRequestHeader("Content-Type", "application/octet-stream");
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress?.(e.loaded / e.total);
     xhr.onload = () => {
       try {
@@ -83,8 +86,29 @@ export function uploadFile<T>(
       }
     };
     xhr.onerror = () => reject(new ApiError(0, "network", "Cannot reach the server."));
-    xhr.send(file);
+    xhr.send(body);
   });
+}
+
+/** PUTs a file as the raw body. */
+export function uploadFile<T>(
+  path: string,
+  file: Blob,
+  onProgress?: (fraction: number) => void,
+): Promise<T> {
+  return sendWithProgress<T>("PUT", path, file, onProgress);
+}
+
+/** Uploads an installer with its .sig sidecar (PROTOCOL §2: the server reads `sig` before `file`). */
+export function uploadRelease(
+  parts: { sig: File; file: File; rolloutPct: number },
+  onProgress?: (fraction: number) => void,
+): Promise<{ release: Release }> {
+  const form = new FormData();
+  form.append("sig", parts.sig, parts.sig.name);
+  form.append("rollout_pct", String(parts.rolloutPct));
+  form.append("file", parts.file, parts.file.name);
+  return sendWithProgress("POST", "/v1/admin/releases", form, onProgress);
 }
 
 const qs = (params: Record<string, string | number | null | undefined>) => {
@@ -155,6 +179,8 @@ export const api = {
     update: (id: string, patch: { name?: string; auto_accept?: boolean }) =>
       request<{ device: Device }>("PATCH", `/v1/devices/${id}`, patch),
     remove: (id: string) => request<object>("DELETE", `/v1/devices/${id}`),
+    requestUpdate: (id: string, force: boolean) =>
+      request<{ version: string }>("POST", `/v1/devices/${id}/update`, { force }),
     enrollToken: () =>
       request<{ token: string; expires_at: string }>("POST", "/v1/enroll-tokens", {}),
   },
@@ -178,6 +204,8 @@ export const api = {
     deleteUser: (id: string) => request<object>("DELETE", `/v1/admin/users/${id}`),
     devices: (q: PageQuery & { q?: string; status?: string }) =>
       request<Page<Device>>("GET", `/v1/admin/devices${qs(q)}`),
+    requestDeviceUpdate: (id: string, force: boolean) =>
+      request<{ version: string }>("POST", `/v1/admin/devices/${id}/update`, { force }),
     updateDevice: (id: string, disabled: boolean) =>
       request<{ device: Device }>("PATCH", `/v1/admin/devices/${id}`, { disabled }),
     deleteDevice: (id: string) => request<object>("DELETE", `/v1/admin/devices/${id}`),
@@ -195,11 +223,14 @@ export const api = {
       q: PageQuery & { user_id?: string; device_id?: string; event?: string; actor?: string },
     ) => request<Page<AuditEvent>>("GET", `/v1/admin/audit${qs(q)}`),
     releases: () => request<{ items: Release[] }>("GET", "/v1/admin/releases"),
-    createRelease: (r: Omit<Release, "id" | "published_at" | "created_at">) =>
-      request<{ release: Release }>("POST", "/v1/admin/releases", r),
-    updateRelease: (id: string, patch: { rollout_pct?: number; published?: boolean }) =>
+    uploadRelease,
+    updateRelease: (id: ReleaseId, patch: { rollout_pct?: number; published?: boolean }) =>
       request<{ release: Release }>("PATCH", `/v1/admin/releases/${id}`, patch),
-    deleteRelease: (id: string) => request<object>("DELETE", `/v1/admin/releases/${id}`),
+    setReleaseInstaller: (id: ReleaseId) =>
+      request<{ release: Release }>("POST", `/v1/admin/releases/${id}/installer`, {}),
+    deleteRelease: (id: ReleaseId) => request<object>("DELETE", `/v1/admin/releases/${id}`),
+    pushUpdates: (os?: ReleaseOS) =>
+      request<{ queued: number }>("POST", "/v1/admin/updates/push", os ? { os } : {}),
     settings: () => request<AdminSettings>("GET", "/v1/admin/settings"),
     saveSettings: (s: AdminSettings) => request<AdminSettings>("PUT", "/v1/admin/settings", s),
   },

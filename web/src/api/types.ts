@@ -5,6 +5,7 @@ export type UserId = Brand<string, "UserId">;
 export type DeviceId = Brand<string, "DeviceId">;
 export type SessionId = Brand<string, "SessionId">;
 export type ClientKeyId = Brand<string, "ClientKeyId">;
+export type ReleaseId = Brand<string, "ReleaseId">;
 
 export type User = {
   id: UserId;
@@ -33,6 +34,15 @@ export type Monitor = {
 export type DeviceStatusValue = "online" | "offline" | "disabled";
 export type OS = "darwin" | "windows" | "linux";
 
+export type UpdateState =
+  | "checking"
+  | "downloading"
+  | "waiting_idle"
+  | "installing"
+  | "up_to_date"
+  | "failed"
+  | "rolled_back";
+
 export type Device = {
   id: DeviceId;
   name: string;
@@ -51,6 +61,15 @@ export type Device = {
   permissions: { screen: boolean; input: boolean } | null;
   encoder: string | null;
   pinned_clients: { client_key_id: ClientKeyId; label: string; approved_at: string }[] | null;
+  /** Newest published release for its os/arch. */
+  latest_version: string | null;
+  update_available: boolean;
+  /** Last update attempt as reported by the agent ("" = none). */
+  update_state: UpdateState | "";
+  update_from: string;
+  update_version: string;
+  update_error: string;
+  update_at: string | null;
   owner_email?: string;
 };
 
@@ -119,17 +138,27 @@ export type LoginSession = {
   current: boolean;
 };
 
+export type ReleaseOS = Exclude<OS, "linux">;
+export type ReleaseArch = "amd64" | "arm64" | "universal";
+
 export type Release = {
-  id: string;
+  id: ReleaseId;
   version: string;
-  os: OS;
-  arch: string;
+  os: ReleaseOS;
+  arch: ReleaseArch;
   url: string;
+  filename: string;
+  size: number;
   sha256: string;
   signature: string;
+  key_id: string;
   rollout_pct: number;
   published_at: string | null;
   created_at: string;
+  /** Also served as the Add-device download for its os. */
+  installer: boolean;
+  /** Devices currently reporting this version. */
+  devices: number;
 };
 
 export type Page<T> = { items: T[]; next_before: string | null };
