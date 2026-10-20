@@ -12,7 +12,7 @@ make up          # generates .env with fresh secrets, builds and starts everythi
 
 | URL | What |
 |---|---|
-| http://localhost:5560 | Web app and admin dashboard. The admin login is printed by `make env` and stored in `.env`. |
+| http://localhost:5560 | Web app and admin dashboard. The admin login is `ADMIN_EMAIL` / `ADMIN_INITIAL_PASSWORD` from `.env` (printed by `make env`). |
 | http://localhost:5562 | Device console of the **Docker demo device**: the "physical screen" where you enroll it and approve sessions |
 | http://127.0.0.1:9190/metrics | Prometheus metrics (localhost only) |
 
@@ -26,6 +26,8 @@ To try a session:
 `make down` stops the stack, `make clean` also deletes its volumes, and `make logs` follows the logs.
 
 If host port 3478 is taken (another TURN server), set `TURN_PORT=3479` in `.env`; this checkout already does.
+
+`ADMIN_EMAIL` may be a plain username: this checkout's `.env` signs in as `admin` / `admin`. The bootstrap admin is only created when the users table is empty, so changing `.env` later does not change an existing account. Change the password under **Settings → Password** (at least 10 characters). `install.sh` always generates a random password for production.
 
 ## Layout
 
@@ -62,14 +64,26 @@ The host Go toolchain (`.tools/go`) cannot reach the module proxy on this Mac be
 | OS | Build | Status |
 |---|---|---|
 | Linux (demo) | `docker compose --profile demo build demo-device` | Verified end to end in Chromium: video, mouse, keyboard, relay path, consent, kill switch |
-| macOS | `packaging/macos/build-app.sh` → `dist/macos/RemoteAgent.app`; `packaging/macos/build-pkg.sh` → `.pkg` | Capture + VideoToolbox encode verified on this Mac (selftest, ffmpeg-decodable stream). Input needs the Accessibility permission. A live session against the stack has not been run yet. |
+| macOS | `SERVER_URL=… packaging/macos/build-app.sh` → `dist/macos/RemoteAgent.app`; `packaging/macos/build-pkg.sh` → `.pkg` | Live session against the stack verified on this Mac: enrollment dialog, consent + pinning, ScreenCaptureKit → VideoToolbox video, direct (srflx) path. |
 | Windows | `native/windows/xbuild.sh` (mingw cross-compile in Docker) → `agent/dist/windows/remote-agent.exe`; `packaging/windows/build.ps1` for the MSI on Windows | Compiles and links. **Never run on Windows.** |
 
-macOS permissions: grant `RemoteAgent.app` **Screen Recording** and **Accessibility** under System Settings → Privacy & Security. Ad-hoc signed rebuilds reset these grants; Developer ID signing (set `DEVELOPER_ID_APP` / `DEVELOPER_ID_INSTALLER` and the notary credentials) keeps them stable. Check with:
+macOS notes:
 
-```bash
-open -W -n dist/macos/RemoteAgent.app --stdout /dev/stdout --args selftest
-```
+- **Server URL.** `build-app.sh` bakes `SERVER_URL` into `Info.plist` (`LSEnvironment`), so the app knows its server when launched from Finder. The `.pkg` LaunchAgent uses the same value. For the local stack, build with `SERVER_URL=http://localhost:5560`.
+- **Permissions.** Grant **Screen Recording** and **Accessibility** to `RemoteAgent` under System Settings → Privacy & Security. The app appears in those lists after its first start, which asks for both.
+- **Rebuilds.** An ad-hoc signed build is a new app to macOS, so every rebuild invalidates the grants. Turning an old entry back on does not help. Reset and re-grant:
+
+  ```bash
+  tccutil reset ScreenCapture com.remotectl.agent; tccutil reset Accessibility com.remotectl.agent
+  ```
+
+  Developer ID signing (`DEVELOPER_ID_APP` / `DEVELOPER_ID_INSTALLER` plus the notary credentials) keeps grants across updates.
+- **Logs.** The agent logs to `~/Library/Logs/RemoteAgent.log` (rotated at 10 MB); set `RC_LOG_LEVEL=debug` for more.
+- **Self-test.** Run it as the app, so that the app's own grants apply:
+
+  ```bash
+  open -W -n /Applications/RemoteAgent.app --stdout /tmp/selftest.txt --stderr /tmp/selftest.txt --args selftest; cat /tmp/selftest.txt
+  ```
 
 Scripted installs: `msiexec /i RemoteAgent.msi ENROLL_TOKEN=XXXX-XXXX /qn`. On macOS, write the token to `/Library/Preferences/com.remotectl.agent` (`EnrollToken`) before running the `.pkg`. Otherwise the agent asks for the token on first run.
 
@@ -131,8 +145,8 @@ The repo URL in `install.sh` assumes `github.com/ruolez/remotectl`, which has no
 ## Known gaps
 
 - Windows: runtime untested (hardware MFT negotiation, secure-desktop capture, SYSTEM helper spawn, WiX build).
-- macOS: no live session against the server yet, no app icon, and the bundle-swap auto-update is untested.
-- Email alerts on login and new devices are not implemented; those events are only audited. There is no TOTP replay cache yet.
+- macOS: tested only by controlling this same Mac, not from a second machine. There is no app icon, and the bundle-swap auto-update is untested.
+- Email alerts on login and new devices are not implemented; those events are only audited. (TOTP codes are single-use: the accepted time step is stored per user.)
 - Passkey ceremonies are implemented on both sides but were not exercised with a real authenticator.
 - PNG clipboard is ignored; text clipboard works both ways.
 - On the Linux demo, the red session border is visible in the captured video. On macOS and Windows it is excluded from capture.
