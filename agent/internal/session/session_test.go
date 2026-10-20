@@ -309,7 +309,9 @@ func TestLoopbackSessionNewBrowserApprovedAndRemembered(t *testing.T) {
 	if strings.Join(statuses, ",") != "awaiting_approval,approved" {
 		t.Fatalf("statuses = %v", statuses)
 	}
-	if !states[0].Connected || states[0].Path != proto.PathHost {
+	// Direct, not relayed. Host vs srflx depends on trickle timing: a remote
+	// candidate seen in a STUN check before it is signalled is peer-reflexive.
+	if !states[0].Connected || states[0].Path == proto.PathRelay {
 		t.Fatalf("state = %+v", states[0])
 	}
 	calls := h.prompter.calls()
