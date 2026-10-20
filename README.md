@@ -111,25 +111,33 @@ cd server && ../scripts/godocker.sh run ./cmd/remotectl-release keygen     # kee
 
 Set `RELEASE_PUBLIC_KEY` in `.env` (the server verifies uploads against it), and build the agents with `-X main.releasePublicKey=<pub>`.
 
-## Production (one VPS)
+## Production (dedicated Ubuntu 24.04 server)
 
-On Ubuntu 24.04:
+Point a DNS A record at the server, then run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ruolez/remotectl/main/install.sh | sudo bash   # Install / Update / Remove
+curl -fsSL https://raw.githubusercontent.com/ruolez/myrd/main/install.sh | sudo bash
 ```
 
-The installer:
+The menu offers **Install**, **Update**, **SSL** and **Remove**. Each is also a subcommand: `sudo bash /opt/myrd/install.sh update|ssl|remove`.
 
-1. Installs Docker.
-2. Asks for the domain, admin email and public IP.
-3. Writes `.env` with `PUBLIC_URL`, `TURN_URLS` (incl. `turns:` on 5349), `TURN_EXTERNAL_IP` and `TURN_ALLOW_PRIVATE_PEERS=false`.
-4. Opens ufw for 80/443 tcp+udp, 3478 tcp+udp, 5349/tcp and 49152–65535/udp.
-5. Runs `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d`.
+| Command | What it does |
+|---|---|
+| `install` | Installs Docker, certbot and ufw. Asks for the domain, a Let's Encrypt email, the admin login and the public IP, and checks that DNS points at this server. Clones the repo to `/opt/myrd` and writes `.env`: fresh secrets, public URLs, TURN settings, and Postgres memory sized from RAM. Opens the firewall, builds and starts the stack, gets the certificate, and enables renewal. Prints the URL and admin password. |
+| `update` | Backs up the database and `.env` to `/opt/myrd/backups` (keeps the last 10). Pulls `main` from GitHub, pulls new base images and rebuilds. Removes dangling images and build cache older than 24 h. Data, settings and the certificate are not touched. Migrations run when the API starts. |
+| `ssl` | Shows the certificate status and repairs whatever is broken: a missing or expired certificate, Caddy stuck without one, a missing renewal hook or timer. It can also force a renewal or move to a new domain. It finishes with a `certbot renew --dry-run`. |
+| `remove` | Backs up the database to `/root/myrd-backup-<time>`, then deletes the containers, images, volumes and `/opt/myrd`. It asks before deleting the certificate. |
 
-Caddy gets the TLS certificate automatically, and coturn reuses it for TURNS. Updates take a `pg_dump` backup first.
+How TLS works:
 
-The repo URL in `install.sh` assumes `github.com/ruolez/remotectl`, which has not been created yet.
+1. certbot runs on the host using the webroot method. Caddy serves `/.well-known/acme-challenge/` from `data/acme`; it serves plain HTTP until the first certificate exists.
+2. Ubuntu's `certbot.timer` renews twice a day when a certificate is due.
+3. After each renewal, the deploy hook `/etc/letsencrypt/renewal-hooks/deploy/myrd.sh` copies the certificate to `data/tls` (key readable by coturn) and restarts Caddy and coturn.
+4. Caddy then serves HTTPS, HTTP/2 and HTTP/3, and coturn serves TURNS on port 5349.
+
+Ports: 80/443 tcp+udp, 3478 tcp+udp, 5349/tcp, and 49152–65535/udp for the TURN relay.
+
+`make test-install` runs the whole installer in a throwaway privileged Ubuntu 24.04 container with its own Docker. Pebble (Let's Encrypt's test server) does real HTTP-01 validation. The run covers install, renewal through the hook, update, `ssl` repairing a broken TLS state, and remove.
 
 ## Deviations from the design doc
 
