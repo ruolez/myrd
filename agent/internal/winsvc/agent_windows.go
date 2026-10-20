@@ -30,9 +30,6 @@ import (
 	"github.com/ruolez/remotectl/proto"
 )
 
-// regKey is written by the MSI (EnrollToken, ServerURL).
-const regKey = `SOFTWARE\RemoteAgent`
-
 // Options shared by the service and the helper.
 type Options struct {
 	Settings      config.Settings
@@ -184,6 +181,7 @@ func runConnected(ctx context.Context, o *Options, p *Proxy) error {
 // enrolled yet. Without a token it waits, polling the registry.
 func ensureEnrolled(ctx context.Context, o *Options) (config.State, ed25519.PrivateKey, error) {
 	ks := identity.Default(o.Settings.DataDir)
+	lastReason := ""
 	for {
 		st, err := config.Load(o.Settings.DataDir)
 		if err != nil {
@@ -206,6 +204,12 @@ func ensureEnrolled(ctx context.Context, o *Options) (config.State, ed25519.Priv
 			fromRegistry = token != ""
 		}
 		url := serverURL(o)
+		if reason := enrollWaitReason(token, url); reason != lastReason {
+			lastReason = reason
+			if reason != "" {
+				o.Log.Warn("winsvc: " + reason)
+			}
+		}
 		if token != "" && url != "" {
 			st, key, err := enroll(ctx, o, ks, url, token)
 			if err == nil || api.IsCode(err, "not_found", "bad_request", "conflict", "forbidden") {
@@ -290,6 +294,27 @@ func regDelete(name string) {
 
 // ---------------------------------------------------------------- helper
 
+// waitForDeviceKey blocks until the service has enrolled and stored the
+// device key, instead of exiting and being respawned in a loop.
+func waitForDeviceKey(ctx context.Context, ks identity.Keystore, log *slog.Logger) (ed25519.PrivateKey, error) {
+	logged := false
+	for {
+		key, err := ks.Load()
+		if !errors.Is(err, identity.ErrNotFound) {
+			return key, err
+		}
+		if !logged {
+			log.Info("winsvc: helper waiting for enrollment")
+			logged = true
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
+	}
+}
+
 // RunHelper is `remote-agent.exe helper`: it runs in the console session as
 // SYSTEM, connects to the service's pipes and runs the real session.Manager
 // with the native backend, plus the tray. It returns when the service asks
@@ -313,7 +338,7 @@ func RunHelper(o Options) error {
 	}
 	defer backend.Shutdown()
 
-	key, err := identity.Default(o.Settings.DataDir).Load()
+	key, err := waitForDeviceKey(ctx, identity.Default(o.Settings.DataDir), o.Log)
 	if err != nil {
 		return fmt.Errorf("device key: %w", err)
 	}
