@@ -185,7 +185,7 @@ Rules:
 - Agent socket closes → pending sessions fail (`device_offline`). Active sessions are kept; on reconnect the agent's `hello.active_sessions` reconciles: any active row for that device not listed is ended `peer_disconnected`.
 - Server boot: every `pending` row → `failed/server_restart`; `active` rows survive until reconciled by the agent's next `hello` (or ended after 2 min if the device never returns).
 - Session `max_session_hours` (admin setting) enforced by the server sending `session.end{timeout}`.
-- Server writes audit: `session.created`, `session.connected` (meta: path, client_ip, agent_ip, local/remote candidate), `session.ended` (meta: reason, duration_s, bytes), `session.failed`, `input.rejected` (when reason = `input_abuse`).
+- Server writes audit: `session.created`, `session.connected` (meta: path, client_ip, agent_ip, local/remote candidate), `session.ended` (meta: reason, duration_s, bytes), `session.failed`, `input.rejected` (when reason = `input_abuse`), and one event per file transfer reported by the agent: `file.uploaded`, `file.downloaded`, `file.upload_failed`, `file.download_failed` (meta: name, dir, size, bytes, sha256, result, error, duration_ms, xfer).
 - Server→agent `session.offer` carries `ice_servers` minted for the agent (separate TURN username), `client_key` and `user`.
 - TURN credentials: coturn REST scheme — `username = "<unix_expiry>:<session_id>:<b|a>"`, `credential = base64(HMAC-SHA1(TURN_SECRET, username))`, TTL ≤ 2 h. URLs from `TURN_URLS` (browser) and `TURN_URLS_AGENT` (agent; defaults to `TURN_URLS`). STUN URL included as a separate entry without credentials. `force_relay` is passed back unchanged so the browser sets `iceTransportPolicy:"relay"`.
 
@@ -194,6 +194,7 @@ Rules:
 - `permissions{permissions}` whenever TCC state changes; `pins.sync{pinned_client_keys}` after any pin change.
 - `token.renew{}` → `token{token,expires_at}` (the agent keeps it for the next reconnect).
 - Server pushes `device.update{name,auto_accept}`, `client_key.revoked{public_key}`.
+- `session.file{session_id, files:[FileRecord]}` (audit only, never relayed): one record per finished file transfer, batched (≤ 50 records per message). `FileRecord = {xfer, direction: "upload"|"download", name, dir, size, bytes, sha256, result: "ok"|"cancelled"|"error", error, duration_ms}`; `upload` = browser → device. The server accepts it for a session of this device that connected, also after it ended (records are flushed just before `session.end`), and audits each record as above; batches over 50 are rejected with `bad_request`.
 
 ### Browser extras
 - Server pushes `device.status{device_id,online,status,last_seen_at}` to all of the owner's browser sockets on connect/disconnect/disable/remove.
@@ -210,13 +211,14 @@ Rules:
 
 ## 5. Data channels
 
-The browser creates the offer with one `recvonly` video transceiver (H.264 preferred: packetization-mode=1, profile 42e01f/4d001f/640c1f) and three data channels (exact labels):
+The browser creates the offer with one `recvonly` video transceiver (H.264 preferred: packetization-mode=1, profile 42e01f/4d001f/640c1f) and four data channels (exact labels):
 
 | label | options | direction |
 |---|---|---|
 | `input` | ordered, reliable | browser → agent, binary |
 | `cursor` | `ordered:false, maxRetransmits:0` | agent → browser, binary |
 | `control` | ordered, reliable | both; JSON text + binary clipboard frames |
+| `file` | ordered, reliable | both; JSON text + binary `0x40` data frames (see below). Agents without file transfer close it. |
 
 ### `input` (binary, little-endian, first byte = type)
 
@@ -230,7 +232,7 @@ The browser creates the offer with one `recvonly` video transceiver (H.264 prefe
 | `0x05` | Text | UTF-8 bytes, 1..1024 | 2..1025 |
 | `0x10` | ClipboardBegin | `xfer u16, mime u8 (1 text/plain;utf-8, 2 image/png), total u32` (total ≤ 1 MiB) | 8 |
 | `0x11` | ClipboardData | `xfer u16, bytes (1..16384)`; complete when `total` bytes received | 4..16387 |
-| `0x20` | Control | `op u8, arg u8`: op 1 select monitor (arg = monitor index in `hello.monitors`), 2 request keyframe, 3 set quality tier (0 background 5 fps, 1 balanced 30 fps, 2 high 60 fps), 4 release all keys | 3 |
+| `0x20` | Control | `op u8, arg u8`: op 1 select monitor (arg = monitor index in `hello.monitors`), 2 request keyframe, 3 set quality tier (**legacy**, for agents without the `stream` feature; 0 background 5 fps, 1 balanced 30 fps, 2 high), 4 release all keys | 3 |
 
 HID modifier byte: bit0 LCtrl, bit1 LShift, bit2 LAlt, bit3 LGUI, bit4 RCtrl, bit5 RShift, bit6 RAlt, bit7 RGUI. The agent tracks pressed keys itself and releases every pressed key on session end, on `0x20 op 4`, and on blur-triggered release from the browser.
 
@@ -243,7 +245,7 @@ Validation on the agent: wrong length, unknown type, button > 4, monitor out of 
 | `0x30` | CursorShape | `id u32, w u16, h u16, hot_x u16, hot_y u16, png bytes` | 13 + png |
 | `0x31` | CursorPos | `x u16, y u16, visible u8` (normalized; up to 120 Hz) | 6 |
 
-Shapes are sent on change; the browser caches by id (re-send of a known id with zero-length png means "use cached").
+Shapes are sent on change; the browser caches by id (re-send of a known id with zero-length png means "use cached"). Shape size and hotspot are in **native** monitor pixels, whatever the encoded stream size.
 
 ### `control`
 
@@ -251,15 +253,99 @@ JSON text messages, `{"t": "...", ...}`:
 
 | t | dir | fields |
 |---|---|---|
-| `hello` | A→B on open | `monitors:[Monitor]`, `active:index`, `encoder`, `codec:"h264"`, `fps`, `permissions:{screen,input}`, `agent_version`, `os` |
-| `monitor` | A→B | `active:index`, `width`, `height` (after a switch) |
+| `hello` | A→B on open | `monitors:[Monitor]`, `active:index`, `encoder`, `codec:"h264"`, `fps` (current target), `max_fps` (encoder cap), `features:[string]` (`"stream"`, `"files"`; absent on old agents), `permissions:{screen,input}`, `agent_version`, `os` |
+| `monitor` | A→B | `active:index`, `width`, `height` (native pixels, after a switch) |
+| `stream` | B→A | desired stream settings, see below |
+| `stream` | A→B | stream state, see below |
 | `ping` | B→A | `id`, `ts` (ms, browser clock) |
 | `pong` | A→B | `id`, `ts` (echo) |
-| `stats` | A→B every 2 s | `bitrate_kbps`, `fps`, `encoder`, `width`, `height`, `keyframes` |
+| `stats` | A→B every 2 s | `bitrate_kbps`, `fps`, `encoder`, `width`, `height` (encoded size), `keyframes`, `target_fps`, `target_kbps`, `bwe_kbps`, `loss` (0..1) |
 | `error` | A→B | `code` (`permission_missing`, `capture_failed`, `encoder_failed`), `detail` |
 | `bye` | A→B | `reason` (just before closing) |
 
 Binary frames on `control` (A→B) carry the remote clipboard using the same `0x10`/`0x11` encoding as `input`.
+
+Monitor sizes in `hello.monitors` and `monitor` are always native pixels (physical pixels on Retina displays); the encoded size is reported in `stream` and `stats`.
+
+#### Stream settings (`stream`, feature `"stream"`)
+
+B→A, the full desired state each time (idempotent; the latest wins). The browser sends it when `hello` arrives, on every change (debounced), and when the tab is hidden or shown. It never sends `0x20 op 3` to an agent with the `stream` feature.
+
+```json
+{"t":"stream","id":7,"preset":"auto","fps":null,"res":null,"max_kbps":null,"background":false}
+```
+
+| field | type | meaning |
+|---|---|---|
+| `id` | u32, optional | echoed in the reply |
+| `preset` | `auto` \| `speed` \| `balanced` \| `quality` \| `custom` | required |
+| `fps` | null \| 1..60 | null = preset default; clamped to `max_fps`. In `auto` a ceiling |
+| `res` | null \| `native` \| `1440p` \| `1080p` \| `720p` \| `half` | null = preset default. Named sizes cap the **short edge** (1080p on 3440×1440 → 2580×1080), `half` halves both edges, nothing upscales. In `auto` a ceiling |
+| `max_kbps` | null \| 1000..20000 | null = automatic ceiling; otherwise a cap (sent bitrate = min(estimate, cap)); relay paths are capped at 6000 |
+| `background` | bool | hidden tab: 5 fps / 1 Mbps at the current size, Auto frozen |
+
+Presets (`max` = the encoder cap, 60 on hardware, 30 on software encoders):
+
+| preset | fps | resolution | bitrate cap | adaptive |
+|---|---|---|---|---|
+| `auto` | max (ceiling) | native (ceiling) | automatic (8 Mbps at 1080p, pixel-scaled, ≤ 16) | yes: lowers fps first, then resolution, on congestion; raises them back with hysteresis |
+| `speed` | max | 720p | 4000 | no |
+| `balanced` | min(30, max) | 1080p | 8000 | no |
+| `quality` | min(30, max) | native | 20000 | no |
+| `custom` | `fps` or max | `res` or native | `max_kbps` or automatic | no |
+
+An invalid message (unknown enum, wrong type, out of range) is ignored and answered with the current state and `"ok":false`.
+
+A→B state, sent after `hello`, after every request, and when the monitor, Auto step, path or `max_fps` changes:
+
+```json
+{"t":"stream","id":7,"ok":true,"preset":"auto","fps":null,"res":null,"max_kbps":null,"background":false,
+ "resolved":{"fps":60,"res":"native","max_kbps":null},
+ "target_fps":30,"max_fps":60,"width":2560,"height":1440,"native_width":5120,"native_height":2880,
+ "ceil_kbps":8000,"relay":false,
+ "auto":{"rung":2,"rungs":6,"reason":"congestion"},
+ "options":{"fps":[5,10,15,24,30,60],"res":[{"id":"native","width":5120,"height":2880},{"id":"1440p","width":2560,"height":1440},{"id":"1080p","width":1920,"height":1080},{"id":"720p","width":1280,"height":720},{"id":"half","width":2560,"height":1440}]}}
+```
+
+`resolved` is what the preset and overrides came to (so the browser can switch to `custom` without its own preset table); `width`/`height` are the encoded size; `auto` is null unless `preset` is `auto` (`reason`: `steady`, `warmup`, `congestion`, `loss`, `starved`, `probe`); `options.fps` lists only values ≤ `max_fps`.
+
+Compatibility: a browser seeing no `features` in `hello` falls back to `0x20 op 3` (hidden → 0; 30-fps presets and fps ≤ 30 → 1; otherwise 2; see `legacy_tier` vectors). An agent receiving `op 3` maps 0 → background, 1 → `custom` 30 fps native, 2 → `auto`.
+
+### `file` (feature `"files"`)
+
+File transfer in both directions plus browsing the device's file system, as the device's signed-in user. Allowed in every approved session; the agent shows each transfer on the device and reports it for the audit log (`session.file`). There is no size limit: both sides stream to and from disk and are flow-controlled.
+
+Binary frame (both directions):
+
+| type | name | layout after the type byte | total |
+|---|---|---|---|
+| `0x40` | FileData | `xfer u32, payload 1..16384 bytes` | 6..16389 |
+
+JSON text frames `{"t": ...}`. The browser allocates every `id` (requests) and `xfer` (transfers) from one u32 counter.
+
+| t | dir | fields |
+|---|---|---|
+| `roots` | B→A | `id` |
+| `roots` | A→B | `id`, `roots:[{name, path, kind: home\|downloads\|desktop\|documents\|volume\|drive}]`, `default_dir` (upload default, the user's Downloads), `sep` (`/` or `\`) |
+| `list` | B→A | `id`, `path` (absolute), `offset`, `hidden` (include hidden entries) |
+| `listing` | A→B | `id`, `path`, `parent` (`""` at a root), `entries:[{name, kind: dir\|file\|other, link, size, mtime (unix ms), hidden}]`, `offset`, `next_offset` (null at the end), `total`, `truncated` (directory has more than 20000 entries) |
+| `get` | B→A | `xfer`, `path`: download a regular file |
+| `begin` | A→B | `xfer`, `name`, `size`, `mtime`, `window`: then `0x40` frames |
+| `put` | B→A | `xfer`, `dir` (`""` = `default_dir`), `name`, `size`: upload |
+| `ready` | A→B | `xfer`, `name` (final, de-duplicated: `a (1).txt`), `path`, `window`: the browser may now send `0x40` frames |
+| `ack` | both | `xfer`, `bytes` (cumulative bytes the receiver has written) |
+| `end` | sender | `xfer`, `sha256` (hex of the whole file), and `size` from the agent; after the last data frame |
+| `done` | A→B | `xfer`, `name`, `path`, `size`, `sha256`: the upload is committed under its final name |
+| `cancel` | both | `xfer` |
+| `error` | A→B | `id` or `xfer`, `code`, `detail` |
+
+Error codes: `not_found`, `denied`, `os_denied` (macOS privacy permission), `not_dir`, `not_file`, `bad_name`, `bad_path`, `no_space`, `io`, `changed` (file changed while reading), `checksum`, `protocol`, `too_many`, `no_user` (Windows: nobody signed in), `audit_unavailable`, `stalled`, `cancelled`.
+
+Rules:
+- Flow control: a sender keeps at most `window` payload bytes (4 MiB) beyond the receiver's last `ack`; receivers ack after writing, at least every 256 KiB and at the end. Sending past the window is a `protocol` error. Senders also wait while the channel's `bufferedAmount` is high, and file data is paced to 4 MiB/s on relayed sessions.
+- Uploads are written to a hidden `.<name>.remotectl-<xfer>.part` file and renamed to the final name (never replacing an existing file) only after the agent's SHA-256 matches `end.sha256`; a mismatch is `checksum`. Cancel, error, channel close and session end delete the partial file.
+- Names are sanitized on the agent (basename only, no control or reserved characters, reserved Windows names prefixed, ≤ 255 bytes). Paths must be absolute (Windows: drive paths only; UNC, `\\?\` and alternate data streams are rejected). The agent's own state directory is denied.
+- The agent runs at most 4 transfers and 2 listings at once (`too_many`); 60 s without progress cancels a transfer (`stalled`). `get` on anything but a regular file is `not_file`.
 
 ## 6. Agent device-local surfaces
 

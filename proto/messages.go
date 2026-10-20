@@ -24,6 +24,7 @@ const (
 	TypeKeyRevoked    = "client_key.revoked" // S→A
 	TypeSessionStatus = "session.status"     // A→S→B
 	TypeSessionState  = "session.state"      // A→S→B
+	TypeSessionFile   = "session.file"       // A→S, audit only, never relayed
 
 	// browser <-> server
 	TypeSessionCreate  = "session.create"  // B→S
@@ -339,4 +340,30 @@ func Encode(typ string, msg any) ([]byte, error) {
 	t, _ := json.Marshal(typ)
 	m["type"] = t
 	return json.Marshal(m)
+}
+
+// ---------- file transfer audit (A→S) ----------
+
+// MaxFileRecords caps the records in one SessionFile message.
+const MaxFileRecords = 50
+
+// FileRecord describes one finished file transfer of a session.
+type FileRecord struct {
+	Xfer       uint32 `json:"xfer"`
+	Direction  string `json:"direction"` // "upload" (browser → device) | "download"
+	Name       string `json:"name"`
+	Dir        string `json:"dir"`
+	Size       int64  `json:"size"`
+	Bytes      int64  `json:"bytes"`
+	SHA256     string `json:"sha256,omitempty"`
+	Result     string `json:"result"` // "ok" | "cancelled" | "error"
+	Error      string `json:"error,omitempty"`
+	DurationMS int64  `json:"duration_ms"`
+}
+
+type SessionFile struct {
+	V         int          `json:"v"`
+	Type      string       `json:"type"`
+	SessionID string       `json:"session_id"`
+	Files     []FileRecord `json:"files"`
 }
