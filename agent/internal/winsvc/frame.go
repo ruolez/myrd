@@ -52,6 +52,7 @@ type HelperCaps struct {
 	Capabilities proto.Capabilities `json:"capabilities"`
 	Permissions  proto.Permissions  `json:"permissions"`
 	SessionID    uint32             `json:"session_id"` // Windows console session it runs in
+	DeviceKey    string             `json:"device_key"` // Ed25519 public key (base64) the helper signs with
 }
 
 // ServiceStatus drives the helper's tray.

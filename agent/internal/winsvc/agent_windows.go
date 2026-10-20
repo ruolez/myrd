@@ -89,6 +89,7 @@ func runConnected(ctx context.Context, o *Options, p *Proxy) error {
 			return err
 		}
 		client := api.New(st.ServerURL)
+		p.SetDeviceKey(base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey)))
 
 		// Capabilities come from the helper; give it a moment so the first
 		// hello carries real monitors and encoder.
@@ -403,7 +404,7 @@ func RunHelper(o Options) error {
 	}
 	defer mgr.Close()
 
-	if err := link.Caps(helperCaps(backend)); err != nil {
+	if err := link.Caps(helperCaps(backend, key)); err != nil {
 		return err
 	}
 
@@ -451,8 +452,9 @@ func RunHelper(o Options) error {
 	select {}
 }
 
-func helperCaps(b platform.Backend) HelperCaps {
-	c := HelperCaps{Capabilities: proto.Capabilities{Codecs: []string{"h264"}, MaxFPS: session.EncoderMaxFPS(b.EncoderName()), Encoder: b.EncoderName()}}
+func helperCaps(b platform.Backend, key ed25519.PrivateKey) HelperCaps {
+	c := HelperCaps{Capabilities: proto.Capabilities{Codecs: []string{"h264"}, MaxFPS: session.EncoderMaxFPS(b.EncoderName()), Encoder: b.EncoderName()},
+		DeviceKey: base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey))}
 	if mons, err := b.Monitors(); err == nil {
 		for _, m := range mons {
 			c.Capabilities.Monitors = append(c.Capabilities.Monitors, proto.Monitor{

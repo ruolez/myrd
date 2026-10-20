@@ -27,6 +27,10 @@ type Proxy struct {
 	device  *proto.DeviceInfo
 	status  *ServiceStatus
 	caps    *HelperCaps
+	// deviceKey is the identity the service signs in with; helperKey is the
+	// one the attached helper reported (empty until its caps arrive).
+	deviceKey string
+	helperKey string
 }
 
 var _ session.Handler = (*Proxy)(nil)
@@ -62,6 +66,7 @@ func (p *Proxy) write(kind, typ string, v any) bool {
 func (p *Proxy) Attach(r io.Reader, w io.Writer) error {
 	p.mu.Lock()
 	p.w = w
+	p.helperKey = ""
 	replay := []Frame{}
 	if p.revoked != nil {
 		f, _ := newFrame(KindRevokedSet, "", p.revoked)
@@ -119,6 +124,13 @@ func (p *Proxy) readLoop(r io.Reader) error {
 		case KindCaps:
 			var c HelperCaps
 			if json.Unmarshal(f.Data, &c) == nil {
+				p.mu.Lock()
+				p.helperKey = c.DeviceKey
+				stale := p.staleHelperLocked()
+				p.mu.Unlock()
+				if stale {
+					p.restartStaleHelper()
+				}
 				p.mu.Lock()
 				p.caps = &c
 				p.mu.Unlock()
@@ -212,6 +224,29 @@ func (p *Proxy) Caps() (HelperCaps, bool) {
 		return HelperCaps{}, false
 	}
 	return *p.caps, true
+}
+
+// SetDeviceKey records the device public key (base64) the service is
+// enrolled with. A helper that loaded an older key, e.g. before the device
+// was removed and enrolled again, would sign session answers browsers
+// reject, so it is asked to exit; the supervisor starts a fresh one.
+func (p *Proxy) SetDeviceKey(pub string) {
+	p.mu.Lock()
+	p.deviceKey = pub
+	stale := p.staleHelperLocked()
+	p.mu.Unlock()
+	if stale {
+		p.restartStaleHelper()
+	}
+}
+
+func (p *Proxy) staleHelperLocked() bool {
+	return p.w != nil && p.helperKey != "" && p.deviceKey != "" && p.helperKey != p.deviceKey
+}
+
+func (p *Proxy) restartStaleHelper() {
+	p.log().Warn("winsvc: helper holds a previous device key; restarting it")
+	p.Shutdown()
 }
 
 // Shutdown asks an attached helper to exit.

@@ -206,3 +206,62 @@ func TestServeStopsOnShutdown(t *testing.T) {
 		t.Fatalf("frames after shutdown were delivered: %v", target.ended)
 	}
 }
+
+// A helper that loaded the device key before a re-enrollment signs answers
+// with the old identity, which browsers reject as bad_signature; the
+// service must make it exit so a fresh helper loads the new key.
+func TestProxyRestartsHelperWithStaleDeviceKey(t *testing.T) {
+	const current, previous = "key-after-enroll", "key-before-enroll"
+	cases := []struct {
+		name        string
+		helperKey   string
+		keyFirst    bool
+		wantRestart bool
+	}{
+		{"caps then stale key", previous, false, true},
+		{"key then stale caps", previous, true, true},
+		{"matching key", current, true, false},
+		{"helper without key report", "", true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Proxy{}
+			if tc.keyFirst {
+				p.SetDeviceKey(current)
+			}
+			s2hR, s2hW := io.Pipe()
+			h2sR, h2sW := io.Pipe()
+			defer h2sW.Close()
+			defer s2hW.Close()
+			go p.Attach(h2sR, s2hW)
+			statuses := make(chan ServiceStatus, 1)
+			served := make(chan error, 1)
+			go func() {
+				err := Serve(s2hR, &fakeTarget{}, HelperEvents{OnStatus: func(s ServiceStatus) { statuses <- s }})
+				s2hR.Close() // the helper process is gone: later writes fail instead of blocking
+				served <- err
+			}()
+			caps := HelperCaps{SessionID: 1, DeviceKey: tc.helperKey}
+			if err := NewLink(h2sW).Caps(caps); err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, func() bool { c, ok := p.Caps(); return ok && reflect.DeepEqual(c, caps) })
+			if !tc.keyFirst {
+				p.SetDeviceKey(current)
+			}
+			p.SetStatus(ServiceStatus{Status: "probe"})
+			select {
+			case err := <-served:
+				if !tc.wantRestart || err != nil {
+					t.Fatalf("helper loop returned %v, want restart %v", err, tc.wantRestart)
+				}
+			case <-statuses:
+				if tc.wantRestart {
+					t.Fatal("helper with a stale key kept running")
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("helper neither stopped nor received status")
+			}
+		})
+	}
+}
