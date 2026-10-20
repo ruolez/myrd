@@ -347,6 +347,13 @@ func TestPasswordAndTOTPLogin(t *testing.T) {
 		t.Fatalf("totp login: %d %+v", st, me)
 	}
 
+	// A code is single-use: replaying it within its window is refused.
+	c3 := e.client()
+	e.call(c3, "POST", "/v1/auth/login", map[string]string{"email": adminEmail, "password": adminPass}, &step1)
+	if st := e.call(c3, "POST", "/v1/auth/login/totp", map[string]string{"ticket": step1.Ticket, "code": code}, nil); st != 401 {
+		t.Fatalf("replayed totp code: got %d, want 401", st)
+	}
+
 	// 10 failures per email in 15 minutes → 429, even with the right password.
 	for i := 0; i < 10; i++ {
 		e.call(e.client(), "POST", "/v1/auth/login", map[string]string{"email": "nobody@example.com", "password": "wrong-password"}, nil)

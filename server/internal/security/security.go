@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/pquerna/otp"
+	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -147,6 +149,27 @@ func Open(key, sealed []byte) ([]byte, error) {
 		return nil, errors.New("sealed value too short")
 	}
 	return gcm.Open(nil, sealed[:gcm.NonceSize()], sealed[gcm.NonceSize():], nil)
+}
+
+// ---------- TOTP ----------
+
+const totpPeriod = 30
+
+// TOTPStep returns the time step (unix/30) whose code matches, accepting one
+// step of clock skew either way. Callers record the step to make codes single-use.
+func TOTPStep(code, secret string, now time.Time) (int64, bool) {
+	if len(code) != 6 {
+		return 0, false
+	}
+	cur := now.Unix() / totpPeriod
+	for step := cur - 1; step <= cur+1; step++ {
+		want, err := totp.GenerateCodeCustom(secret, time.Unix(step*totpPeriod, 0), totp.ValidateOpts{
+			Period: totpPeriod, Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1})
+		if err == nil && subtle.ConstantTimeCompare([]byte(want), []byte(code)) == 1 {
+			return step, true
+		}
+	}
+	return 0, false
 }
 
 // ---------- TURN (coturn REST API credentials) ----------

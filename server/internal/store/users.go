@@ -101,13 +101,20 @@ func SetTOTPPending(ctx context.Context, q db.Querier, userID string, sealed []b
 }
 
 func EnableTOTP(ctx context.Context, q db.Querier, userID string, sealed []byte) error {
-	_, err := q.Exec(ctx, `UPDATE users SET totp_secret_enc = $2, totp_pending_enc = NULL, totp_enabled_at = now() WHERE id = $1`, userID, sealed)
+	_, err := q.Exec(ctx, `UPDATE users SET totp_secret_enc = $2, totp_pending_enc = NULL, totp_enabled_at = now(), totp_last_step = NULL WHERE id = $1`, userID, sealed)
 	return err
 }
 
 func DisableTOTP(ctx context.Context, q db.Querier, userID string) error {
-	_, err := q.Exec(ctx, `UPDATE users SET totp_secret_enc = NULL, totp_pending_enc = NULL, totp_enabled_at = NULL WHERE id = $1`, userID)
+	_, err := q.Exec(ctx, `UPDATE users SET totp_secret_enc = NULL, totp_pending_enc = NULL, totp_enabled_at = NULL, totp_last_step = NULL WHERE id = $1`, userID)
 	return err
+}
+
+// ClaimTOTPStep records step as used. ok=false when that step or a later one
+// was already used (a replayed code).
+func ClaimTOTPStep(ctx context.Context, q db.Querier, userID string, step int64) (ok bool, err error) {
+	tag, err := q.Exec(ctx, `UPDATE users SET totp_last_step = $2 WHERE id = $1 AND (totp_last_step IS NULL OR totp_last_step < $2)`, userID, step)
+	return err == nil && tag.RowsAffected() == 1, err
 }
 
 func TouchLogin(ctx context.Context, q db.Querier, userID string) error {

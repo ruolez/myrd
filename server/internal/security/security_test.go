@@ -89,3 +89,29 @@ func TestAgentJWT(t *testing.T) {
 		t.Fatal("expired token accepted")
 	}
 }
+
+func TestTOTPStep(t *testing.T) {
+	// RFC 6238 appendix B SHA-1 seed "12345678901234567890", truncated to 6 digits.
+	const secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+	cases := []struct {
+		name     string
+		code     string
+		now      int64
+		wantStep int64
+		wantOK   bool
+	}{
+		{"current step", "287082", 59, 1, true},
+		{"one step late", "287082", 89, 1, true},
+		{"one step early", "287082", 29, 1, true},
+		{"two steps late", "287082", 119, 0, false},
+		{"rfc vector", "081804", 1111111109, 37037036, true},
+		{"wrong code", "287083", 59, 0, false},
+		{"wrong length", "28708", 59, 0, false},
+	}
+	for _, c := range cases {
+		step, ok := TOTPStep(c.code, secret, time.Unix(c.now, 0))
+		if step != c.wantStep || ok != c.wantOK {
+			t.Errorf("%s: got (%d, %v), want (%d, %v)", c.name, step, ok, c.wantStep, c.wantOK)
+		}
+	}
+}

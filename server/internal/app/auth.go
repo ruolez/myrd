@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/mail"
 	"strings"
+	"time"
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -148,7 +149,8 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) error {
 	return a.completeLogin(w, r, u, "password")
 }
 
-func (a *App) checkTOTP(u *store.User, code string) bool {
+// checkTOTP accepts each code once: its time step is claimed atomically.
+func (a *App) checkTOTP(ctx context.Context, u *store.User, code string) bool {
 	if u.TOTPSecretEnc == nil {
 		return false
 	}
@@ -157,7 +159,15 @@ func (a *App) checkTOTP(u *store.User, code string) bool {
 		a.log.Error("open totp secret", "user", u.ID, "err", err)
 		return false
 	}
-	return totp.Validate(strings.TrimSpace(code), string(secret))
+	step, ok := security.TOTPStep(strings.TrimSpace(code), string(secret), time.Now())
+	if !ok {
+		return false
+	}
+	claimed, err := store.ClaimTOTPStep(ctx, a.pool, u.ID, step)
+	if err != nil {
+		a.log.Error("claim totp step", "user", u.ID, "err", err)
+	}
+	return claimed
 }
 
 func (a *App) loginTOTP(w http.ResponseWriter, r *http.Request) error {
@@ -181,7 +191,7 @@ func (a *App) loginTOTP(w http.ResponseWriter, r *http.Request) error {
 	if u.Disabled {
 		return errf(http.StatusForbidden, "forbidden", "account disabled")
 	}
-	if !a.checkTOTP(u, body.Code) {
+	if !a.checkTOTP(ctx, u, body.Code) {
 		a.loginFailed(ctx, ip, u.Email, u.ID, "bad_totp")
 		a.totpTickets.Put(body.Ticket, userID) // allow a retry within the ticket TTL
 		return errf(http.StatusUnauthorized, "invalid_credentials", "invalid code")
@@ -533,7 +543,7 @@ func (a *App) totpDisable(w http.ResponseWriter, r *http.Request) error {
 	if !u.TOTPEnabled {
 		return errf(http.StatusBadRequest, "bad_request", "two-factor is not enabled")
 	}
-	if !a.checkTOTP(u, body.Code) {
+	if !a.checkTOTP(r.Context(), u, body.Code) {
 		return errf(http.StatusBadRequest, "invalid_credentials", "invalid code")
 	}
 	if err := store.DisableTOTP(r.Context(), a.pool, u.ID); err != nil {
