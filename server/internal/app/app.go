@@ -61,7 +61,7 @@ type Options struct {
 
 func New(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, log *slog.Logger, opts Options) (*App, error) {
 	wa, err := webauthn.New(&webauthn.Config{
-		RPID: cfg.RPID, RPDisplayName: "remotectl", RPOrigins: []string{cfg.PublicOrigin},
+		RPID: cfg.RPID, RPDisplayName: "my RemoteDesktop", RPOrigins: []string{cfg.PublicOrigin},
 	})
 	if err != nil {
 		return nil, err
@@ -324,7 +324,7 @@ func (a *App) getConfig(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"product_name":   "remotectl",
+		"product_name":   "my RemoteDesktop",
 		"version":        Version,
 		"signup_allowed": s.SignupAllowed,
 		"webauthn":       map[string]string{"rp_id": a.cfg.RPID, "origin": a.cfg.PublicOrigin},

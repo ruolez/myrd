@@ -481,7 +481,7 @@ func (a *App) totpSetup(w http.ResponseWriter, r *http.Request) error {
 	if u.TOTPEnabled {
 		return errf(http.StatusConflict, "conflict", "two-factor is already enabled")
 	}
-	key, err := totp.Generate(totp.GenerateOpts{Issuer: "remotectl", AccountName: u.Email})
+	key, err := totp.Generate(totp.GenerateOpts{Issuer: "my RemoteDesktop", AccountName: u.Email})
 	if err != nil {
 		return err
 	}

@@ -4,7 +4,7 @@ import { Link, Navigate, useNavigate, useSearchParams } from "react-router";
 import { api, errorMessage } from "../api/client";
 import { useAuth } from "../app/auth";
 import { Icon } from "../components/icons";
-import { ErrorBox, Field, Loading, Spinner } from "../components/ui";
+import { Brand, ErrorBox, Field, Loading, Spinner } from "../components/ui";
 import { getAssertion, passkeysSupported } from "../lib/webauthn";
 
 export function AuthCard({
@@ -17,10 +17,10 @@ export function AuthCard({
   children: ReactNode;
 }) {
   return (
-    <div className="flex min-h-full items-center justify-center bg-bg p-4">
-      <div className="card w-full max-w-sm p-8 shadow-sm">
-        <div className="mb-6 flex flex-col items-center gap-3 text-center">
-          <img src="/favicon.svg" alt="" width={44} height={44} />
+    <div className="auth-backdrop flex min-h-full flex-col items-center justify-center gap-6 p-4">
+      <Brand size={40} className="text-2xl" />
+      <div className="card w-full max-w-sm p-8 shadow-lg shadow-black/5">
+        <div className="mb-6 flex flex-col items-center gap-2 text-center">
           <h1 className="text-2xl font-normal">{title}</h1>
           {subtitle && <p className="text-sm text-muted">{subtitle}</p>}
         </div>

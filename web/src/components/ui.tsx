@@ -354,3 +354,16 @@ export function Field({
     </label>
   );
 }
+
+export function Brand({ size = 28, className = "text-lg" }: { size?: number; className?: string }) {
+  return (
+    <span className={`inline-flex items-center gap-2.5 ${className}`}>
+      <img src="/favicon.svg" alt="" width={size} height={size} className="shrink-0" />
+      <span className="leading-none tracking-tight whitespace-nowrap">
+        <span className="font-normal text-muted">my </span>
+        <span className="font-semibold">Remote</span>
+        <span className="brand-accent font-semibold">Desktop</span>
+      </span>
+    </span>
+  );
+}

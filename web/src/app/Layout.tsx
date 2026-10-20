@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router";
 import { Icon } from "../components/icons";
 import type { IconName } from "../components/icons";
-import { ErrorBox } from "../components/ui";
+import { Brand, ErrorBox } from "../components/ui";
 import { signaling } from "../lib/signaling";
 import type { ConnState } from "../lib/signaling";
 import { useAuth, useUser } from "./auth";
@@ -72,9 +72,8 @@ export function Layout() {
 
   const sidebar = (
     <nav className="flex h-full flex-col gap-6 p-3" aria-label="Main">
-      <div className="flex items-center gap-2 px-3 pt-2">
-        <img src="/favicon.svg" alt="" width={28} height={28} />
-        <span className="text-lg font-medium tracking-tight">remotectl</span>
+      <div className="px-3 pt-2">
+        <Brand size={30} />
       </div>
       <NavList items={mainNav} onNavigate={() => setOpen(false)} />
       {user.is_admin && (
@@ -139,7 +138,7 @@ export function Layout() {
           <button className="btn-text btn-sm" aria-label="Open menu" onClick={() => setOpen(true)}>
             <Icon name="menu" />
           </button>
-          <span className="font-medium">remotectl</span>
+          <Brand size={24} className="text-base" />
         </header>
         <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6 lg:py-8">
           {keyError && (

@@ -21,6 +21,10 @@
   --c-warning: #f9ab00;
   --c-warning-soft: #fef7e0;
   --c-relay: #a142f4;
+  --c-brand-from: #3d7ff5;
+  --c-brand-to: #5a3ff2;
+  --c-brand-glow-1: rgb(76 141 255 / 0.14);
+  --c-brand-glow-2: rgb(90 63 242 / 0.12);
   color-scheme: light;
 }
 
@@ -42,6 +46,10 @@
   --c-warning: #fdd663;
   --c-warning-soft: #3a3214;
   --c-relay: #c58af9;
+  --c-brand-from: #8ab4f8;
+  --c-brand-to: #a99bff;
+  --c-brand-glow-1: rgb(76 141 255 / 0.12);
+  --c-brand-glow-2: rgb(90 63 242 / 0.14);
   color-scheme: dark;
 }
 
@@ -135,4 +143,17 @@ body {
 
 .session-stage video {
   object-fit: contain;
+}
+
+.brand-accent {
+  background: linear-gradient(135deg, var(--c-brand-from), var(--c-brand-to));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.auth-backdrop {
+  background:
+    radial-gradient(60rem 30rem at 10% -10%, var(--c-brand-glow-1), transparent 70%),
+    radial-gradient(50rem 30rem at 110% 110%, var(--c-brand-glow-2), transparent 70%), var(--c-bg);
 }

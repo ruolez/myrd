@@ -1,4 +1,8 @@
-# remotectl
+<p align="center"><img src="web/public/favicon.svg" width="96" alt=""></p>
+
+# my RemoteDesktop
+
+The code, modules and packages are named `remotectl`; "my RemoteDesktop" is the product name shown to users.
 
 Browser-based remote control for macOS and Windows machines. You sign in on the web, pick an enrolled device, and control it live. One server runs the control plane: accounts, device registry, signaling, TURN relay and audit log. The session itself is a peer-to-peer WebRTC connection, encrypted end to end. Each side signs its DTLS fingerprint with a key the server never holds, so the server never sees screen content or keystrokes.
 

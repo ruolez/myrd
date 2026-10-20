@@ -370,7 +370,7 @@ const ERROR_TEXT: Record<string, string> = {
   not_found: "Not found on the device.",
   denied: "Access to this location is not allowed.",
   os_denied:
-    "The device's privacy settings block this folder. On a Mac, allow the remotectl agent under System Settings › Privacy & Security › Files and Folders.",
+    "The device's privacy settings block this folder. On a Mac, allow the RemoteAgent app under System Settings › Privacy & Security › Files and Folders.",
   not_dir: "This is not a folder.",
   not_file: "Only regular files can be downloaded.",
   bad_name: "The file name is not allowed on the device.",

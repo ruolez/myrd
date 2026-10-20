@@ -4,9 +4,8 @@
 // console (internal/devconsole) plays this role.
 package tray
 
-// ProductName shows in the menu, tooltip and notifications; the product
-// name is still an open decision, so it is one variable.
-var ProductName = "remotectl"
+// ProductName shows in the menu, tooltip and notifications.
+var ProductName = "my RemoteDesktop"
 
 type State struct {
 	Enrolled  bool
