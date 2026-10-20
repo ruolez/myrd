@@ -104,9 +104,10 @@ func AuthChallengeMessage(deviceID, nonce string) []byte {
 	return []byte("remotectl-auth-v1\n" + deviceID + "\n" + nonce)
 }
 
-// ReleaseManifestMessage is what the offline release key signs:
+// ReleaseManifestMessage is the retired v1 release message, which also
+// signed the download URL.
 //
-//	"remotectl-release-v1\n" + version + "\n" + os + "\n" + arch + "\n" + url + "\n" + sha256hex
+// Deprecated: use ReleaseMessage; removed once the server and agent move to v2.
 func ReleaseManifestMessage(version, os, arch, url, sha256hex string) []byte {
 	return []byte("remotectl-release-v1\n" + version + "\n" + os + "\n" + arch + "\n" + url + "\n" + strings.ToLower(sha256hex))
 }

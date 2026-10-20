@@ -32,8 +32,21 @@
     { "session_id": "3f0c6c1e-6c55-4c3a-9a39-0a3f8d0e2b11", "role": "offer", "fingerprint": "ab:cd:ef", "utf8": "remotectl-fp-v1\n3f0c6c1e-6c55-4c3a-9a39-0a3f8d0e2b11\noffer\nAB:CD:EF" }
   ],
   "rollout_bucket": [
-    { "device_id": "00000000-0000-4000-8000-000000000000", "note": "bucket = uint32_be(sha256(device_id)[0:4]) % 100; compute in tests, do not hardcode" }
+    { "device_id": "00000000-0000-4000-8000-000000000000", "bucket": 96, "note": "bucket = uint32_be(sha256(device_id)[0:4]) % 100" },
+    { "device_id": "29b94a5c-1c8b-4518-8aef-3cca67864a01", "bucket": 16 },
+    { "device_id": "3617daf2-5e68-4fde-95c0-228ff7f32ada", "bucket": 84 }
   ],
+  "versions": ["dev", "0.0.9-dev", "0.0.10-dev", "0.2.0", "0.3.0-1", "0.3.0-dev", "0.3.0-dev.3", "0.3.0-dev.12", "0.3.0-rc.1", "0.3.0", "0.3.1", "0.10.0", "1.0.0"],
+  "release": {
+    "note": "Ed25519 key from seed_hex (sha256 of \"remotectl release test vector key\"); key_id = hex(sha256(raw public key))[0:16]",
+    "seed_hex": "db19dea2d2265ed1d0a4b028de763c3f227f9809ec0de0d8eba5cf7e4c224620",
+    "public_key": "moN4JMDUmyYih/QEFfzIo0+fxFGNn1e2LCr3UYiwWG0=",
+    "key_id": "41b31a38a7066fbb",
+    "cases": [
+      { "version": "0.3.0", "os": "darwin", "arch": "universal", "sha256": "11860daf9c8b5752be53c3d83feaf8e9d0bda611e49c8fad3f9ccea9b31b78ee", "message": "remotectl-release-v2\n0.3.0\ndarwin\nuniversal\n11860daf9c8b5752be53c3d83feaf8e9d0bda611e49c8fad3f9ccea9b31b78ee", "signature": "UOxY1fA71pCYWeCCFlVj6mUCVTcvPrnlm6EokIrOemd2jkca1M9zV7wxZzIn1q1ubnG7GW7Vsn9xR/+eMuxwAg==" },
+      { "version": "0.3.1-dev.4", "os": "windows", "arch": "amd64", "sha256": "2c8250c71ad138b36fca886171aa1e5909c25220f7ab8adc5c6492290a8f39b7", "message": "remotectl-release-v2\n0.3.1-dev.4\nwindows\namd64\n2c8250c71ad138b36fca886171aa1e5909c25220f7ab8adc5c6492290a8f39b7", "signature": "ZHGf+KVfvElq+yOi8tlIzZzXZU+0jsw19aRIc65HihN+OF/CDZnRaTlU2EIMX0Yq/XHAmTZTsMfbgxVW0/tpCw==" }
+    ]
+  },
   "stream_request": [
     { "name": "auto defaults", "prefs": { "preset": "auto", "fps": null, "res": null, "max_kbps": null }, "hidden": false, "id": 1, "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"auto\",\"fps\":null,\"res\":null,\"max_kbps\":null,\"background\":false}" },
     { "name": "auto with ceilings", "prefs": { "preset": "auto", "fps": 30, "res": "1080p", "max_kbps": null }, "hidden": false, "id": 2, "json": "{\"t\":\"stream\",\"id\":2,\"preset\":\"auto\",\"fps\":30,\"res\":\"1080p\",\"max_kbps\":null,\"background\":false}" },

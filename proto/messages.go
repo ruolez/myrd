@@ -25,11 +25,14 @@ const (
 	TypeSessionStatus = "session.status"     // A→S→B
 	TypeSessionState  = "session.state"      // A→S→B
 	TypeSessionFile   = "session.file"       // A→S, audit only, never relayed
+	TypeUpdateCheck   = "update.check"       // S→A
+	TypeUpdateStatus  = "update.status"      // A→S
 
 	// browser <-> server
-	TypeSessionCreate  = "session.create"  // B→S
-	TypeSessionCreated = "session.created" // S→B
-	TypeDeviceStatus   = "device.status"   // S→B
+	TypeSessionCreate      = "session.create"       // B→S
+	TypeSessionCreated     = "session.created"      // S→B
+	TypeDeviceStatus       = "device.status"        // S→B
+	TypeDeviceUpdateStatus = "device.update_status" // S→B
 
 	// relayed both ways
 	TypeSessionOffer  = "session.offer"  // B→S→A
@@ -168,6 +171,47 @@ type DeviceUpdate struct {
 	AutoAccept bool   `json:"auto_accept"`
 }
 
+// UpdateCheck asks the agent to look for a release now. Explicit skips the
+// rollout cohort and the agent's skip-list of failed versions; Force ends
+// active sessions instead of waiting for the device to be idle.
+type UpdateCheck struct {
+	V        int    `json:"v"`
+	Type     string `json:"type"`
+	Explicit bool   `json:"explicit,omitempty"`
+	Force    bool   `json:"force,omitempty"`
+}
+
+// Update states reported in update.status and stored on the device.
+const (
+	UpdateChecking    = "checking"
+	UpdateDownloading = "downloading"
+	UpdateWaitingIdle = "waiting_idle"
+	UpdateInstalling  = "installing"
+	UpdateUpToDate    = "up_to_date"
+	UpdateFailed      = "failed"
+	UpdateRolledBack  = "rolled_back"
+)
+
+// UpdateStates lists every valid update.status state.
+var UpdateStates = []string{UpdateChecking, UpdateDownloading, UpdateWaitingIdle, UpdateInstalling,
+	UpdateUpToDate, UpdateFailed, UpdateRolledBack}
+
+const (
+	MaxUpdateVersionLen = 64
+	MaxUpdateErrorLen   = 512
+)
+
+// UpdateStatus reports update progress (sent on state changes only). From is
+// the version running when the attempt started, Version the target.
+type UpdateStatus struct {
+	V       int    `json:"v"`
+	Type    string `json:"type"`
+	State   string `json:"state"`
+	From    string `json:"from,omitempty"`
+	Version string `json:"version,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
 type KeyRevoked struct {
 	V         int    `json:"v"`
 	Type      string `json:"type"`
@@ -208,6 +252,18 @@ type DeviceStatus struct {
 	Online     bool    `json:"online"`
 	Status     string  `json:"status"` // online | offline | disabled | removed
 	LastSeenAt *string `json:"last_seen_at,omitempty"`
+}
+
+// DeviceUpdateStatus relays a device's update progress to its owner's browsers.
+type DeviceUpdateStatus struct {
+	V        int    `json:"v"`
+	Type     string `json:"type"`
+	DeviceID string `json:"device_id"`
+	State    string `json:"state"`
+	From     string `json:"from,omitempty"`
+	Version  string `json:"version,omitempty"`
+	Error    string `json:"error,omitempty"`
+	At       string `json:"at"` // RFC3339
 }
 
 // ---------- relayed ----------
@@ -286,6 +342,7 @@ const (
 	EndBadSignature  = "bad_signature"
 	EndPermission    = "permission_missing"
 	EndAbuse         = "input_abuse"
+	EndAgentUpdate   = "agent_update" // the owner or an admin forced an update
 )
 
 type SessionEnd struct {

@@ -29,7 +29,10 @@ Device    { "id","name","hostname","os":"darwin|windows|linux","arch","agent_ver
             "online":bool,"busy":bool,            // busy = has a pending/active session
             "auto_accept":bool,"last_seen_at":ts|null,"created_at",
             "monitors":[Monitor],"permissions":{"screen":bool,"input":bool},"encoder":"x264|videotoolbox|mf-hw|..."|null,
-            "pinned_clients":[{"client_key_id","label","approved_at"}] }   // informational mirror
+            "pinned_clients":[{"client_key_id","label","approved_at"}],   // informational mirror
+            "latest_version":string|null,"update_available":bool,      // newest published release for its os/arch
+            "update_state":""|"checking|downloading|waiting_idle|installing|up_to_date|failed|rolled_back",
+            "update_from","update_version","update_error","update_at":ts|null }
 Monitor   { "id":int,"name","x","y","width","height","scale":float,"primary":bool }
 Session   { "id","device_id","device_name","user_id","user_email","client_key_id","client_key_label",
             "state":"pending|active|ended|failed","created_at","connected_at","ended_at","end_reason",
@@ -39,7 +42,10 @@ AuditEvent{ "id":int,"ts","actor":"user|agent|admin|system","event","user_id","u
 ClientKey { "id","label","public_key":"<b64 SPKI>","created_at","last_used_at","revoked_at" }
 Passkey   { "id","name","created_at","last_used_at","transports":[string] }
 LoginSession { "id","ip","user_agent","created_at","last_seen_at","expires_at","current":bool }
-Release   { "id","version","os","arch","url","sha256","signature","rollout_pct":0..100,"published_at":ts|null,"created_at" }
+Release   { "id","version","os":"darwin|windows","arch":"amd64|arm64|universal","url":"/v1/releases/<id>/file",
+            "filename","size","sha256","signature","key_id","rollout_pct":0..100,"published_at":ts|null,"created_at",
+            "installer":bool,                 // also served as the Add-device download for its os
+            "devices":int }                   // devices currently reporting this version
 ```
 
 ## 2. REST endpoints
@@ -48,6 +54,7 @@ Release   { "id","version","os","arch","url","sha256","signature","rollout_pct":
 | Method | Path | Body → Response |
 |---|---|---|
 | GET | `/healthz` (via Caddy also `/v1/healthz`) | `{"ok":true,"db":true}` |
+| GET | `/v1/releases/{id}/file` | the installer of a published release (`Content-Disposition` = its filename, `X-Content-SHA256`, Range supported); 404 when unpublished, except for admins |
 | GET | `/v1/config` | `{"product_name":"remotectl","version","signup_allowed":bool,"webauthn":{"rp_id","origin"},"downloads":{"macos":url\|null,"windows":url\|null}}` |
 
 ### Auth
@@ -91,6 +98,7 @@ Rate limit: 10 failed attempts / 15 min per IP and per email → 429.
 | GET | `/v1/devices/{id}` | → `{device}` |
 | PATCH | `/v1/devices/{id}` | `{name?, auto_accept?}` → `{device}`; pushes `device.update` to the agent |
 | DELETE | `/v1/devices/{id}` | → `{}`; marks removed, closes its socket, agent auth refused afterwards |
+| POST | `/v1/devices/{id}/update` | `{force?:bool}` → 202 `{version}`; sends `update.check{explicit:true,force}`. 409 `device_offline` \| `up_to_date` \| `unsupported` (Linux demo). Audited `agent.update.requested` |
 | POST | `/v1/enroll-tokens` | `{}` → `{token:"XXXX-XXXX", expires_at}` (charset `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`, 15 min, single use, stored hashed) |
 | GET | `/v1/sessions?device_id=&limit=&before=` | → paged `Session` |
 | GET | `/v1/audit?device_id=&limit=&before=` | → paged `AuditEvent` for the caller |
@@ -102,7 +110,7 @@ Rate limit: 10 failed attempts / 15 min per IP and per email → 429.
 | POST | `/v1/agent/challenge` | `{device_id}` → `{nonce}` (b64 32 bytes, TTL 60 s, single use) |
 | POST | `/v1/agent/auth` | `{device_id, nonce, signature}` → `{token, expires_at}`; signature = Ed25519 over `proto.AuthChallengeMessage`. 403 `{"error":{"code":"device_removed"\|"device_disabled"}}` |
 | GET | `/v1/agent/ws` | WebSocket, Bearer JWT. One socket per device (a new one replaces the old). |
-| GET | `/v1/agent/update?os=&arch=&version=` | Bearer. 204 when nothing newer; else `{version,os,arch,url,sha256,signature,rollout_pct}`. Signature = Ed25519 (offline release key) over `proto.ReleaseManifestMessage`. The agent applies `rollout_pct`: bucket = big-endian uint32 of first 4 bytes of `sha256(device_id)` mod 100; update iff bucket < rollout_pct. |
+| GET | `/v1/agent/update?os=&arch=&version=&explicit=0\|1` | Bearer. 204 when nothing newer for this device; else `{version,os,arch,url,sha256,size,signature}` with `url` relative to the server. Selection and cohort are server-side (§7); `explicit=1` ignores `rollout_pct`. |
 | DELETE | `/v1/agent/self` | Bearer → `{}`; device marked removed (uninstall). |
 
 ### Admin (`is_admin` only; 403 otherwise; every mutation audited with actor `admin`)
@@ -122,10 +130,13 @@ Rate limit: 10 failed attempts / 15 min per IP and per email → 429.
 | GET | `/v1/admin/sessions?state=&limit=&before=` | paged `Session` |
 | POST | `/v1/admin/sessions/{id}/end` | → `{}` (sends `session.end` reason `admin_terminated` to both ends) |
 | GET | `/v1/admin/audit?user_id=&device_id=&event=&actor=&limit=&before=` | paged `AuditEvent` |
-| GET | `/v1/admin/releases` | `{items:[Release]}` |
-| POST | `/v1/admin/releases` | `{version,os,arch,url,sha256,signature,rollout_pct}` → `{release}`; signature verified against `RELEASE_PUBLIC_KEY` when set |
-| PATCH | `/v1/admin/releases/{id}` | `{rollout_pct?, published?:bool}` → `{release}` |
-| DELETE | `/v1/admin/releases/{id}` | → `{}` |
+| GET | `/v1/admin/releases` | `{items:[Release]}`, newest version first |
+| POST | `/v1/admin/releases` | `multipart/form-data`: part `sig` (the `.sig` sidecar, ≤ 4 KB) **before** part `file` (the installer, ≤ 512 MB); optional field `rollout_pct` (default 100) before `file`. The sidecar must verify against the server's release key and match the uploaded bytes (sha256, size, filename extension). → `{release}` (unpublished). 400 `bad_signature` \| `mismatch` \| `bad_request`, 409 `conflict` (same version/os/arch), 413 `too_large`. Audited `release.uploaded` |
+| PATCH | `/v1/admin/releases/{id}` | `{rollout_pct?, published?:bool}` → `{release}`; publishing or raising `rollout_pct` pushes `update.check` to the online devices it now applies to (spread over up to 10 min) |
+| POST | `/v1/admin/releases/{id}/installer` | → `{release}`; the release's file becomes the Add-device download for its os (`/v1/downloads/{macos\|windows}`). Audited `release.installer_set` |
+| DELETE | `/v1/admin/releases/{id}` | → `{}`; removes the file |
+| POST | `/v1/admin/devices/{id}/update` | `{force?:bool}` → 202 `{version}`; as `/v1/devices/{id}/update` for any device |
+| POST | `/v1/admin/updates/push` | `{os?:"darwin"\|"windows"}` → `{queued:int}`; "Update all outdated": `update.check{explicit:true}` (never forced) to every online outdated device, spread over up to 10 min |
 | GET / PUT | `/v1/admin/settings` | `{signup_allowed:bool, default_auto_accept:bool, max_session_hours:int, download_macos_url, download_windows_url}` |
 
 `GET /v1/admin/overview` →
@@ -190,7 +201,8 @@ Rules:
 - TURN credentials: coturn REST scheme — `username = "<unix_expiry>:<session_id>:<b|a>"`, `credential = base64(HMAC-SHA1(TURN_SECRET, username))`, TTL ≤ 2 h. URLs from `TURN_URLS` (browser) and `TURN_URLS_AGENT` (agent; defaults to `TURN_URLS`). STUN URL included as a separate entry without credentials. `force_relay` is passed back unchanged so the browser sets `iceTransportPolicy:"relay"`.
 
 ### Agent extras
-- `hello` → `hello_ack{server_time, device{id,name,auto_accept}, update{available,version}, revoked_client_keys:[spki b64]}`. The agent drops revoked keys from its pinned list.
+- `hello` → `hello_ack{server_time, device{id,name,auto_accept}, update{available,version}, revoked_client_keys:[spki b64]}`. The agent drops revoked keys from its pinned list. `update` comes from the same selection as `/v1/agent/update` (cohort applied); the agent checks for an update on `hello_ack` only when `available`.
+- Server pushes `update.check{explicit?:bool, force?:bool}` (§7). Agent sends `update.status{state, from, version, error}` on every state change (at most one per 2 s); the server stores it on the device, relays it to the owner's browsers and audits it: `agent.update.requested` (meta: version, force; actor user or admin), `agent.update.started` (installing), `agent.update.succeeded` (derived from the next `hello`), `agent.update.failed`, `agent.update.rolled_back` (meta: from, version, error).
 - `permissions{permissions}` whenever TCC state changes; `pins.sync{pinned_client_keys}` after any pin change.
 - `token.renew{}` → `token{token,expires_at}` (the agent keeps it for the next reconnect).
 - Server pushes `device.update{name,auto_accept}`, `client_key.revoked{public_key}`.
@@ -198,6 +210,7 @@ Rules:
 
 ### Browser extras
 - Server pushes `device.status{device_id,online,status,last_seen_at}` to all of the owner's browser sockets on connect/disconnect/disable/remove.
+- Server pushes `device.update_status{device_id,state,from,version,error,at}` to the owner's browser sockets when a device's update state changes.
 
 ## 4. End-to-end trust (DTLS fingerprint signing)
 
@@ -351,3 +364,44 @@ Rules:
 
 - macOS/Windows: tray icon (red during a session) with Pause / End session (kill switch) / Quit, native border overlay, native consent prompt.
 - Linux Docker demo device: a local "device console" web page (port 5562 on the host) stands in for the physical screen: enrollment token entry, consent prompts, kill switch, pinned browsers list, session indicator.
+
+## 7. Agent updates
+
+Releases are signed offline; the server stores and serves them but cannot forge one.
+
+**Release key.** One Ed25519 key. The public half is committed as `proto.ReleasePublicKey` (compiled into every agent and the server's default `RELEASE_PUBLIC_KEY`); key id = first 16 hex digits of `sha256(raw public key)`. The private half is kept offline (`~/.config/remotectl/release.key`, GitHub secret `RELEASE_PRIVATE_KEY`).
+
+**Signed message** (`proto.ReleaseMessage`, vectors `release`):
+```
+"remotectl-release-v2\n" + version + "\n" + os + "\n" + arch + "\n" + lower(sha256hex)
+```
+The URL is not signed; the SHA-256 pins the bytes. `os` ∈ `darwin|windows`, `arch` ∈ `amd64|arm64|universal`; installers are `.pkg` (darwin) and `.msi` (windows).
+
+**Sidecar** `<installer>.sig`, written by `remotectl-release sign`:
+```jsonc
+{ "format":"remotectl-release-sig-v2", "version":"0.3.0", "os":"darwin", "arch":"universal",
+  "sha256":"<64 lowercase hex>", "size":12345678, "filename":"RemoteAgent-0.3.0.pkg",
+  "key_id":"<16 hex>", "signature":"<b64 Ed25519 over the message>" }
+```
+
+**Versions** follow SemVer 2.0 precedence (`proto.CompareVersions`, vectors `versions`): prerelease < release, numeric identifiers compare as numbers, build metadata ignored, an invalid version (e.g. `dev`) sorts below every valid one. Development builds are `X.Y.Z-dev.N`; releases bump `X.Y.Z` (repo `VERSION` file).
+
+**Selection** (`/v1/agent/update`, `hello_ack.update`, "outdated"): among published releases for the device's `os` whose `arch` equals the device's or is `universal` (exact arch preferred for the same version) and whose version is newer than the agent's, take the highest one the device may have: `explicit` or `bucket < rollout_pct`, where bucket = big-endian uint32 of the first 4 bytes of `sha256(device_id)` mod 100 (vectors `rollout_bucket`). An older release still applies to a device outside the newest one's cohort. The server never offers a downgrade.
+
+**Agent flow.** On `hello_ack.update.available`, on `update.check`, and every 6 h (± 30 min jitter):
+1. `checking`: GET `/v1/agent/update` (`explicit` from the trigger). 204 → `up_to_date` (reported only when the check was explicit).
+2. Refuse unless the version is newer, os/arch match, the signature verifies against the compiled-in key, and (not explicit) the version is not in the agent's skip-list of versions that failed or rolled back here.
+3. `downloading`: fetch `url` (resolved against the server), at most `size` bytes, verify SHA-256.
+4. `waiting_idle` while any session is pending or active. `force` ends them with `session.end{reason:"agent_update"}` instead. A newer trigger supersedes the wait.
+5. `installing`: hand the verified installer to the OS installer (below). The process is replaced; the next `hello` reports the new `agent_version`, from which the server records success (`agent.update.succeeded`). An install still on `from` after 15 min is recorded as `failed`.
+6. Health: the new build must reach `hello_ack` within 5 min while the server is reachable, and must not crash-loop (4 starts without `hello_ack`). Otherwise the previous build is reinstalled, the version is skip-listed, and the restored build reports `rolled_back` with the error. A server outage never causes a rollback.
+
+**Windows.** The LocalSystem service runs the updater. `msiexec /i <msi> /qn /norestart REBOOT=ReallySuppress /l*v %ProgramData%\RemoteAgent\updates\msi-<version>.log`, started detached so it survives the service stop. The MSI allows downgrades (local rollback only). The previous installer is kept for rollback; older ones are pruned. Authenticode is required only when the running build is itself Authenticode-signed (same signer).
+
+**macOS.** The pkg installs a root LaunchDaemon `com.remotectl.updater` (`RemoteAgent.app/Contents/MacOS/remote-agent update-daemon`, launchd `QueueDirectories` on its inbox plus a 120 s watchdog). Directory `/Library/Application Support/RemoteAgent/Updater/` (root:wheel 0755):
+- `inbox/` (1733, sticky drop box): the user agent writes `.tmp-<id>` then renames to `<id>.json`:
+  `{"v":1,"op":"install","id","manifest":{version,os,arch,sha256,size,signature},"payload":"<path in the user's RemoteAgent/updates/>"}` or `{"v":1,"op":"healthy","id","version"}`.
+- `status.json` (0644, written atomically): `{"v":1,"id","state":"verifying|installing|installed|failed|rolled_back|healthy","from","to","error","at"}`.
+- `pkgs/`, `previous/`, `logs/` (0700), `marker.json` (0600).
+
+The daemon trusts nothing from the user: it reads requests without following symlinks, verifies the manifest with the compiled-in key, requires a version newer than the installed bundle, copies the payload into `pkgs/` while hashing and installs only that copy (`installer -pkg … -target /`). It backs up the bundle and plists to `previous/` first and restores them on rollback. A `healthy` request only clears the pending marker when its version is the installed one.
