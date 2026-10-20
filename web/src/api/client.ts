@@ -1,10 +1,12 @@
 import type {
   AdminOverview,
+  AgentDownload,
   AdminSettings,
   AppConfig,
   AuditEvent,
   ClientKey,
   Device,
+  DownloadOS,
   LoginSession,
   Page,
   Passkey,
@@ -38,7 +40,10 @@ export async function request<T>(method: Method, path: string, body?: unknown): 
     throw new ApiError(0, "network", "Cannot reach the server.");
   }
   if (res.status === 204) return undefined as T;
-  const text = await res.text();
+  return parseResponse<T>(res.status, await res.text());
+}
+
+function parseResponse<T>(status: number, text: string): T {
   let data: unknown = undefined;
   if (text) {
     try {
@@ -47,15 +52,39 @@ export async function request<T>(method: Method, path: string, body?: unknown): 
       data = undefined;
     }
   }
-  if (!res.ok) {
+  if (status < 200 || status >= 300) {
     const err = (data as { error?: { code?: string; message?: string } } | undefined)?.error;
     throw new ApiError(
-      res.status,
-      err?.code ?? "http_" + res.status,
-      err?.message ?? `Request failed (${res.status})`,
+      status,
+      err?.code ?? "http_" + status,
+      err?.message ?? `Request failed (${status})`,
     );
   }
   return data as T;
+}
+
+/** PUTs a file as the raw body; XHR because fetch has no upload progress. */
+export function uploadFile<T>(
+  path: string,
+  file: Blob,
+  onProgress?: (fraction: number) => void,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", path);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress?.(e.loaded / e.total);
+    xhr.onload = () => {
+      try {
+        resolve(parseResponse<T>(xhr.status, xhr.responseText));
+      } catch (err) {
+        reject(err);
+      }
+    };
+    xhr.onerror = () => reject(new ApiError(0, "network", "Cannot reach the server."));
+    xhr.send(file);
+  });
 }
 
 const qs = (params: Record<string, string | number | null | undefined>) => {
@@ -155,6 +184,13 @@ export const api = {
     sessions: (q: PageQuery & { state?: string }) =>
       request<Page<Session>>("GET", `/v1/admin/sessions${qs(q)}`),
     endSession: (id: string) => request<object>("POST", `/v1/admin/sessions/${id}/end`, {}),
+    uploadDownload: (os: DownloadOS, file: File, onProgress?: (fraction: number) => void) =>
+      uploadFile<AgentDownload>(
+        `/v1/admin/downloads/${os}${qs({ filename: file.name })}`,
+        file,
+        onProgress,
+      ),
+    deleteDownload: (os: DownloadOS) => request<void>("DELETE", `/v1/admin/downloads/${os}`),
     audit: (
       q: PageQuery & { user_id?: string; device_id?: string; event?: string; actor?: string },
     ) => request<Page<AuditEvent>>("GET", `/v1/admin/audit${qs(q)}`),

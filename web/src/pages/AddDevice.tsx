@@ -4,8 +4,10 @@ import { api, errorMessage } from "../api/client";
 import { useAuth } from "../app/auth";
 import { Icon, OsIcon } from "../components/icons";
 import { CopyButton, ErrorBox, PageHeader, Spinner } from "../components/ui";
+import { bytes } from "../lib/format";
+import { installSnippet } from "../lib/install";
 import { signaling } from "../lib/signaling";
-import { useNow } from "../lib/hooks";
+import { useAsync, useNow } from "../lib/hooks";
 
 type Target = "darwin" | "windows" | "linux";
 
@@ -17,19 +19,20 @@ const targets: { id: Target; label: string; note: string }[] = [
 
 function Snippet({ code }: { code: string }) {
   return (
-    <div className="relative">
-      <pre className="overflow-x-auto rounded-lg bg-surface-2 p-3 pr-24 font-mono text-xs leading-relaxed">
-        {code}
-      </pre>
-      <div className="absolute top-2 right-2">
+    <div className="rounded-lg bg-surface-2">
+      <div className="flex justify-end px-2 pt-2">
         <CopyButton text={code} />
       </div>
+      <pre className="overflow-x-auto px-3 pt-1 pb-3 font-mono text-xs leading-relaxed">{code}</pre>
     </div>
   );
 }
 
 export function AddDevice() {
-  const { config } = useAuth();
+  const { config: bootConfig, user } = useAuth();
+  // Fresh copy: an installer uploaded since sign-in should show up here.
+  const { data: freshConfig } = useAsync(() => api.config(), []);
+  const config = freshConfig ?? bootConfig;
   const [target, setTarget] = useState<Target>("darwin");
   const [token, setToken] = useState<{ token: string; expires_at: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -69,12 +72,14 @@ export function AddDevice() {
   const expired = !!token && remaining === 0;
   const mmss = `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}`;
   const t = token?.token ?? "XXXX-XXXX";
-  const download =
+  const link =
     target === "darwin"
       ? config?.downloads.macos
       : target === "windows"
         ? config?.downloads.windows
         : null;
+  const downloadUrl = link ? new URL(link.url, window.location.origin).toString() : null;
+  const osLabel = target === "darwin" ? "macOS" : "Windows";
 
   return (
     <>
@@ -189,8 +194,8 @@ export function AddDevice() {
             <>
               <ol className="list-decimal space-y-2 pl-5 text-sm">
                 <li>
-                  Download and run the{" "}
-                  {target === "darwin" ? "macOS installer (.pkg)" : "Windows installer (.msi)"}.
+                  On the computer you are adding, download and run the {osLabel} installer
+                  {link?.file ? ` (${link.file.filename})` : ""}.
                 </li>
                 <li>On first launch, enter the token above when the agent asks for it.</li>
                 <li>
@@ -199,26 +204,50 @@ export function AddDevice() {
                     : "No extra permissions are needed; the agent runs as a Windows service."}
                 </li>
               </ol>
-              {download ? (
-                <a className="btn-primary" href={download}>
-                  <Icon name="release" size={18} />
-                  Download for {target === "darwin" ? "macOS" : "Windows"}
-                </a>
+              {link && downloadUrl ? (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <a className="btn-primary" href={link.url} download={link.file?.filename}>
+                      <Icon name="release" size={18} />
+                      Download for {osLabel}
+                    </a>
+                    <CopyButton text={downloadUrl} label="Copy link" />
+                  </div>
+                  {link.file && (
+                    <p className="text-xs text-muted">
+                      {link.file.filename} · {bytes(link.file.size)} · SHA-256{" "}
+                      <span className="font-mono" title={link.file.sha256}>
+                        {link.file.sha256.slice(0, 12)}…
+                      </span>
+                      <br />
+                      The link works without signing in, so you can open it directly on that
+                      computer.
+                    </p>
+                  )}
+                </div>
               ) : (
                 <p className="text-sm text-muted">
-                  No download URL is configured yet. An administrator can set it under Admin →
-                  System.
+                  No {osLabel} installer has been uploaded yet.{" "}
+                  {user?.is_admin ? (
+                    <Link to="/admin/settings" className="text-primary underline">
+                      Upload one under Admin → System
+                    </Link>
+                  ) : (
+                    "Ask an administrator to upload one under Admin → System."
+                  )}
                 </p>
               )}
               <div>
                 <div className="mb-2 text-sm font-medium">Scripted install</div>
-                {target === "windows" ? (
-                  <Snippet code={`msiexec /i RemoteAgent.msi ENROLL_TOKEN=${t} /qn`} />
-                ) : (
-                  <Snippet
-                    code={`# token plist read by the installer\ndefaults write /tmp/remotectl-enroll EnrollToken -string ${t}\nsudo installer -pkg RemoteAgent.pkg -applyChoiceChangesXML /tmp/remotectl-enroll.plist -target /`}
-                  />
-                )}
+                <Snippet
+                  code={installSnippet({
+                    target,
+                    token: t,
+                    serverUrl: config?.webauthn.origin ?? window.location.origin,
+                    downloadUrl,
+                    filename: link?.file?.filename ?? null,
+                  })}
+                />
               </div>
             </>
           )}

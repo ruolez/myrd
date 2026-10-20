@@ -134,12 +134,25 @@ export type Release = {
 
 export type Page<T> = { items: T[]; next_before: string | null };
 
+export type DownloadOS = "macos" | "windows";
+
+export type AgentDownload = {
+  os: DownloadOS;
+  filename: string;
+  size: number;
+  sha256: string;
+  uploaded_at: string;
+};
+
+/** An uploaded installer (file set) or the external URL from Admin → System. */
+export type DownloadLink = { url: string; file: AgentDownload | null };
+
 export type AppConfig = {
   product_name: string;
   version: string;
   signup_allowed: boolean;
   webauthn: { rp_id: string; origin: string };
-  downloads: { macos: string | null; windows: string | null };
+  downloads: Record<DownloadOS, DownloadLink | null>;
 };
 
 export type AdminOverview = {
