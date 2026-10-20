@@ -17,6 +17,7 @@ case "${1:-all}" in
   all)
     "${RUN[@]}" sh -c 'make -C native/windows -f Makefile.mingw && cd agent && \
       GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ \
-      GOFLAGS=-mod=mod go build -trimpath -ldflags "-s -w" -o dist/windows/remote-agent.exe ./cmd/remote-agent' ;;
+      GOFLAGS=-mod=mod go build -trimpath -ldflags "-s -w" -o dist/windows/remote-agent.exe ./cmd/remote-agent && \
+      ../native/windows/check-imports.sh dist/windows/remote-agent.exe' ;;
   *) echo "usage: $0 [all|lib|shell]" >&2; exit 2 ;;
 esac
