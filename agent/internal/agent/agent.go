@@ -498,15 +498,31 @@ func (a *Agent) watchPermissions(ctx context.Context) {
 // promptForToken shows the native first-run dialog until an enrollment
 // succeeds, the user cancels, or the agent enrolls another way.
 func (a *Agent) promptForToken(ctx context.Context) {
+	var lastErr error
 	for ctx.Err() == nil && !a.State().Enrolled() {
-		tok, ok := promptEnrollToken(ctx)
+		tok, ok := promptEnrollToken(ctx, enrollPromptMessage(a.cfg.Settings.ServerURL, lastErr))
 		if !ok {
 			return
 		}
-		if err := a.Enroll(ctx, a.cfg.Settings.ServerURL, tok); err != nil {
-			a.log.Error("enrollment failed", "err", err)
+		if lastErr = a.Enroll(ctx, a.cfg.Settings.ServerURL, tok); lastErr != nil {
+			a.log.Error("enrollment failed", "server", a.cfg.Settings.ServerURL, "err", lastErr)
 			continue
 		}
 		return
 	}
+}
+
+// enrollPromptMessage names the server, so an installer built for the wrong
+// one is obvious, and explains the previous failure on a retry.
+func enrollPromptMessage(serverURL string, lastErr error) string {
+	msg := "Enter the enrollment token shown in the web app under Devices → Add device."
+	if serverURL == "" {
+		msg += "\n\nThis installer has no server address built in. Download it again from your server's Add device page."
+	} else {
+		msg += "\n\nServer: " + serverURL
+	}
+	if lastErr != nil {
+		msg += "\n\nEnrollment failed: " + lastErr.Error()
+	}
+	return msg
 }

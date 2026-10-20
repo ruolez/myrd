@@ -11,9 +11,8 @@ import (
 )
 
 func init() {
-	promptEnrollToken = func(ctx context.Context) (string, bool) {
-		tok, ok, err := tray.PromptText("RemoteAgent",
-			"Enter the enrollment token shown in the web app under Devices → Add device.", "Enroll", 10*time.Minute)
+	promptEnrollToken = func(ctx context.Context, message string) (string, bool) {
+		tok, ok, err := tray.PromptText("RemoteAgent", message, "Enroll", 10*time.Minute)
 		return tok, ok && err == nil && ctx.Err() == nil
 	}
 	uninstallAction = func() {
