@@ -34,6 +34,15 @@ export type Monitor = {
 export type DeviceStatusValue = "online" | "offline" | "disabled";
 export type OS = "darwin" | "windows" | "linux";
 
+export type UpdateState =
+  | "checking"
+  | "downloading"
+  | "waiting_idle"
+  | "installing"
+  | "up_to_date"
+  | "failed"
+  | "rolled_back";
+
 export type Device = {
   id: DeviceId;
   name: string;
@@ -52,6 +61,15 @@ export type Device = {
   permissions: { screen: boolean; input: boolean } | null;
   encoder: string | null;
   pinned_clients: { client_key_id: ClientKeyId; label: string; approved_at: string }[] | null;
+  /** Newest published release for its os/arch. */
+  latest_version: string | null;
+  update_available: boolean;
+  /** Last update attempt as reported by the agent ("" = none). */
+  update_state: UpdateState | "";
+  update_from: string;
+  update_version: string;
+  update_error: string;
+  update_at: string | null;
   owner_email?: string;
 };
 

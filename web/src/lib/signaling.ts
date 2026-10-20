@@ -21,6 +21,17 @@ export type SignalError = SignalMessage & {
   message: string;
 };
 
+/** A device's update progress (PROTOCOL §3 browser extras). */
+export type DeviceUpdateStatus = SignalMessage & {
+  type: "device.update_status";
+  device_id: string;
+  state: string;
+  from?: string;
+  version?: string;
+  error?: string;
+  at: string;
+};
+
 export type ConnState = "idle" | "connecting" | "open" | "closed";
 
 type Handler = (msg: SignalMessage) => void;

@@ -1,6 +1,11 @@
 import { useState } from "react";
 import { api, errorMessage } from "../../api/client";
-import { DeviceStatusBadge } from "../../components/devices";
+import {
+  DeviceStatusBadge,
+  DeviceUpdateBadge,
+  UpdateButton,
+  useLiveUpdates,
+} from "../../components/devices";
 import { Icon, OsIcon } from "../../components/icons";
 import {
   EmptyState,
@@ -31,6 +36,8 @@ export function AdminDevices() {
     (before) => api.admin.devices({ q: query, status, before, limit: 25 }),
     [query, status],
   );
+  // Update pushes go to the owner's browsers only, so this page polls.
+  const kick = useLiveUpdates(p.items, () => void p.reload(true));
 
   const act = async (fn: () => Promise<unknown>, ok: string) => {
     try {
@@ -121,12 +128,21 @@ export function AdminDevices() {
                         {osName(d.os)} {d.arch}
                       </span>
                     </td>
-                    <td className="font-mono text-xs">{d.agent_version || "—"}</td>
+                    <td>
+                      <div className="font-mono text-xs">{d.agent_version || "—"}</div>
+                      <DeviceUpdateBadge device={d} />
+                    </td>
                     <td>
                       <DeviceStatusBadge device={d} />
                     </td>
                     <td>{d.online ? "now" : timeAgo(d.last_seen_at)}</td>
                     <td className="text-right whitespace-nowrap">
+                      <UpdateButton
+                        device={d}
+                        request={(force) => api.admin.requestDeviceUpdate(d.id, force)}
+                        onRequested={kick}
+                        label="Update"
+                      />
                       {d.status === "disabled" ? (
                         <button
                           className="btn-text btn-sm"

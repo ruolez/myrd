@@ -2,7 +2,13 @@ import { useCallback, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { api, errorMessage } from "../api/client";
 import type { Device } from "../api/types";
-import { DeviceStatusBadge, useLiveDeviceStatus } from "../components/devices";
+import {
+  DeviceStatusBadge,
+  DeviceUpdateBadge,
+  UpdateButton,
+  useLiveDeviceStatus,
+  useLiveUpdates,
+} from "../components/devices";
 import { Icon, OsIcon } from "../components/icons";
 import { AuditTable, SessionsTable } from "../components/tables";
 import {
@@ -16,6 +22,7 @@ import {
 } from "../components/ui";
 import { dateTime, osName, timeAgo } from "../lib/format";
 import { useAsync, usePaged } from "../lib/hooks";
+import { updateBadge } from "../lib/update";
 
 export function DeviceDetail() {
   const { id = "" } = useParams();
@@ -41,6 +48,7 @@ export function DeviceDetail() {
     setDevices,
     useCallback(() => navigate("/devices", { replace: true }), [navigate]),
   );
+  const kick = useLiveUpdates(data ? [data.device] : [], () => void reload(true), setDevices);
 
   if (loading && !data) return <Loading />;
   if (error || !data)
@@ -183,7 +191,20 @@ export function DeviceDetail() {
           <h2 className="font-medium">Agent</h2>
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
             <dt className="text-muted">Version</dt>
-            <dd>{d.agent_version || "—"}</dd>
+            <dd>
+              {d.agent_version || "—"}
+              {d.latest_version && d.latest_version !== d.agent_version && (
+                <span className="text-muted"> · latest {d.latest_version}</span>
+              )}
+            </dd>
+            <dt className="text-muted">Updates</dt>
+            <dd className="min-w-0">
+              <DeviceUpdateBadge device={d} />
+              {!updateBadge(d) && "—"}
+              {d.update_at && (
+                <div className="text-xs text-muted">last attempt {timeAgo(d.update_at)}</div>
+              )}
+            </dd>
             <dt className="text-muted">Encoder</dt>
             <dd>{d.encoder ?? "—"}</dd>
             <dt className="text-muted">Last seen</dt>
@@ -213,6 +234,13 @@ export function DeviceDetail() {
               </ul>
             </div>
           )}
+          <UpdateButton
+            device={d}
+            request={(force) => api.devices.requestUpdate(d.id, force)}
+            onRequested={kick}
+            className="btn-tonal w-full"
+            label={d.latest_version ? `Update to ${d.latest_version}` : "Update now"}
+          />
           <button className="btn-outline w-full text-error" onClick={() => void remove()}>
             Remove device
           </button>

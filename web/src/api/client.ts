@@ -179,6 +179,8 @@ export const api = {
     update: (id: string, patch: { name?: string; auto_accept?: boolean }) =>
       request<{ device: Device }>("PATCH", `/v1/devices/${id}`, patch),
     remove: (id: string) => request<object>("DELETE", `/v1/devices/${id}`),
+    requestUpdate: (id: string, force: boolean) =>
+      request<{ version: string }>("POST", `/v1/devices/${id}/update`, { force }),
     enrollToken: () =>
       request<{ token: string; expires_at: string }>("POST", "/v1/enroll-tokens", {}),
   },
@@ -202,6 +204,8 @@ export const api = {
     deleteUser: (id: string) => request<object>("DELETE", `/v1/admin/users/${id}`),
     devices: (q: PageQuery & { q?: string; status?: string }) =>
       request<Page<Device>>("GET", `/v1/admin/devices${qs(q)}`),
+    requestDeviceUpdate: (id: string, force: boolean) =>
+      request<{ version: string }>("POST", `/v1/admin/devices/${id}/update`, { force }),
     updateDevice: (id: string, disabled: boolean) =>
       request<{ device: Device }>("PATCH", `/v1/admin/devices/${id}`, { disabled }),
     deleteDevice: (id: string) => request<object>("DELETE", `/v1/admin/devices/${id}`),

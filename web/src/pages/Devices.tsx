@@ -2,7 +2,13 @@ import { useCallback } from "react";
 import { Link, useNavigate } from "react-router";
 import { api } from "../api/client";
 import type { Device } from "../api/types";
-import { DeviceStatusBadge, useLiveDeviceStatus } from "../components/devices";
+import {
+  DeviceStatusBadge,
+  DeviceUpdateBadge,
+  UpdateButton,
+  useLiveDeviceStatus,
+  useLiveUpdates,
+} from "../components/devices";
 import { Icon, OsIcon } from "../components/icons";
 import { EmptyState, ErrorBox, Loading, PageHeader } from "../components/ui";
 import { osName, timeAgo } from "../lib/format";
@@ -18,8 +24,9 @@ export function Devices() {
     [setData],
   );
   useLiveDeviceStatus(setDevices);
-
   const devices = data?.items ?? [];
+  const kick = useLiveUpdates(devices, () => void reload(true), setDevices);
+
   const sorted = [...devices].sort(
     (a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name),
   );
@@ -95,6 +102,14 @@ export function Devices() {
                   {d.permissions && (!d.permissions.screen || !d.permissions.input) && (
                     <span className="text-warning">Permissions missing</span>
                   )}
+                </div>
+                <div className="flex min-h-7 flex-wrap items-center justify-between gap-2 empty:hidden">
+                  <DeviceUpdateBadge device={d} />
+                  <UpdateButton
+                    device={d}
+                    request={(force) => api.devices.requestUpdate(d.id, force)}
+                    onRequested={kick}
+                  />
                 </div>
                 <div className="mt-auto flex gap-2">
                   <button
