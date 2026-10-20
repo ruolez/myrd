@@ -83,6 +83,7 @@ public:
     std::vector<uint8_t> seq_header; // Annex-B SPS+PPS from the output type
     std::vector<uint8_t> scratch;
     int64_t base_pts = -1;
+    int64_t last_in_pts = -1; // previous input pts (us), for real sample durations
     const char *name = "mf-sw";
 
     ~Encoder() { shutdown(); }
@@ -161,7 +162,9 @@ public:
         codec_bool(codec.get(), CODECAPI_AVLowLatencyMode, true);
         codec_ui4(codec.get(), CODECAPI_AVEncCommonRateControlMode, eAVEncCommonRateControlMode_CBR);
         codec_ui4(codec.get(), CODECAPI_AVEncCommonMeanBitRate, (ULONG)cfg.bitrate_kbps * 1000);
-        ULONG gop = (ULONG)((int64_t)cfg.fps * (cfg.keyframe_interval_ms > 0 ? cfg.keyframe_interval_ms : 2000) / 1000);
+        // Sized for the 60 fps ceiling: fps changes at runtime without a new
+        // encoder, and the agent requests keyframes when lower rates stretch it.
+        ULONG gop = (ULONG)(60LL * (cfg.keyframe_interval_ms > 0 ? cfg.keyframe_interval_ms : 2000) / 1000);
         codec_ui4(codec.get(), CODECAPI_AVEncMPVGOPSize, gop ? gop : 1);
         codec_ui4(codec.get(), CODECAPI_AVEncMPVDefaultBPictureCount, 0);
         codec_ui4(codec.get(), CODECAPI_AVEncCommonQualityVsSpeed, 30);
@@ -353,7 +356,11 @@ public:
         }
         sample->AddBuffer(buf.get());
         sample->SetSampleTime((pts_us - base_pts) * 10);
-        sample->SetSampleDuration(10000000LL / (cfg.fps > 0 ? cfg.fps : 30));
+        // Frames are damage-driven: the duration is the real gap, not 1/fps.
+        int64_t dur = 10000000LL / (cfg.fps > 0 ? cfg.fps : 30);
+        if (last_in_pts >= 0 && pts_us > last_in_pts && pts_us - last_in_pts < 1000000) dur = (pts_us - last_in_pts) * 10;
+        last_in_pts = pts_us;
+        sample->SetSampleDuration(dur);
         if (force_key) codec_ui4(codec.get(), CODECAPI_AVEncVideoForceKeyFrame, 1);
 
         HRESULT hr = mft->ProcessInput(in_id, sample.get(), 0);

@@ -36,6 +36,7 @@ static int64_t g_last_pts;
 static uint32_t g_display;
 static CGRect g_bounds;
 static int g_capw, g_caph, g_fps, g_kbps, g_gop_ms;
+static uint32_t g_pw; // native pixel width of the captured display
 static char g_encoder[32];
 
 static uint8_t *g_out;
@@ -170,8 +171,10 @@ static VTCompressionSessionRef vt_create(int w, int h, int fps, int kbps, int go
         VTSessionSetProperty(s, kVTCompressionPropertyKey_ProfileLevel, attempts[i].profile);
         VTSessionSetProperty(s, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,
                              (__bridge CFNumberRef)@(gop_ms / 1000.0));
+        // Frame-count limit sized for the 60 fps ceiling (fps changes at runtime);
+        // the duration limit above and the agent's keyframe guard cover lower rates.
         VTSessionSetProperty(s, kVTCompressionPropertyKey_MaxKeyFrameInterval,
-                             (__bridge CFNumberRef)@(MAX(1, fps * gop_ms / 1000)));
+                             (__bridge CFNumberRef)@(MAX(1, 60 * gop_ms / 1000)));
         VTSessionSetProperty(s, kVTCompressionPropertyKey_MaxFrameDelayCount, (__bridge CFNumberRef)@0);
         VTSessionSetProperty(s, kVTCompressionPropertyKey_ColorPrimaries, kCMFormatDescriptionColorPrimaries_ITU_R_709_2);
         VTSessionSetProperty(s, kVTCompressionPropertyKey_TransferFunction, kCMFormatDescriptionTransferFunction_ITU_R_709_2);
@@ -243,8 +246,8 @@ static void cursor_shape_poll(void) {
         NSCursor *c = [NSCursor currentSystemCursor];
         if (!c || !c.image) return;
         NSSize sz = c.image.size;
-        if (sz.width <= 0 || sz.height <= 0 || g_bounds.size.width <= 0) return;
-        double s = (double)g_capw / g_bounds.size.width; // video pixels per point
+        if (sz.width <= 0 || sz.height <= 0 || g_bounds.size.width <= 0 || g_pw == 0) return;
+        double s = (double)g_pw / g_bounds.size.width; // native pixels per point, whatever the encoded size
         int w = (int)ceil(sz.width * s), h = (int)ceil(sz.height * s);
         if (w <= 0 || h <= 0 || w > 256 || h > 256) return;
 
@@ -395,7 +398,7 @@ static int start_locked(const rc_capture_config *cfg, rc_frame_fn on_frame, rc_c
 
         g_display = cfg->monitor_id;
         g_bounds = b;
-        g_capw = w; g_caph = h; g_fps = fps; g_kbps = kbps; g_gop_ms = gop;
+        g_capw = w; g_caph = h; g_fps = fps; g_kbps = kbps; g_gop_ms = gop; g_pw = pw;
         g_last_pts = 0;
         g_shape_id = 0; g_pos_x = g_pos_y = 0xFFFF; g_pos_vis = -1; g_tick = 0;
         pthread_mutex_lock(&g_cb);

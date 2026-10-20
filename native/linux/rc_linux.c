@@ -252,7 +252,7 @@ typedef struct {
     x264_picture_t pic;
     struct SwsContext *sws;
     int out_w, out_h;
-    int64_t frame_no;
+    int64_t last_pts;
 } encoder;
 
 static void apply_rate(x264_param_t *p, int kbps, int fps) {
@@ -281,7 +281,11 @@ static int encoder_open(encoder *e, int in_w, int in_h, int out_w, int out_h, co
     p->b_repeat_headers = 1;
     p->b_annexb = 1;
     p->i_bframe = 0;
-    p->b_vfr_input = 0;
+    /* Frames are damage-driven and the fps changes at runtime: rate control
+     * follows the real timestamps (µs), not a nominal frame rate. */
+    p->b_vfr_input = 1;
+    p->i_timebase_num = 1;
+    p->i_timebase_den = 1000000;
     p->i_threads = 4;
     p->vui.i_colorprim = 1; /* BT.709 */
     p->vui.i_transfer = 1;
@@ -289,7 +293,9 @@ static int encoder_open(encoder *e, int in_w, int in_h, int out_w, int out_h, co
     p->vui.b_fullrange = 0;
     int fps = cfg->fps > 0 ? cfg->fps : 30;
     int gop_ms = cfg->keyframe_interval_ms > 0 ? cfg->keyframe_interval_ms : 2000;
-    p->i_keyint_max = fps * gop_ms / 1000;
+    /* GOP sized for the 60 fps ceiling; the agent asks for a keyframe when
+     * lower frame rates stretch it past keyframe_interval_ms. */
+    p->i_keyint_max = 60 * gop_ms / 1000;
     if (p->i_keyint_max < 1) p->i_keyint_max = 1;
     p->i_keyint_min = 1;
     p->i_scenecut_threshold = 0;
@@ -403,7 +409,10 @@ static void *capture_main(void *arg) {
                 int src_stride[1] = {img->bytes_per_line};
                 sws_scale(enc.sws, src, src_stride, 0, ch, enc.pic.img.plane, enc.pic.img.i_stride);
                 enc.pic.i_type = key ? X264_TYPE_IDR : X264_TYPE_AUTO;
-                enc.pic.i_pts = enc.frame_no++;
+                int64_t pts = t / 1000;
+                if (pts <= enc.last_pts) pts = enc.last_pts + 1;
+                enc.last_pts = pts;
+                enc.pic.i_pts = pts;
                 x264_nal_t *nals;
                 int n_nals;
                 x264_picture_t out;
