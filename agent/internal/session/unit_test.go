@@ -1,6 +1,7 @@
 package session
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -133,6 +134,43 @@ func TestInputRejectsCountTowardAbuse(t *testing.T) {
 	}
 }
 
+func TestMoveChannelDropsMovesOlderThanTheNewest(t *testing.T) {
+	b := fake.New()
+	in := newInputState(b, keymap.X11)
+	fm := &fakeMedia{monitors: []uint32{1}}
+	// Sequence numbers wrap at 65535; 65535 arriving after 1 is late, not new.
+	for _, seq := range []uint16{65534, 65535, 0, 65535, 1, 1, 0, 5} {
+		ev := inputproto.Event{Type: inputproto.TypeMouseMoveSeq, Seq: seq, X: seq, Y: 7}
+		if err := in.handleMove(inputproto.Encode(ev), fm); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var xs []uint16
+	for _, ev := range b.Injected() {
+		xs = append(xs, ev.X)
+	}
+	if want := []uint16{65534, 65535, 0, 1, 5}; !slices.Equal(xs, want) {
+		t.Fatalf("injected x = %v, want %v", xs, want)
+	}
+	if in.rejects() != 0 {
+		t.Fatalf("late moves counted as abuse: %d", in.rejects())
+	}
+}
+
+func TestSequencedMovesBelongOnlyToTheMoveChannel(t *testing.T) {
+	b := fake.New()
+	in := newInputState(b, keymap.X11)
+	fm := &fakeMedia{monitors: []uint32{1}}
+	seq := inputproto.Encode(inputproto.Event{Type: inputproto.TypeMouseMoveSeq, Seq: 1})
+	plain := inputproto.Encode(inputproto.Event{Type: inputproto.TypeMouseMove})
+	if in.handle(seq, fm) == nil || in.handleMove(plain, fm) == nil {
+		t.Fatal("a move type was accepted on the wrong channel")
+	}
+	if in.rejects() != 2 || len(b.Injected()) != 0 {
+		t.Fatalf("rejects=%d injected=%d", in.rejects(), len(b.Injected()))
+	}
+}
+
 func TestInputControlOps(t *testing.T) {
 	b := fake.New()
 	in := newInputState(b, keymap.X11)
@@ -186,46 +224,19 @@ func TestClipboardFromBrowserReachesBackend(t *testing.T) {
 	}
 }
 
-func TestFrameKeyframeGuard(t *testing.T) {
-	cases := []struct {
-		name     string
-		interval time.Duration
-		frames   int
-		want     int
-	}{
-		{"60 fps inside the GOP", 16 * time.Millisecond, 90, 0},
-		{"idle frames once a second", time.Second, 10, 0},
-		{"5 fps past 2 s", 200 * time.Millisecond, 12, 1},
-		{"one request until the next keyframe", 200 * time.Millisecond, 40, 1},
+func TestFrameLeavesKeyframesToTheBrowser(t *testing.T) {
+	// 5 fps for 12 s: the old 2 s guard asked for five keyframes here.
+	b := fake.New()
+	track, err := newVideoTrack()
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, c := range cases {
-		b := fake.New()
-		track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264}, "video", "test")
-		if err != nil {
-			t.Fatal(err)
-		}
-		clock := t0
-		p := &mediaPipe{b: b, track: track, now: func() time.Time { return clock }, applied: encoderState{fps: 5}}
-		frame := func(key bool) {
-			p.Frame([]byte{0, 0, 0, 1, 0x41}, clock.Sub(t0).Microseconds()+1, key)
-		}
-		frame(true)
-		for i := 0; i < c.frames; i++ {
-			clock = clock.Add(c.interval)
-			frame(false)
-		}
-		time.Sleep(50 * time.Millisecond) // requests run on their own goroutine
-		if got := b.KeyframeRequests(); got != c.want {
-			t.Errorf("%s: %d keyframe requests, want %d", c.name, got, c.want)
-		}
-		if c.want == 0 {
-			continue
-		}
-		frame(true) // the keyframe re-arms the guard
-		for i := 0; i < c.frames; i++ {
-			clock = clock.Add(c.interval)
-			frame(false)
-		}
-		waitFor(t, "second guard request", func() bool { return b.KeyframeRequests() == c.want+1 })
+	p := &mediaPipe{b: b, track: track, now: time.Now, applied: encoderState{fps: 5}}
+	for i := 0; i < 60; i++ {
+		p.Frame([]byte{0, 0, 0, 1, 0x41}, int64(i)*200_000, i == 0)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := b.KeyframeRequests(); got != 0 {
+		t.Fatalf("%d keyframe requests, want 0 (keyframes come from PLI)", got)
 	}
 }

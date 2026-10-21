@@ -13,7 +13,6 @@ import (
 
 	"github.com/pion/interceptor/pkg/cc"
 	"github.com/pion/webrtc/v4"
-	"github.com/pion/webrtc/v4/pkg/media"
 
 	"github.com/ruolez/remotectl/agent/internal/inputproto"
 	"github.com/ruolez/remotectl/agent/internal/platform"
@@ -21,15 +20,15 @@ import (
 )
 
 const (
-	floorKbps      = 1000
-	initialKbps    = 3000
-	maxCeilKbps    = proto.StreamMaxKbps // manual caps; also the GCC maximum
-	autoCeilKbps   = 16000               // automatic ceiling (pixel-scaled)
-	relayCeilKbps  = 6000
-	ceil1080pKbps  = 8000
-	keyframeGOPms  = 2000
-	keyGuardAge    = 2 * time.Second // re-request a keyframe when the encoder's own GOP runs longer
-	keyGuardFrames = 10
+	floorKbps     = 1000
+	initialKbps   = 3000
+	maxCeilKbps   = proto.StreamMaxKbps // manual caps; also the GCC maximum
+	autoCeilKbps  = 16000               // automatic ceiling (pixel-scaled)
+	relayCeilKbps = 6000
+	ceil1080pKbps = 8000
+	// Keyframes come when the browser asks (PLI); a periodic one costs a
+	// bitrate spike and a visible blur pulse. This only bounds a lost request.
+	keyframeGOPms  = 10 * 60 * 1000
 	statsInterval  = 2 * time.Second
 	autoInterval   = time.Second
 	cursorInterval = time.Second / 120
@@ -84,7 +83,7 @@ type encoderState struct {
 type mediaPipe struct {
 	s     *sess
 	b     platform.Backend
-	track *webrtc.TrackLocalStaticSample
+	track *videoTrack
 	now   func() time.Time
 
 	capMu  sync.Mutex // serializes capture start / stop / restart
@@ -113,10 +112,6 @@ type mediaPipe struct {
 	lastState  []byte  // last stream state sent (without id)
 	control    *webrtc.DataChannel
 	cursor     *webrtc.DataChannel
-	lastPTS    int64
-	lastKey    time.Time
-	sinceKey   int
-	keyPending bool
 	sentShape  map[uint32]bool
 	curShape   []byte // full CursorShape message for periodic resend
 	clipSeen   string
@@ -132,7 +127,7 @@ type mediaPipe struct {
 	quit                     chan struct{}
 }
 
-func newMediaPipe(s *sess, track *webrtc.TrackLocalStaticSample) *mediaPipe {
+func newMediaPipe(s *sess, track *videoTrack) *mediaPipe {
 	b := s.m.o.Backend
 	p := &mediaPipe{s: s, b: b, track: track, now: time.Now, settings: DefaultStreamSettings(), bweKbps: initialKbps,
 		sentShape: map[uint32]bool{}, kickCh: make(chan struct{}, 1), quit: make(chan struct{})}
@@ -440,6 +435,7 @@ func (p *mediaPipe) start() {
 
 // startCaptureLocked starts capture with the current plan; caller holds capMu.
 func (p *mediaPipe) startCaptureLocked() error {
+	profile := p.track.profile(time.Second)
 	p.mu.Lock()
 	if p.stopped {
 		p.mu.Unlock()
@@ -447,13 +443,11 @@ func (p *mediaPipe) startCaptureLocked() error {
 	}
 	plan := p.planLocked()
 	cfg := platform.CaptureConfig{FPS: plan.FPS, BitrateKbps: plan.Kbps, KeyframeIntervalMS: keyframeGOPms,
-		MaxWidth: plan.BoxW, MaxHeight: plan.BoxH}
+		MaxWidth: plan.BoxW, MaxHeight: plan.BoxH, ProfileIDC: profile}
 	if len(p.monitors) > 0 {
 		cfg.MonitorID = p.monitors[p.active].ID
 	}
 	p.applied = encoderState{plan.Kbps, plan.FPS, plan.W, plan.H}
-	p.lastPTS = 0
-	p.lastKey, p.sinceKey, p.keyPending = p.now(), 0, false
 	p.mu.Unlock()
 	if err := p.b.StartCapture(cfg, p); err != nil {
 		return err
@@ -704,34 +698,14 @@ func (p *mediaPipe) onControlText(b []byte) {
 
 func (p *mediaPipe) Frame(data []byte, pts int64, keyframe bool) {
 	p.mu.Lock()
-	dur := time.Second / time.Duration(max(p.applied.fps, 1))
-	if p.lastPTS != 0 && pts > p.lastPTS {
-		if d := time.Duration(pts-p.lastPTS) * time.Microsecond; d < time.Second {
-			dur = d
-		}
-	}
-	p.lastPTS = pts
-	// The native GOP is sized for 60 fps; at lower or damage-driven frame
-	// rates it runs long, so ask for a keyframe to bound loss recovery.
-	now, wantKey := p.now(), false
-	if keyframe {
-		p.lastKey, p.sinceKey, p.keyPending = now, 0, false
-	} else {
-		p.sinceKey++
-		if !p.keyPending && p.sinceKey > keyGuardFrames && now.Sub(p.lastKey) > keyGuardAge {
-			p.keyPending, wantKey = true, true
-		}
-	}
+	frame := time.Second / time.Duration(max(p.applied.fps, 1))
 	p.mu.Unlock()
-	if wantKey {
-		go p.b.RequestKeyframe()
-	}
 	p.frames.Add(1)
 	p.bytes.Add(int64(len(data)))
 	if keyframe {
 		p.keyframes.Add(1)
 	}
-	_ = p.track.WriteSample(media.Sample{Data: data, Duration: dur})
+	_ = p.track.WriteFrame(data, pts, frame)
 }
 
 func (p *mediaPipe) CursorShape(id uint32, w, h, hotX, hotY uint16, rgba []byte) {

@@ -96,7 +96,7 @@ func hexSum(b []byte) string {
 func TestLoopbackFileUploadAndDownload(t *testing.T) {
 	dir := t.TempDir()
 	h := newHarness(t, platform.ConsentOnce, withFiles(dir))
-	h.connectFiles(t, "[stream files]")
+	h.connectFiles(t, "[stream move files]")
 	waitFor(t, "file channel open", func() bool { return h.file.ReadyState() == webrtc.DataChannelStateOpen })
 
 	content := make([]byte, 3<<19+333) // ~1.5 MiB
@@ -158,7 +158,7 @@ func TestLoopbackFileUploadAndDownload(t *testing.T) {
 func TestLoopbackSessionEndMidUpload(t *testing.T) {
 	dir := t.TempDir()
 	h := newHarness(t, platform.ConsentOnce, withFiles(dir))
-	h.connectFiles(t, "[stream files]")
+	h.connectFiles(t, "[stream move files]")
 	waitFor(t, "file channel open", func() bool { return h.file.ReadyState() == webrtc.DataChannelStateOpen })
 
 	_ = h.file.SendText(`{"t":"put","xfer":5,"dir":"","name":"big.iso","size":10485760}`)
@@ -188,7 +188,7 @@ func TestLoopbackSessionEndMidUpload(t *testing.T) {
 
 func TestLoopbackFileChannelClosedWithoutFiles(t *testing.T) {
 	h := newHarness(t, platform.ConsentOnce)
-	h.connectFiles(t, "[stream]")
+	h.connectFiles(t, "[stream move]")
 	waitFor(t, "file channel closed by the agent", func() bool { return h.file.ReadyState() == webrtc.DataChannelStateClosed })
 	if h.control.ReadyState() != webrtc.DataChannelStateOpen {
 		t.Fatal("control channel affected")

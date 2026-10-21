@@ -1,5 +1,5 @@
 // Package inputproto encodes and decodes the binary data-channel protocol in
-// docs/PROTOCOL.md §5 (input + cursor channels). Every decoder range-checks
+// docs/PROTOCOL.md §5 (input, move + cursor channels). Every decoder range-checks
 // its fields; anything malformed returns an error so the session can count it
 // toward the abuse threshold.
 package inputproto
@@ -17,6 +17,7 @@ const (
 	TypeKey            = 0x04
 	TypeText           = 0x05
 	TypeMouseMoveRel   = 0x06
+	TypeMouseMoveSeq   = 0x07 // `move` channel only
 	TypeClipboardBegin = 0x10
 	TypeClipboardData  = 0x11
 	TypeControl        = 0x20
@@ -57,6 +58,7 @@ var (
 // Type are set.
 type Event struct {
 	Type    uint8
+	Seq     uint16
 	X, Y    uint16
 	Monitor uint8
 	DX, DY  int16
@@ -88,6 +90,11 @@ func Decode(b []byte) (Event, error) {
 			return ev, ErrLength
 		}
 		ev.X, ev.Y, ev.Monitor = le.Uint16(p), le.Uint16(p[2:]), p[4]
+	case TypeMouseMoveSeq:
+		if len(p) != 7 {
+			return ev, ErrLength
+		}
+		ev.Seq, ev.X, ev.Y, ev.Monitor = le.Uint16(p), le.Uint16(p[2:]), le.Uint16(p[4:]), p[6]
 	case TypeMouseMoveRel, TypeMouseWheel:
 		if len(p) != 4 {
 			return ev, ErrLength
@@ -155,6 +162,12 @@ func Encode(ev Event) []byte {
 		b := []byte{ev.Type, 0, 0, 0, 0, ev.Monitor}
 		le.PutUint16(b[1:], ev.X)
 		le.PutUint16(b[3:], ev.Y)
+		return b
+	case TypeMouseMoveSeq:
+		b := []byte{ev.Type, 0, 0, 0, 0, 0, 0, ev.Monitor}
+		le.PutUint16(b[1:], ev.Seq)
+		le.PutUint16(b[3:], ev.X)
+		le.PutUint16(b[5:], ev.Y)
 		return b
 	case TypeMouseMoveRel, TypeMouseWheel:
 		b := []byte{ev.Type, 0, 0, 0, 0}

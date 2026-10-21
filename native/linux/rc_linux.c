@@ -273,7 +273,9 @@ static int encoder_open(encoder *e, int in_w, int in_h, int out_w, int out_h, co
     e->out_w = out_w;
     e->out_h = out_h;
     x264_param_t *p = &e->param;
-    if (x264_param_default_preset(p, "ultrafast", "zerolatency") < 0) return RC_ERR;
+    /* superfast turns on the deblocking, intra 4x4/8x8 analysis and sub-pixel
+     * motion search that ultrafast skips: cleaner text for ~2x the CPU. */
+    if (x264_param_default_preset(p, "superfast", "zerolatency") < 0) return RC_ERR;
     p->i_width = out_w;
     p->i_height = out_h;
     p->i_csp = X264_CSP_I420;
@@ -294,7 +296,8 @@ static int encoder_open(encoder *e, int in_w, int in_h, int out_w, int out_h, co
     p->i_keyint_min = 1;
     p->i_scenecut_threshold = 0;
     apply_rate(p, cfg->bitrate_kbps > 0 ? cfg->bitrate_kbps : 3000, fps);
-    if (x264_param_apply_profile(p, "baseline") < 0) return RC_ERR;
+    const char *profile = cfg->profile_idc >= 100 ? "high" : cfg->profile_idc >= 77 ? "main" : "baseline";
+    if (x264_param_apply_profile(p, profile) < 0) return RC_ERR;
     e->enc = x264_encoder_open(p);
     if (!e->enc) return RC_ERR;
     if (x264_picture_alloc(&e->pic, X264_CSP_I420, out_w, out_h) < 0) {

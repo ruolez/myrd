@@ -461,7 +461,8 @@ static void run_loop(Capture *c) {
             // Hardware encoders can fail mid-session (driver reset); fall back to software.
             logf("capture: encoder failed, recreating with the software MFT");
             encoder_destroy(c->enc);
-            EncoderConfig ec = {c->dst_w, c->dst_h, (int)c->fps, (int)c->bitrate_kbps, c->cfg.keyframe_interval_ms};
+            EncoderConfig ec = {c->dst_w, c->dst_h, (int)c->fps, (int)c->bitrate_kbps, c->cfg.keyframe_interval_ms,
+                              c->cfg.profile_idc};
             c->enc = encoder_create(c->dev.get(), ec, false, c->on_frame, c->user);
             if (!c->enc) {
                 logf("capture: no encoder available, stopping");
@@ -488,7 +489,8 @@ static DWORD WINAPI capture_thread(void *p) {
             logf("capture: video processor unavailable");
             break;
         }
-        EncoderConfig ec = {c->dst_w, c->dst_h, c->cfg.fps, c->cfg.bitrate_kbps, c->cfg.keyframe_interval_ms};
+        EncoderConfig ec = {c->dst_w, c->dst_h, c->cfg.fps, c->cfg.bitrate_kbps, c->cfg.keyframe_interval_ms,
+                              c->cfg.profile_idc};
         c->enc = encoder_create(c->dev.get(), ec, true, c->on_frame, c->user);
         if (!c->enc) {
             logf("capture: no H.264 encoder");

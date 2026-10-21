@@ -128,6 +128,7 @@ struct EncoderConfig {
     int fps;
     int bitrate_kbps;
     int keyframe_interval_ms;
+    int profile_idc; // negotiated H.264 profile: the most the encoder may use
 };
 class Encoder;
 // Creates an encoder on dev. prefer_hw=false skips hardware MFTs.

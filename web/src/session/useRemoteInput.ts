@@ -1,5 +1,5 @@
 // Captures pointer, wheel and keyboard input on the session stage and
-// serializes it straight into the `input` data channel (PROTOCOL §5).
+// serializes it straight into the `input` and `move` data channels (PROTOCOL §5).
 
 import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
@@ -9,7 +9,6 @@ import {
   Button,
   encodeKey,
   encodeMouseButton,
-  encodeMouseMove,
   encodeMouseMoveRel,
   encodeMouseWheel,
   encodeText,
@@ -30,6 +29,9 @@ const domButton: Record<number, number> = {
 
 const WHEEL_LINE_PX = 16;
 const WHEEL_PAGE_PX = 800;
+// Moves travel on a lossy channel; once the pointer rests this long, its
+// final position is re-sent reliably so a lost last move cannot strand it.
+const SETTLE_MS = 80;
 
 type Refs = {
   session: RefObject<RemoteSession | null>;
@@ -62,12 +64,20 @@ export function useRemoteInput(
       session.current?.releaseAllKeys();
     };
 
-    const moveAbs = (e: PointerEvent | MouseEvent) => {
+    let settle: ReturnType<typeof setTimeout> | null = null;
+    const moveAbs = (e: PointerEvent | MouseEvent, reliable: boolean) => {
       const v = video.current;
       const r = el.getBoundingClientRect();
       const box = contentBox(r.width, r.height, v?.videoWidth ?? 0, v?.videoHeight ?? 0);
       const { x, y } = normalizePoint(e.clientX - r.left, e.clientY - r.top, box);
-      send(encodeMouseMove(x, y, monitorRef.current));
+      if (settle) clearTimeout(settle);
+      settle = reliable
+        ? null
+        : setTimeout(() => {
+            settle = null;
+            session.current?.sendMove(x, y, monitorRef.current, true);
+          }, SETTLE_MS);
+      session.current?.sendMove(x, y, monitorRef.current, reliable);
     };
 
     const onMove = (e: PointerEvent) => {
@@ -76,13 +86,14 @@ export function useRemoteInput(
         return;
       }
       const events = typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents() : [];
-      moveAbs(events.length ? (events[events.length - 1] as PointerEvent) : e);
+      moveAbs(events.length ? (events[events.length - 1] as PointerEvent) : e, false);
     };
 
     const onDown = (e: PointerEvent) => {
       e.preventDefault();
       kb.focus({ preventScroll: true });
-      if (document.pointerLockElement !== el) moveAbs(e);
+      // Reliable, so the click lands where the pointer is, not where a lost move left it.
+      if (document.pointerLockElement !== el) moveAbs(e, true);
       const b = domButton[e.button];
       if (b === undefined) return;
       try {
@@ -95,6 +106,7 @@ export function useRemoteInput(
 
     const onUp = (e: PointerEvent) => {
       e.preventDefault();
+      if (e.type === "pointerup" && document.pointerLockElement !== el) moveAbs(e, true);
       const b = domButton[e.button];
       if (b !== undefined) send(encodeMouseButton(b, false));
     };
@@ -160,6 +172,7 @@ export function useRemoteInput(
     kb.focus({ preventScroll: true });
 
     return () => {
+      if (settle) clearTimeout(settle);
       releaseAll();
       el.removeEventListener("pointermove", onMove);
       el.removeEventListener("pointerdown", onDown);

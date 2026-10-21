@@ -2,6 +2,7 @@
   "input": [
     { "name": "mouse move abs", "event": { "type": "move", "x": 32768, "y": 16384, "monitor": 1 }, "hex": "010080004001" },
     { "name": "mouse move rel", "event": { "type": "move_rel", "dx": -5, "dy": 10 }, "hex": "06fbff0a00" },
+    { "name": "mouse move seq (move channel)", "event": { "type": "move_seq", "seq": 65534, "x": 32768, "y": 16384, "monitor": 1 }, "hex": "07feff0080004001" },
     { "name": "right button down", "event": { "type": "button", "button": 1, "down": true }, "hex": "020101" },
     { "name": "left button up", "event": { "type": "button", "button": 0, "down": false }, "hex": "020000" },
     { "name": "wheel up 120px", "event": { "type": "wheel", "dx": 0, "dy": -120 }, "hex": "03000088ff" },
@@ -17,6 +18,7 @@
   ],
   "input_invalid": [
     { "name": "truncated move", "hex": "0100800040" },
+    { "name": "truncated move seq", "hex": "07feff00800040" },
     { "name": "unknown type", "hex": "7f00" },
     { "name": "button out of range", "hex": "020901" },
     { "name": "empty", "hex": "" },

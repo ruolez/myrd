@@ -11,6 +11,7 @@ import (
 
 type vectorEvent struct {
 	Type    string `json:"type"`
+	Seq     uint16 `json:"seq"`
 	X       uint16 `json:"x"`
 	Y       uint16 `json:"y"`
 	Monitor uint8  `json:"monitor"`
@@ -66,10 +67,10 @@ func loadVectors(t *testing.T) vectors {
 }
 
 func toEvent(v vectorEvent) Event {
-	types := map[string]uint8{"move": TypeMouseMove, "move_rel": TypeMouseMoveRel, "button": TypeMouseButton,
+	types := map[string]uint8{"move": TypeMouseMove, "move_seq": TypeMouseMoveSeq, "move_rel": TypeMouseMoveRel, "button": TypeMouseButton,
 		"wheel": TypeMouseWheel, "key": TypeKey, "text": TypeText, "clip_begin": TypeClipboardBegin,
 		"clip_data": TypeClipboardData, "control": TypeControl}
-	ev := Event{Type: types[v.Type], X: v.X, Y: v.Y, Monitor: v.Monitor, DX: v.DX, DY: v.DY, Button: v.Button,
+	ev := Event{Type: types[v.Type], Seq: v.Seq, X: v.X, Y: v.Y, Monitor: v.Monitor, DX: v.DX, DY: v.DY, Button: v.Button,
 		Down: v.Down, Usage: v.Usage, Mods: v.Mods, Xfer: v.Xfer, Mime: v.Mime, Total: v.Total, Op: v.Op, Arg: v.Arg}
 	if v.Type == "text" {
 		ev.Text = v.Text
@@ -89,7 +90,7 @@ func TestDecodeVectors(t *testing.T) {
 				t.Fatalf("decode: %v", err)
 			}
 			want := toEvent(tc.Event)
-			if got.Type != want.Type || got.X != want.X || got.Y != want.Y || got.Monitor != want.Monitor ||
+			if got.Type != want.Type || got.Seq != want.Seq || got.X != want.X || got.Y != want.Y || got.Monitor != want.Monitor ||
 				got.DX != want.DX || got.DY != want.DY || got.Button != want.Button || got.Down != want.Down ||
 				got.Usage != want.Usage || got.Mods != want.Mods || got.Text != want.Text || got.Xfer != want.Xfer ||
 				got.Mime != want.Mime || got.Total != want.Total || got.Op != want.Op || got.Arg != want.Arg ||

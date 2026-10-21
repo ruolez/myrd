@@ -64,6 +64,7 @@ type harness struct {
 	input   *webrtc.DataChannel
 	control *webrtc.DataChannel
 	cursor  *webrtc.DataChannel
+	move    *webrtc.DataChannel
 	file    *webrtc.DataChannel
 
 	mu          sync.Mutex
@@ -80,6 +81,7 @@ type harness struct {
 	signalOrder []string // session.file / session.end, as sent
 	fileText    chan map[string]any
 	fileData    chan []byte
+	videoFmtp   string // codec the browser side received
 }
 
 func newHarness(t *testing.T, answer platform.Consent, tweaks ...func(*Options)) *harness {
@@ -211,6 +213,7 @@ func (h *harness) offer(tamper bool) {
 	zero := uint16(0)
 	h.input, _ = pc.CreateDataChannel("input", nil)
 	h.cursor, _ = pc.CreateDataChannel("cursor", &webrtc.DataChannelInit{Ordered: &ordered, MaxRetransmits: &zero})
+	h.move, _ = pc.CreateDataChannel("move", &webrtc.DataChannelInit{Ordered: &ordered, MaxRetransmits: &zero})
 	h.control, _ = pc.CreateDataChannel("control", nil)
 	h.file, _ = pc.CreateDataChannel("file", nil)
 	h.file.OnMessage(func(m webrtc.DataChannelMessage) {
@@ -241,6 +244,9 @@ func (h *harness) offer(tamper bool) {
 		}
 	})
 	pc.OnTrack(func(tr *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+		h.mu.Lock()
+		h.videoFmtp = tr.Codec().SDPFmtpLine
+		h.mu.Unlock()
 		if _, _, err := tr.ReadRTP(); err == nil {
 			select {
 			case h.rtpPackets <- struct{}{}:

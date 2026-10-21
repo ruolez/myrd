@@ -12,6 +12,7 @@ import {
   encodeMouseButton,
   encodeMouseMove,
   encodeMouseMoveRel,
+  encodeMouseMoveSeq,
   encodeMouseWheel,
   encodeText,
   fromHex,
@@ -28,6 +29,8 @@ function encodeVector(e: E): Uint8Array {
   switch (e.type) {
     case "move":
       return encodeMouseMove(n("x"), n("y"), n("monitor"));
+    case "move_seq":
+      return encodeMouseMoveSeq(n("seq"), n("x"), n("y"), n("monitor"));
     case "move_rel":
       return encodeMouseMoveRel(n("dx"), n("dy"));
     case "button":
@@ -58,6 +61,12 @@ describe("input encoders", () => {
 
   test("move clamps coordinates into 0..65535", () => {
     expect(toHex(encodeMouseMove(-10, 70000, 0))).toBe("010000ffff00");
+  });
+
+  test("move seq wraps the sequence number into u16", () => {
+    expect(toHex(encodeMouseMoveSeq(65536 + 3, 1, 2, 0))).toBe(
+      toHex(encodeMouseMoveSeq(3, 1, 2, 0)),
+    );
   });
 
   test("wheel clamps deltas into i16", () => {

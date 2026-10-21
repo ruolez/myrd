@@ -1,4 +1,4 @@
-// Binary input/cursor protocol (docs/PROTOCOL.md §5). Little-endian, first byte = type.
+// Binary input/move/cursor protocol (docs/PROTOCOL.md §5). Little-endian, first byte = type.
 
 export const MsgType = {
   MouseMove: 0x01,
@@ -7,6 +7,7 @@ export const MsgType = {
   Key: 0x04,
   Text: 0x05,
   MouseMoveRel: 0x06,
+  MouseMoveSeq: 0x07,
   ClipboardBegin: 0x10,
   ClipboardData: 0x11,
   Control: 0x20,
@@ -47,6 +48,16 @@ export function encodeMouseMove(x: number, y: number, monitor: number): Uint8Arr
   v.setUint16(1, clampU16(x), true);
   v.setUint16(3, clampU16(y), true);
   v.setUint8(5, monitor & 0xff);
+  return buf;
+}
+
+/** Absolute move for the lossy `move` channel; the agent drops ones older than `seq`'s newest. */
+export function encodeMouseMoveSeq(seq: number, x: number, y: number, monitor: number): Uint8Array {
+  const [buf, v] = frame(8, MsgType.MouseMoveSeq);
+  v.setUint16(1, seq & 0xffff, true);
+  v.setUint16(3, clampU16(x), true);
+  v.setUint16(5, clampU16(y), true);
+  v.setUint8(7, monitor & 0xff);
   return buf;
 }
 

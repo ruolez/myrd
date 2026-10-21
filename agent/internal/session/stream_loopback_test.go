@@ -61,7 +61,7 @@ func TestLoopbackStreamSettings(t *testing.T) {
 	}
 
 	hello := h.waitControl(t, "hello")
-	if fmt.Sprint(hello["features"]) != "[stream]" || hello["max_fps"] != float64(60) {
+	if fmt.Sprint(hello["features"]) != "[stream move]" || hello["max_fps"] != float64(60) {
 		t.Fatalf("hello features=%v max_fps=%v", hello["features"], hello["max_fps"])
 	}
 	if mon := hello["monitors"].([]any)[0].(map[string]any); mon["width"] != float64(1920) || mon["height"] != float64(1080) {
@@ -120,7 +120,7 @@ func TestLoopbackWallpaperHiddenWhileSessionRuns(t *testing.T) {
 	if err := <-h.answerOK; err != nil {
 		t.Fatal(err)
 	}
-	if hello := h.waitControl(t, "hello"); fmt.Sprint(hello["features"]) != "[stream wallpaper]" {
+	if hello := h.waitControl(t, "hello"); fmt.Sprint(hello["features"]) != "[stream move wallpaper]" {
 		t.Fatalf("hello features = %v", hello["features"])
 	}
 	waitFor(t, "capture", func() bool { return len(h.backend.Starts()) == 1 })
@@ -145,4 +145,36 @@ func TestLoopbackWallpaperHiddenWhileSessionRuns(t *testing.T) {
 	if calls := h.backend.WallpaperCalls(); !reflect.DeepEqual(calls, []bool{false, true, false, true, false}) {
 		t.Fatalf("wallpaper calls = %v, want probe, hide, show, hide, restore at the end", calls)
 	}
+}
+
+func TestLoopbackMoveChannelAndNegotiatedProfile(t *testing.T) {
+	h := newHarness(t, platform.ConsentOnce)
+	h.offer(false)
+	if err := <-h.answerOK; err != nil {
+		t.Fatal(err)
+	}
+	h.waitControl(t, "hello")
+	select {
+	case <-h.rtpPackets:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no video")
+	}
+	h.mu.Lock()
+	fmtp := h.videoFmtp
+	h.mu.Unlock()
+	if got, want := h.backend.Starts()[0].ProfileIDC, ProfileIDC(fmtp); got != want {
+		t.Errorf("encoder profile %d, want %d for the negotiated %q", got, want, fmtp)
+	}
+
+	waitFor(t, "move channel", func() bool { return h.move.ReadyState() == webrtc.DataChannelStateOpen })
+	for _, seq := range []uint16{1, 2} {
+		if err := h.move.Send(inputproto.Encode(inputproto.Event{Type: inputproto.TypeMouseMoveSeq, Seq: seq,
+			X: 1000 * seq, Y: 500})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, "moves injected", func() bool {
+		ev := h.backend.Injected()
+		return len(ev) == 2 && ev[1].Type == platform.EvMouseMove && ev[1].X == 2000 && ev[1].MonitorID == 1
+	})
 }

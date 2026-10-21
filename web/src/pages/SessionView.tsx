@@ -77,7 +77,6 @@ export function SessionView() {
   const [hud, setHud] = useState(readHudPref);
   const [fullscreen, setFullscreen] = useState(false);
   const [relative, setRelative] = useState(false);
-  const [hasCursorShape, setHasCursorShape] = useState(false);
   const [deviceName, setDeviceName] = useState("");
   const [streamOpen, setStreamOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
@@ -116,7 +115,6 @@ export function SessionView() {
     });
     sessionRef.current = s;
     setSession(s);
-    setHasCursorShape(false);
     void s.start();
     const onUnload = () => s.end("user_hangup");
     window.addEventListener("pagehide", onUnload);
@@ -477,12 +475,13 @@ export function SessionView() {
         <CursorLayer
           session={session}
           video={videoRef}
+          surface={surfaceRef}
           nativeWidth={nativeWidth}
-          onHasShape={setHasCursorShape}
+          active={live}
         />
         <div
           ref={surfaceRef}
-          className={`absolute inset-0 touch-none select-none ${live && hasCursorShape ? "cursor-none" : "cursor-default"}`}
+          className="absolute inset-0 cursor-default touch-none select-none"
           onClick={() => kbRef.current?.focus({ preventScroll: true })}
         >
           <textarea

@@ -224,11 +224,14 @@ Rules:
 
 ## 5. Data channels
 
-The browser creates the offer with one `recvonly` video transceiver (H.264 preferred: packetization-mode=1, profile 42e01f/4d001f/640c1f) and four data channels (exact labels):
+The browser creates the offer with one `recvonly` video transceiver (H.264, packetization-mode=1, preferring high 640c1f/64001f, then main 4d001f, then constrained baseline 42e01f) and five data channels (exact labels).
+
+Video: the agent encodes at most the negotiated profile (high without B-frames, i.e. constrained high), stamps each frame's RTP timestamp with its capture time (90 kHz), sends a keyframe only when the browser asks (PLI/FIR, at most every 100 ms), and paces packets at 2.5× the bandwidth estimate (no packet waits more than 50 ms). When the browser negotiates `http://www.webrtc.org/experiments/rtp-hdrext/playout-delay` (Chrome does), every packet carries min = max = 0: render each frame as soon as it is decoded.
 
 | label | options | direction |
 |---|---|---|
 | `input` | ordered, reliable | browser → agent, binary |
+| `move` | `ordered:false, maxRetransmits:0` | browser → agent, binary `0x07` only (feature `"move"`; agents without it close the channel) |
 | `cursor` | `ordered:false, maxRetransmits:0` | agent → browser, binary |
 | `control` | ordered, reliable | both; JSON text + binary clipboard frames |
 | `file` | ordered, reliable | both; JSON text + binary `0x40` data frames (see below). Agents without file transfer close it. |
@@ -239,6 +242,7 @@ The browser creates the offer with one `recvonly` video transceiver (H.264 prefe
 |---|---|---|---|
 | `0x01` | MouseMove | `x u16, y u16, monitor u8` (normalized 0..65535 of the monitor's content box) | 6 |
 | `0x06` | MouseMoveRel | `dx i16, dy i16` (Pointer Lock) | 5 |
+| `0x07` | MouseMoveSeq | `seq u16, x u16, y u16, monitor u8`; **`move` channel only** (rejected on `input`) | 8 |
 | `0x02` | MouseButton | `button u8 (0 L,1 R,2 M,3 back,4 fwd), down u8 (0/1)` | 3 |
 | `0x03` | MouseWheel | `dx i16, dy i16` pixels, DOM sign (dy>0 = scroll down) | 5 |
 | `0x04` | Key | `usage u16 (HID page 0x07 usage), down u8, mods u8 (HID modifier byte)` | 5 |
@@ -246,6 +250,8 @@ The browser creates the offer with one `recvonly` video transceiver (H.264 prefe
 | `0x10` | ClipboardBegin | `xfer u16, mime u8 (1 text/plain;utf-8, 2 image/png), total u32` (total ≤ 1 MiB) | 8 |
 | `0x11` | ClipboardData | `xfer u16, bytes (1..16384)`; complete when `total` bytes received | 4..16387 |
 | `0x20` | Control | `op u8, arg u8`: op 1 select monitor (arg = monitor index in `hello.monitors`), 2 request keyframe, 3 set quality tier (**legacy**, for agents without the `stream` feature; 0 background 5 fps, 1 balanced 30 fps, 2 high), 4 release all keys | 3 |
+
+`move` carries absolute moves while the pointer travels; a lost one is superseded by the next. `seq` increments per message (wrapping at 65535) and the agent drops a move whose `seq` is not newer than the newest it has seen (serial-number arithmetic: `int16(seq − newest) ≤ 0`); a late move is not an input reject. Everything that must land at an exact position goes on `input` as `0x01`: a move before each button down and up, and the resting position once the pointer has been still for 80 ms. Pointer Lock moves (`0x06`) stay on `input`, since a lost delta would drift. Without the feature, the browser sends every absolute move on `input`.
 
 HID modifier byte: bit0 LCtrl, bit1 LShift, bit2 LAlt, bit3 LGUI, bit4 RCtrl, bit5 RShift, bit6 RAlt, bit7 RGUI. The agent tracks pressed keys itself and releases every pressed key on session end, on `0x20 op 4`, and on blur-triggered release from the browser.
 
@@ -260,13 +266,15 @@ Validation on the agent: wrong length, unknown type, button > 4, monitor out of 
 
 Shapes are sent on change; the browser caches by id (re-send of a known id with zero-length png means "use cached"). Shape size and hotspot are in **native** monitor pixels, whatever the encoded stream size.
 
+The browser shows the shape as its own CSS cursor (scaled to the stream's on-screen size, at most 128 CSS px) while the controller moves the mouse, so the cursor has no network delay. It draws it at the reported position instead under Pointer Lock, while the pointer is outside the stage, and when a report differs from the last move it sent by more than ~4 native pixels once 1 s has passed since that move (the cursor moved on the device).
+
 ### `control`
 
 JSON text messages, `{"t": "...", ...}`:
 
 | t | dir | fields |
 |---|---|---|
-| `hello` | A→B on open | `monitors:[Monitor]`, `active:index`, `encoder`, `codec:"h264"`, `fps` (current target), `max_fps` (encoder cap), `features:[string]` (`"stream"`, `"files"`, `"wallpaper"`; absent on old agents), `permissions:{screen,input}`, `agent_version`, `os` |
+| `hello` | A→B on open | `monitors:[Monitor]`, `active:index`, `encoder`, `codec:"h264"`, `fps` (current target), `max_fps` (encoder cap), `features:[string]` (`"stream"`, `"move"`, `"files"`, `"wallpaper"`; absent on old agents), `permissions:{screen,input}`, `agent_version`, `os` |
 | `monitor` | A→B | `active:index`, `width`, `height` (native pixels, after a switch) |
 | `stream` | B→A | desired stream settings, see below |
 | `stream` | A→B | stream state, see below |

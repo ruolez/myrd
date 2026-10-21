@@ -46,6 +46,8 @@ type inputState struct {
 	buttons map[uint8]bool
 	nrej    int
 	clip    inputproto.ClipboardAssembler
+	moveSeq uint16
+	moved   bool // moveSeq is set
 }
 
 func newInputState(b platform.Backend, km keymap.Table) *inputState {
@@ -133,6 +135,32 @@ func (in *inputState) handle(raw []byte, mc mediaControl) error {
 		return nil
 	}
 	return in.reject(inputproto.ErrUnknownType)
+}
+
+// handleMove processes one `move`-channel message: absolute moves that may
+// be lost or reordered, so a move older than the newest one seen is dropped.
+func (in *inputState) handleMove(raw []byte, mc mediaControl) error {
+	ev, err := inputproto.Decode(raw)
+	if err != nil {
+		return in.reject(err)
+	}
+	if ev.Type != inputproto.TypeMouseMoveSeq {
+		return in.reject(inputproto.ErrUnknownType)
+	}
+	id, ok := mc.monitorID(int(ev.Monitor))
+	if !ok {
+		return in.reject(inputproto.ErrRange)
+	}
+	in.mu.Lock()
+	stale := in.moved && int16(ev.Seq-in.moveSeq) <= 0
+	if !stale {
+		in.moveSeq, in.moved = ev.Seq, true
+	}
+	in.mu.Unlock()
+	if stale {
+		return nil
+	}
+	return in.b.Inject(platform.InputEvent{Type: platform.EvMouseMove, MonitorID: id, X: ev.X, Y: ev.Y})
 }
 
 // releaseAll sends key-up for every held key and button-up for every held

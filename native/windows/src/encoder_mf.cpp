@@ -85,6 +85,7 @@ public:
     int64_t base_pts = -1;
     int64_t last_in_pts = -1; // previous input pts (us), for real sample durations
     const char *name = "mf-sw";
+    UINT32 profile = eAVEncH264VProfile_Base;
 
     ~Encoder() { shutdown(); }
 
@@ -110,8 +111,13 @@ public:
         mft->QueryInterface(kIID_ICodecAPI, codec.put_void());
         apply_codec_settings();
 
-        // Output type first (the encoder needs it to accept an input type).
-        if (!set_output_type(eAVEncH264VProfile_Main) && !set_output_type(eAVEncH264VProfile_Base)) {
+        // Output type first (the encoder needs it to accept an input type):
+        // the negotiated profile, then simpler ones; main stays the last
+        // resort for a baseline-only browser, as before.
+        bool ok = (cfg.profile_idc >= 100 && set_output_type(eAVEncH264VProfile_High)) ||
+                  (cfg.profile_idc >= 77 && set_output_type(eAVEncH264VProfile_Main)) ||
+                  set_output_type(eAVEncH264VProfile_Base) || set_output_type(eAVEncH264VProfile_Main);
+        if (!ok) {
             logf("encoder: no acceptable H.264 output type");
             return false;
         }
@@ -162,8 +168,9 @@ public:
         codec_bool(codec.get(), CODECAPI_AVLowLatencyMode, true);
         codec_ui4(codec.get(), CODECAPI_AVEncCommonRateControlMode, eAVEncCommonRateControlMode_CBR);
         codec_ui4(codec.get(), CODECAPI_AVEncCommonMeanBitRate, (ULONG)cfg.bitrate_kbps * 1000);
-        // Sized for the 60 fps ceiling: fps changes at runtime without a new
-        // encoder, and the agent requests keyframes when lower rates stretch it.
+        set_buffer();
+        if (profile != eAVEncH264VProfile_Base) codec_bool(codec.get(), CODECAPI_AVEncH264CABACEnable, true);
+        // Sized for the 60 fps ceiling: fps changes at runtime without a new encoder.
         ULONG gop = (ULONG)(60LL * (cfg.keyframe_interval_ms > 0 ? cfg.keyframe_interval_ms : 2000) / 1000);
         codec_ui4(codec.get(), CODECAPI_AVEncMPVGOPSize, gop ? gop : 1);
         codec_ui4(codec.get(), CODECAPI_AVEncMPVDefaultBPictureCount, 0);
@@ -185,6 +192,7 @@ public:
         t->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235);
         HRESULT hr = mft->SetOutputType(out_id, t.get(), 0);
         if (FAILED(hr)) return false;
+        this->profile = profile;
         refresh_seq_header();
         return true;
     }
@@ -388,6 +396,14 @@ public:
     void set_bitrate(int kbps) {
         cfg.bitrate_kbps = kbps;
         codec_ui4(codec.get(), CODECAPI_AVEncCommonMeanBitRate, (ULONG)kbps * 1000);
+        set_buffer();
+    }
+
+    // ~2 frames of VBV, as on Linux: without it the encoder may let one
+    // frame grow to a second's worth of bits, a latency spike on the wire.
+    void set_buffer() {
+        ULONG bits = (ULONG)cfg.bitrate_kbps * 1000 * 2 / (ULONG)(cfg.fps > 0 ? cfg.fps : 30);
+        codec_ui4(codec.get(), CODECAPI_AVEncCommonBufferSize, bits);
     }
 
     void shutdown() {

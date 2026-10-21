@@ -155,28 +155,39 @@ static void vt_set_rate(VTCompressionSessionRef s, int kbps, int fps) {
 }
 
 // Creates a session trying, in order: low-latency hardware rate control
-// (constrained baseline), plain hardware (main), software (main).
-static VTCompressionSessionRef vt_create(int w, int h, int fps, int kbps, int gop_ms, char *name, size_t name_cap) {
+// (constrained high when the browser negotiated high, else constrained
+// baseline; the only two profiles it supports), plain hardware, software.
+static VTCompressionSessionRef vt_create(int w, int h, int fps, int kbps, int gop_ms, int profile_idc, char *name,
+                                         size_t name_cap) {
     NSDictionary *ll = @{(__bridge NSString *)kVTVideoEncoderSpecification_EnableLowLatencyRateControl: @YES};
     NSDictionary *hw = @{(__bridge NSString *)kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: @YES};
+    BOOL high = profile_idc >= 100;
+    CFStringRef fallback = high ? kVTProfileLevel_H264_High_AutoLevel : kVTProfileLevel_H264_Main_AutoLevel;
     struct { NSDictionary *spec; CFStringRef profile; } attempts[] = {
+        {ll, high ? kVTProfileLevel_H264_ConstrainedHigh_AutoLevel : kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel},
         {ll, kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel},
-        {hw, kVTProfileLevel_H264_Main_AutoLevel},
-        {nil, kVTProfileLevel_H264_Main_AutoLevel},
+        {hw, fallback},
+        {nil, fallback},
     };
     for (size_t i = 0; i < sizeof(attempts) / sizeof(attempts[0]); i++) {
+        if (i == 1 && !high) continue; // same as attempt 0
         VTCompressionSessionRef s = NULL;
         OSStatus st = VTCompressionSessionCreate(kCFAllocatorDefault, w, h, kCMVideoCodecType_H264,
                                                  (__bridge CFDictionaryRef)attempts[i].spec, NULL, NULL,
                                                  vt_output, NULL, &s);
         if (st != noErr || s == NULL) continue;
+        // The low-latency encoder refuses profiles it lacks: try the next one.
+        if (VTSessionSetProperty(s, kVTCompressionPropertyKey_ProfileLevel, attempts[i].profile) != noErr &&
+            attempts[i].spec == ll) {
+            VTCompressionSessionInvalidate(s);
+            CFRelease(s);
+            continue;
+        }
         VTSessionSetProperty(s, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
         VTSessionSetProperty(s, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
-        VTSessionSetProperty(s, kVTCompressionPropertyKey_ProfileLevel, attempts[i].profile);
         VTSessionSetProperty(s, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,
                              (__bridge CFNumberRef)@(gop_ms / 1000.0));
-        // Frame-count limit sized for the 60 fps ceiling (fps changes at runtime);
-        // the duration limit above and the agent's keyframe guard cover lower rates.
+        // Frame-count limit sized for the 60 fps ceiling (fps changes at runtime).
         VTSessionSetProperty(s, kVTCompressionPropertyKey_MaxKeyFrameInterval,
                              (__bridge CFNumberRef)@(MAX(1, 60 * gop_ms / 1000)));
         VTSessionSetProperty(s, kVTCompressionPropertyKey_MaxFrameDelayCount, (__bridge CFNumberRef)@0);
@@ -193,7 +204,7 @@ static VTCompressionSessionRef vt_create(int w, int h, int fps, int kbps, int go
         BOOL hardware = qs == noErr ? (using_hw && CFBooleanGetValue(using_hw)) : (attempts[i].spec == ll);
         if (using_hw) CFRelease(using_hw);
         strlcpy(name, hardware ? "videotoolbox" : "videotoolbox-sw", name_cap);
-        RCLOG(@"encoder attempt %zu ok, hardware=%d", i, hardware);
+        RCLOG(@"encoder attempt %zu ok, hardware=%d profile=%@", i, hardware, attempts[i].profile);
         return s;
     }
     return NULL;
@@ -453,7 +464,7 @@ static int start_locked(const rc_capture_config *cfg, rc_frame_fn on_frame, rc_c
         sc.colorMatrix = kCGDisplayStreamYCbCrMatrix_ITU_R_709_2;
         sc.capturesAudio = NO;
 
-        g_vt = vt_create(w, h, fps, kbps, gop, g_encoder, sizeof(g_encoder));
+        g_vt = vt_create(w, h, fps, kbps, gop, cfg->profile_idc, g_encoder, sizeof(g_encoder));
         if (!g_vt) return RC_ERR;
 
         if (!g_queue) {
@@ -570,7 +581,7 @@ int rc_wallpaper_hide(int hide) {
 const char *rc_encoder_name(void) {
     pthread_mutex_lock(&g_ctl);
     if (g_encoder[0] == 0) {
-        VTCompressionSessionRef s = vt_create(1280, 720, 60, 4000, 2000, g_encoder, sizeof(g_encoder));
+        VTCompressionSessionRef s = vt_create(1280, 720, 60, 4000, 2000, 66, g_encoder, sizeof(g_encoder));
         if (s) { VTCompressionSessionInvalidate(s); CFRelease(s); }
         else strlcpy(g_encoder, "none", sizeof(g_encoder));
     }

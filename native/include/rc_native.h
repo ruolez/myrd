@@ -12,8 +12,10 @@
  *  - Go never touches raw pixels. Capture + encode happen here; the frame
  *    callback delivers one complete H.264 access unit in Annex-B form
  *    (start codes 00 00 00 01). Keyframes MUST carry SPS+PPS in-band.
- *  - H.264 constrained baseline or main profile, no B-frames, no frame
- *    reordering, low-latency/real-time mode.
+ *  - H.264 at most rc_capture_config.profile_idc (constrained baseline,
+ *    main or constrained high), no B-frames, no frame reordering,
+ *    low-latency/real-time mode. Keyframes come from rc_request_keyframe;
+ *    keyframe_interval_ms only bounds a lost request.
  *  - Callbacks may fire on any native thread; they must not be re-entered
  *    concurrently for the same kind (serialize frame callbacks).
  *  - After rc_capture_stop returns, no further callbacks may fire.
@@ -64,9 +66,11 @@ typedef struct {
     uint32_t monitor_id;
     int32_t  fps;                  /* target, <= 60 */
     int32_t  bitrate_kbps;         /* initial target */
-    int32_t  keyframe_interval_ms; /* GOP, e.g. 2000 */
+    int32_t  keyframe_interval_ms; /* longest GOP; the agent sends 10 min */
     int32_t  max_width;            /* 0 = native; else downscale keeping aspect */
     int32_t  max_height;
+    int32_t  profile_idc;          /* negotiated H.264 profile, the most the encoder may use:
+                                      66 constrained baseline (also 0), 77 main, 100 constrained high */
 } rc_capture_config;
 
 /* One H.264 access unit, Annex-B. pts_us is a monotonic capture timestamp. */

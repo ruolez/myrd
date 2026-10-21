@@ -27,8 +27,9 @@ const (
 	stateEnded      = "ended"
 )
 
-// H.264 fmtp lines we accept, constrained baseline first.
-var h264Profiles = []string{"42e01f", "4d001f", "640c1f"}
+// H.264 fmtp lines we accept; the browser's order picks one and the encoder
+// follows it (ProfileIDC).
+var h264Profiles = []string{"42e01f", "4d001f", "640c1f", "64001f"}
 
 type sess struct {
 	m          *Manager
@@ -192,7 +193,7 @@ func (s *sess) newAPI(estimators chan<- cc.BandwidthEstimator) (*webrtc.API, err
 			gcc.SendSideBWEInitialBitrate(initialKbps*1000),
 			gcc.SendSideBWEMinBitrate(floorKbps*1000),
 			gcc.SendSideBWEMaxBitrate(maxCeilKbps*1000),
-			gcc.SendSideBWEPacer(gcc.NewNoOpPacer()), // pacing adds latency to keyframe bursts
+			gcc.SendSideBWEPacer(newFramePacer(initialKbps*1000)),
 		)
 	})
 	if err != nil {
@@ -211,6 +212,11 @@ func (s *sess) newAPI(estimators chan<- cc.BandwidthEstimator) (*webrtc.API, err
 	if err := webrtc.RegisterDefaultInterceptors(me, reg); err != nil {
 		return nil, err
 	}
+	if err := me.RegisterHeaderExtension(webrtc.RTPHeaderExtensionCapability{URI: playoutDelayURI},
+		webrtc.RTPCodecTypeVideo); err != nil {
+		return nil, err
+	}
+	reg.Add(playoutDelayFactory{})
 
 	se := webrtc.SettingEngine{}
 	se.SetICETimeouts(4*time.Second, s.m.o.FailedTimeout, time.Second)
@@ -237,8 +243,7 @@ func (s *sess) setupPeer() error {
 	if err != nil {
 		return err
 	}
-	track, err := webrtc.NewTrackLocalStaticSample(
-		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264, ClockRate: 90000}, "video", "remotectl")
+	track, err := newVideoTrack()
 	if err != nil {
 		pc.Close()
 		return err
@@ -289,6 +294,12 @@ func (s *sess) setupPeer() error {
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 				if !msg.IsString {
 					s.onInput(msg.Data)
+				}
+			})
+		case "move":
+			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+				if !msg.IsString {
+					s.onMove(msg.Data)
 				}
 			})
 		case "cursor":
@@ -488,12 +499,14 @@ func (s *sess) onConnected() {
 	}
 }
 
-func (s *sess) onInput(b []byte) {
-	if err := s.in.handle(b, s.media); err != nil {
-		if s.in.rejects() > maxRejects {
-			s.log.Warn("input abuse threshold reached")
-			go s.end(proto.EndAbuse, true)
-		}
+func (s *sess) onInput(b []byte) { s.checkAbuse(s.in.handle(b, s.media)) }
+
+func (s *sess) onMove(b []byte) { s.checkAbuse(s.in.handleMove(b, s.media)) }
+
+func (s *sess) checkAbuse(err error) {
+	if err != nil && s.in.rejects() > maxRejects {
+		s.log.Warn("input abuse threshold reached")
+		go s.end(proto.EndAbuse, true)
 	}
 }
 

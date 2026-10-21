@@ -33,6 +33,9 @@ type CaptureConfig struct {
 	KeyframeIntervalMS int
 	MaxWidth           int
 	MaxHeight          int
+	// ProfileIDC is the negotiated H.264 profile (66 constrained baseline,
+	// 77 main, 100 constrained high); the encoder uses at most that.
+	ProfileIDC int
 }
 
 // CaptureSink receives native callbacks. Implementations must be fast and

@@ -105,6 +105,7 @@ func (b *Backend) StartCapture(cfg platform.CaptureConfig, sink platform.Capture
 	c := C.rc_capture_config{
 		monitor_id: C.uint32_t(cfg.MonitorID), fps: C.int32_t(cfg.FPS), bitrate_kbps: C.int32_t(cfg.BitrateKbps),
 		keyframe_interval_ms: C.int32_t(cfg.KeyframeIntervalMS), max_width: C.int32_t(cfg.MaxWidth), max_height: C.int32_t(cfg.MaxHeight),
+		profile_idc: C.int32_t(cfg.ProfileIDC),
 	}
 	h := cgo.NewHandle(sink)
 	if err := rcErr(C.rc_start_with_handle(&c, C.uintptr_t(h))); err != nil {

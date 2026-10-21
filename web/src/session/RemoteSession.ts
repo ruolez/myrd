@@ -13,9 +13,12 @@ import {
   decodeCursor,
   encodeClipboard,
   encodeControl,
+  encodeMouseMove,
+  encodeMouseMoveSeq,
   Mime,
 } from "../lib/input";
 import type { CursorMessage } from "../lib/input";
+import type { SentMove } from "../lib/cursor";
 import { signaling } from "../lib/signaling";
 import type { SignalMessage } from "../lib/signaling";
 import {
@@ -174,6 +177,9 @@ export class RemoteSession {
   private cursorListeners = new Set<(m: CursorMessage) => void>();
   private pc: RTCPeerConnection | null = null;
   private input: RTCDataChannel | null = null;
+  private move: RTCDataChannel | null = null;
+  private moveSeq = 0;
+  private sentMove: SentMove | null = null;
   private control: RTCDataChannel | null = null;
   private file: RTCDataChannel | null = null;
   private fileChannel: FileChannel | null = null;
@@ -328,10 +334,13 @@ export class RemoteSession {
     preferH264(tr);
 
     this.input = pc.createDataChannel("input", { ordered: true });
+    // Absolute moves, latest wins: a lost one is superseded, never waited for.
+    this.move = pc.createDataChannel("move", { ordered: false, maxRetransmits: 0 });
     const cursor = pc.createDataChannel("cursor", { ordered: false, maxRetransmits: 0 });
     this.control = pc.createDataChannel("control", { ordered: true });
     this.file = pc.createDataChannel("file", { ordered: true });
-    for (const ch of [this.input, cursor, this.control, this.file]) ch.binaryType = "arraybuffer";
+    for (const ch of [this.input, this.move, cursor, this.control, this.file])
+      ch.binaryType = "arraybuffer";
     // Agents without file transfer close this channel; that means "unsupported".
     this.file.addEventListener("open", () => this.refreshFiles());
     this.file.addEventListener("close", () => this.refreshFiles());
@@ -629,6 +638,26 @@ export class RemoteSession {
     if (this.input?.readyState === "open") this.input.send(bytes as Uint8Array<ArrayBuffer>);
   }
 
+  /**
+   * Moves the remote pointer. Lossy by default (the `move` channel when the
+   * agent has it); reliable moves go in order with clicks and keys, so send
+   * one before a button and when the pointer comes to rest.
+   */
+  sendMove(x: number, y: number, monitor: number, reliable = false) {
+    this.sentMove = { x, y, at: performance.now() };
+    if (!reliable && this.move?.readyState === "open" && this.snap.features?.includes("move")) {
+      this.moveSeq = (this.moveSeq + 1) & 0xffff;
+      this.move.send(encodeMouseMoveSeq(this.moveSeq, x, y, monitor) as Uint8Array<ArrayBuffer>);
+      return;
+    }
+    this.sendInput(encodeMouseMove(x, y, monitor));
+  }
+
+  /** The last absolute move sent, for telling our cursor echo from a remote move. */
+  get lastMove(): SentMove | null {
+    return this.sentMove;
+  }
+
   selectMonitor(index: number) {
     this.sendInput(encodeControl(ControlOp.SelectMonitor, index));
     this.update({ activeMonitor: index });
@@ -723,6 +752,7 @@ export class RemoteSession {
     }
     this.pc = null;
     this.input = null;
+    this.move = null;
     this.control = null;
     this.file = null;
   }
@@ -734,10 +764,13 @@ function preferH264(tr: RTCRtpTransceiver) {
   const score = (c: RTCRtpCodec) => {
     if (c.mimeType.toLowerCase() !== "video/h264") return -1;
     const f = c.sdpFmtpLine ?? "";
+    // The agent encodes whatever profile is negotiated; high (CABAC, 8x8
+    // transform; no B-frames, so constrained) costs ~10-15% fewer bits than baseline.
     let s = 1;
-    if (/packetization-mode=1/.test(f)) s += 4;
-    if (/profile-level-id=42e01f/i.test(f)) s += 2;
-    else if (/profile-level-id=(4d|64)/i.test(f)) s += 1;
+    if (/packetization-mode=1/.test(f)) s += 8;
+    if (/profile-level-id=64/i.test(f)) s += 4;
+    else if (/profile-level-id=4d/i.test(f)) s += 3;
+    else if (/profile-level-id=42e0/i.test(f)) s += 2;
     return s;
   };
   const h264 = caps.codecs.filter((c) => score(c) > 0).sort((a, b) => score(b) - score(a));
