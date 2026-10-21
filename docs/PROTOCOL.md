@@ -132,7 +132,7 @@ Rate limit: 10 failed attempts / 15 min per IP and per email → 429.
 | GET | `/v1/admin/audit?user_id=&device_id=&event=&actor=&limit=&before=` | paged `AuditEvent` |
 | GET | `/v1/admin/releases` | `{items:[Release]}`, newest version first |
 | POST | `/v1/admin/releases` | `multipart/form-data`: part `sig` (the `.sig` sidecar, ≤ 4 KB) **before** part `file` (the installer, ≤ 512 MB); optional field `rollout_pct` (default 100) before `file`. The sidecar must verify against the server's release key and match the uploaded bytes (sha256, size, filename extension). → `{release}` (unpublished). 400 `bad_signature` \| `mismatch` \| `bad_request`, 409 `conflict` (same version/os/arch), 413 `too_large`. Audited `release.uploaded` |
-| PATCH | `/v1/admin/releases/{id}` | `{rollout_pct?, published?:bool}` → `{release}`; publishing or raising `rollout_pct` pushes `update.check` to the online devices it now applies to (spread over up to 10 min) |
+| PATCH | `/v1/admin/releases/{id}` | `{rollout_pct?, published?:bool}` → `{release}`; publishing or raising `rollout_pct` pushes `update.check` to the online devices it now applies to (spread over up to 10 min). A release that reaches 100% published (darwin `universal` or windows `amd64`) also becomes the Add-device download, unless that is already a release at least as new; audited `release.installer_set` with `auto: true` |
 | POST | `/v1/admin/releases/{id}/installer` | → `{release}`; the release's file becomes the Add-device download for its os (`/v1/downloads/{macos\|windows}`). Audited `release.installer_set` |
 | DELETE | `/v1/admin/releases/{id}` | → `{}`; removes the file |
 | POST | `/v1/admin/devices/{id}/update` | `{force?:bool}` → 202 `{version}`; as `/v1/devices/{id}/update` for any device |
@@ -197,7 +197,7 @@ Rules:
 - Server boot: every `pending` row → `failed/server_restart`; `active` rows survive until reconciled by the agent's next `hello` (or ended after 2 min if the device never returns).
 - Session `max_session_hours` (admin setting) enforced by the server sending `session.end{timeout}`.
 - Server writes audit: `session.created`, `session.connected` (meta: path, client_ip, agent_ip, local/remote candidate), `session.ended` (meta: reason, duration_s, bytes), `session.failed`, `input.rejected` (when reason = `input_abuse`), and one event per file transfer reported by the agent: `file.uploaded`, `file.downloaded`, `file.upload_failed`, `file.download_failed` (meta: name, dir, size, bytes, sha256, result, error, duration_ms, xfer).
-- Server→agent `session.offer` carries `ice_servers` minted for the agent (separate TURN username), `client_key` and `user`.
+- Server→agent `session.offer` carries `ice_servers` minted for the agent (separate TURN username), `client_key` and `user{id,email}`.
 - TURN credentials: coturn REST scheme — `username = "<unix_expiry>:<session_id>:<b|a>"`, `credential = base64(HMAC-SHA1(TURN_SECRET, username))`, TTL ≤ 2 h. URLs from `TURN_URLS` (browser) and `TURN_URLS_AGENT` (agent; defaults to `TURN_URLS`). STUN URL included as a separate entry without credentials. `force_relay` is passed back unchanged so the browser sets `iceTransportPolicy:"relay"`.
 
 ### Agent extras
@@ -220,7 +220,7 @@ Rules:
 - Agent: Ed25519 device key → 64-byte sig → base64 std.
 - Each side recomputes the fingerprint from the **remote** SDP it received and verifies the remote's signature over it. Mismatch → `session.end{bad_signature}`, nothing is connected.
 - Browser pins `device.public_key` per device id in IndexedDB store `device_pins` on first session; a different key later → hard warning screen; the user may explicitly re-trust.
-- Agent pins client keys by `sha256(SPKI DER)` hex in its local store (authoritative). Unknown key → device prompt "Allow this new browser: <label>, first seen <created_at>? (user <email>)" with Deny / Allow once / Allow and remember. Pinned key + `auto_accept` → no prompt; pinned + !auto_accept → light prompt "Allow session from <label>?". Prompt timeout 60 s → `not_approved`.
+- Agent pins client keys by `sha256(SPKI DER)` hex in its local store (authoritative). A pin records the `user.id` that approved it (`user_id`; pins from before 0.3.9 have none and count for the device's owner, the only user the server lets open sessions to it; a pinned key fills its in on use). A browser is **trusted** when its key is pinned or a pin was approved by the same user: "Allow and remember" trusts the account on that device, so the user's other browsers connect without the new-browser prompt. Untrusted key → device prompt "Allow this new browser: <label>, first seen <created_at>? (user <email>)" with Deny / Allow once / Allow and remember. Trusted + `auto_accept` → no prompt; trusted + !auto_accept → light prompt "Allow session from <label>?". Prompt timeout 60 s → `not_approved`. Revoking a client key drops its pin and the account trust that came with it.
 
 ## 5. Data channels
 
@@ -379,7 +379,7 @@ Rules:
 
 ## 6. Agent device-local surfaces
 
-- macOS/Windows: tray icon (red during a session) with Pause / End session (kill switch) / Quit, native border overlay, native consent prompt.
+- macOS/Windows: tray icon (red during a session) with Pause / End session (kill switch) / Quit, native border overlay, native consent prompt. An unenrolled macOS agent asks for the token in a dialog (before the permission prompts, which follow enrollment) and keeps an **Enroll this device…** menu item that reopens it; an agent waiting for enrollment also picks up `remote-agent enroll --server … --token …` run in a terminal by the same user (it polls its state file every 2 s).
 - Linux Docker demo device: a local "device console" web page (port 5562 on the host) stands in for the physical screen: enrollment token entry, consent prompts, kill switch, pinned browsers list, session indicator.
 
 ## 7. Agent updates
