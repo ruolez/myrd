@@ -103,10 +103,12 @@ type ClientKeyInfo struct {
 type PinnedClient struct {
 	PublicKeySHA256 string `json:"public_key_sha256"` // hex sha256 of SPKI DER
 	Label           string `json:"label"`
-	ApprovedAt      string `json:"approved_at"` // RFC3339
+	ApprovedAt      string `json:"approved_at"`       // RFC3339
+	UserID          string `json:"user_id,omitempty"` // account that approved it; empty on pins from before 0.3.9
 }
 
 type UserInfo struct {
+	ID    string `json:"id,omitempty"`
 	Email string `json:"email"`
 }
 

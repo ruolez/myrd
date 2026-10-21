@@ -39,6 +39,7 @@ type sess struct {
 	m          *Manager
 	id         string
 	clientKey  proto.ClientKeyInfo
+	userID     string
 	email      string
 	iceServers []webrtc.ICEServer
 	log        *slog.Logger
@@ -72,7 +73,7 @@ func newSess(m *Manager, o proto.SessionOffer) *sess {
 		s.clientKey = *o.ClientKey
 	}
 	if o.User != nil {
-		s.email = o.User.Email
+		s.userID, s.email = o.User.ID, o.User.Email
 	}
 	for _, is := range o.ICEServers {
 		s.iceServers = append(s.iceServers, webrtc.ICEServer{URLs: is.URLs, Username: is.Username, Credential: is.Credential})
@@ -138,7 +139,7 @@ func (s *sess) run(o proto.SessionOffer) {
 		return
 	}
 
-	mode := decideConsent(m.o.Pins.IsPinned(s.clientKey.PublicKey), m.o.AutoAccept())
+	mode := decideConsent(m.o.Pins.Trusted(s.clientKey.PublicKey, s.userID), m.o.AutoAccept())
 	if mode != consentAuto {
 		s.setState(stateAwaiting)
 		s.send(proto.TypeSessionStatus, proto.SessionStatus{SessionID: s.id, Status: proto.StatusAwaitingApproval})
@@ -158,7 +159,7 @@ func (s *sess) run(o proto.SessionOffer) {
 			return
 		}
 		if c == platform.ConsentRemember {
-			if err := m.o.Pins.Pin(s.clientKey.PublicKey, s.clientKey.Label, time.Now()); err != nil {
+			if err := m.o.Pins.Pin(s.clientKey.PublicKey, s.clientKey.Label, s.userID, time.Now()); err != nil {
 				s.log.Error("pin failed", "err", err)
 			} else if m.o.OnPinsChanged != nil {
 				m.o.OnPinsChanged()

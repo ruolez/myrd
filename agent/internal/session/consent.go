@@ -16,7 +16,7 @@ type ConsentRequest struct {
 	Label     string // browser client key label
 	Email     string
 	FirstSeen string // client key created_at
-	NewKey    bool   // true = unpinned browser (offer "Allow and remember")
+	NewKey    bool   // true = untrusted browser (offer "Allow and remember")
 }
 
 // Prompter asks the owner on the device's own screen. The Linux demo device
@@ -30,16 +30,17 @@ type Prompter interface {
 type consentMode int
 
 const (
-	consentAuto   consentMode = iota // pinned + auto_accept: no prompt
-	consentLight                     // pinned, auto_accept off: "Allow session from <label>?"
-	consentNewKey                    // unpinned browser: full TOFU prompt
+	consentAuto   consentMode = iota // trusted + auto_accept: no prompt
+	consentLight                     // trusted, auto_accept off: "Allow session from <label>?"
+	consentNewKey                    // untrusted browser: full TOFU prompt
 )
 
-func decideConsent(pinned, autoAccept bool) consentMode {
+// decideConsent: trusted is pins.Store.Trusted (pinned key or remembered account).
+func decideConsent(trusted, autoAccept bool) consentMode {
 	switch {
-	case pinned && autoAccept:
+	case trusted && autoAccept:
 		return consentAuto
-	case pinned:
+	case trusted:
 		return consentLight
 	default:
 		return consentNewKey
@@ -52,7 +53,8 @@ func consentText(mode consentMode, label, email, firstSeen string) (title, messa
 	}
 	if mode == consentNewKey {
 		return "Allow this new browser?",
-			fmt.Sprintf("Allow this new browser: %s, first seen %s? (user %s)", label, firstSeen, email)
+			fmt.Sprintf("Allow this new browser: %s, first seen %s? (user %s)\n\n"+
+				"Allow and remember also lets every other browser signed in as %s connect without asking.", label, firstSeen, email, email)
 	}
 	return "Remote session request", fmt.Sprintf("Allow session from %s? (%s)", label, email)
 }

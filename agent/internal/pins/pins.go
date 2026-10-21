@@ -1,5 +1,7 @@
 // Package pins is the agent's authoritative list of browser client keys the
-// owner approved on this device's screen (trust on first use).
+// owner approved on this device's screen (trust on first use). "Allow and
+// remember" trusts the account: any browser signed in as the user who approved
+// a pin is trusted too.
 package pins
 
 import (
@@ -53,14 +55,46 @@ func (s *Store) IsPinned(spkiB64 string) bool {
 	return ok
 }
 
-// Pin records an approval and persists it.
-func (s *Store) Pin(spkiB64, label string, now time.Time) error {
+// Trusted reports whether a session from the SPKI (base64), signed in as
+// userID, needs no new-browser prompt: the key is pinned, or a pin was approved
+// for that user. Pins from before user ids were recorded count for any user
+// (only the device's owner can open sessions to it); a pinned key fills in its
+// user id on use.
+func (s *Store) Trusted(spkiB64, userID string) bool {
+	h, err := proto.ClientKeyHash(spkiB64)
+	if err != nil {
+		return false
+	}
+	s.mu.Lock()
+	p, ok := s.pins[h]
+	if ok {
+		if p.UserID != "" || userID == "" {
+			s.mu.Unlock()
+			return true
+		}
+		p.UserID = userID
+		s.pins[h] = p
+		s.mu.Unlock()
+		_ = s.save()
+		return true
+	}
+	defer s.mu.Unlock()
+	for _, p := range s.pins {
+		if p.UserID == "" || (userID != "" && p.UserID == userID) {
+			return true
+		}
+	}
+	return false
+}
+
+// Pin records an approval by userID and persists it.
+func (s *Store) Pin(spkiB64, label, userID string, now time.Time) error {
 	h, err := proto.ClientKeyHash(spkiB64)
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
-	s.pins[h] = proto.PinnedClient{PublicKeySHA256: h, Label: label, ApprovedAt: now.UTC().Format(time.RFC3339)}
+	s.pins[h] = proto.PinnedClient{PublicKeySHA256: h, Label: label, ApprovedAt: now.UTC().Format(time.RFC3339), UserID: userID}
 	s.mu.Unlock()
 	return s.save()
 }

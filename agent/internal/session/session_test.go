@@ -88,6 +88,16 @@ type harness struct {
 	browserCodecs func(*webrtc.MediaEngine) // nil: pion's defaults
 }
 
+const ownerID = "0d8e5f3a-owner"
+
+// otherBrowser is the SPKI of a browser key other than the harness's own.
+func otherBrowser(t *testing.T) string {
+	t.Helper()
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	der, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
+	return base64.StdEncoding.EncodeToString(der)
+}
+
 func newHarness(t *testing.T, answer platform.Consent, tweaks ...func(*Options)) *harness {
 	t.Helper()
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
@@ -301,7 +311,7 @@ func (h *harness) offer(tamper bool) {
 	}
 	b, _ := proto.Encode(proto.TypeSessionOffer, proto.SessionOffer{SessionID: sessionID, SDP: pc.LocalDescription().SDP,
 		FPSig: h.signFP(fp), ClientKey: &proto.ClientKeyInfo{ID: "ck1", PublicKey: h.spki, Label: "Test Chrome",
-			CreatedAt: "2026-10-19T00:00:00Z"}, User: &proto.UserInfo{Email: "owner@example.com"}})
+			CreatedAt: "2026-10-19T00:00:00Z"}, User: &proto.UserInfo{ID: ownerID, Email: "owner@example.com"}})
 	h.mgr.HandleSignal(proto.TypeSessionOffer, b)
 }
 
@@ -469,7 +479,7 @@ func TestSwappedFingerprintRejected(t *testing.T) {
 
 func TestPinnedAutoAcceptSkipsPrompt(t *testing.T) {
 	h := newHarness(t, platform.ConsentDeny)
-	_ = h.pins.Pin(h.spki, "Test Chrome", time.Now())
+	_ = h.pins.Pin(h.spki, "Test Chrome", "", time.Now())
 	h.autoAccept = true
 	h.offer(false)
 	if err := <-h.answerOK; err != nil {
@@ -481,9 +491,47 @@ func TestPinnedAutoAcceptSkipsPrompt(t *testing.T) {
 	}
 }
 
+func TestRememberedAccountSkipsPromptForItsOtherBrowsers(t *testing.T) {
+	cases := []struct {
+		name       string
+		pinnedBy   string
+		wantPrompt bool
+	}{
+		{"same account", ownerID, false},
+		{"pin from before accounts were recorded", "", false},
+		{"another account", "5b7c9d1e-other", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness(t, platform.ConsentOnce)
+			_ = h.pins.Pin(otherBrowser(t), "Other Chrome", c.pinnedBy, time.Now())
+			h.autoAccept = true
+			h.offer(false)
+			if err := <-h.answerOK; err != nil {
+				t.Fatal(err)
+			}
+			calls := h.prompter.calls()
+			if prompted := len(calls) > 0; prompted != c.wantPrompt || (prompted && (len(calls) != 1 || !calls[0].NewKey)) {
+				t.Fatalf("prompts = %+v, want new-browser prompt %v", calls, c.wantPrompt)
+			}
+		})
+	}
+}
+
+func TestAllowAndRememberRecordsTheAccount(t *testing.T) {
+	h := newHarness(t, platform.ConsentRemember)
+	h.offer(false)
+	if err := <-h.answerOK; err != nil {
+		t.Fatal(err)
+	}
+	if got := h.pins.List(); len(got) != 1 || got[0].UserID != ownerID || got[0].Label != "Test Chrome" {
+		t.Fatalf("pins = %+v", got)
+	}
+}
+
 func TestPinnedWithoutAutoAcceptPromptsLightly(t *testing.T) {
 	h := newHarness(t, platform.ConsentOnce)
-	_ = h.pins.Pin(h.spki, "Test Chrome", time.Now())
+	_ = h.pins.Pin(h.spki, "Test Chrome", "", time.Now())
 	h.offer(false)
 	if err := <-h.answerOK; err != nil {
 		t.Fatal(err)
@@ -506,7 +554,7 @@ func TestDeniedConsentEndsNotApproved(t *testing.T) {
 
 func TestRevokedKeyRefusedWithoutPrompt(t *testing.T) {
 	h := newHarness(t, platform.ConsentOnce)
-	_ = h.pins.Pin(h.spki, "Test Chrome", time.Now())
+	_ = h.pins.Pin(h.spki, "Test Chrome", "", time.Now())
 	h.mgr.SetRevoked([]string{h.spki})
 	h.offer(false)
 	waitFor(t, "session.end", func() bool { _, _, e := h.snapshot(); return len(e) > 0 })

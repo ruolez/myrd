@@ -669,7 +669,7 @@ func (h *Hub) relayOffer(bc *browserConn, m proto.SessionOffer) {
 	}
 	ck := s.clientKey
 	h.sendMsg(ac.wsConn, proto.TypeSessionOffer, proto.SessionOffer{SessionID: s.id, SDP: m.SDP, FPSig: m.FPSig,
-		ClientKey: &ck, User: &proto.UserInfo{Email: s.userEmail}, ICEServers: s.agentICE})
+		ClientKey: &ck, User: &proto.UserInfo{ID: s.userID, Email: s.userEmail}, ICEServers: s.agentICE})
 }
 
 // toSessionBrowser sends to the browser that owns the session, or to every
