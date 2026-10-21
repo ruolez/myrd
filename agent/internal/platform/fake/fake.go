@@ -45,7 +45,7 @@ type Backend struct {
 	sink       platform.CaptureSink
 	forceKey   bool
 	static     bool
-	refineQP   int // pending pass
+	refinePend bool // a refinement pass is pending
 	refines    []int
 	noRefine   bool
 	vp9        bool // SupportsCodec(CodecVP9)
@@ -121,9 +121,9 @@ func (b *Backend) StartCapture(cfg platform.CaptureConfig, sink platform.Capture
 			case <-t.C:
 				b.mu.Lock()
 				key := b.forceKey || (!b.static && n%(fps*2) == 0)
-				refine := b.refineQP > 0
+				refine := b.refinePend
 				emit := key || refine || !b.static
-				b.forceKey, b.refineQP = false, 0
+				b.forceKey, b.refinePend = false, false
 				b.mu.Unlock()
 				au := deltaAU
 				switch {
@@ -180,10 +180,10 @@ func (b *Backend) RefineEncoder(maxQP int) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.refines = append(b.refines, maxQP)
-	if b.noRefine {
+	if b.noRefine && maxQP > 0 {
 		return platform.ErrUnsupported
 	}
-	b.refineQP = maxQP
+	b.refinePend = true
 	return nil
 }
 
@@ -248,7 +248,8 @@ func (b *Backend) SetStatic(on bool) {
 	b.mu.Unlock()
 }
 
-// SetRefineUnsupported makes RefineEncoder report ErrUnsupported.
+// SetRefineUnsupported makes RefineEncoder refuse a bounded quantizer
+// (repeat passes, maxQP 0, still work).
 func (b *Backend) SetRefineUnsupported(on bool) {
 	b.mu.Lock()
 	b.noRefine = on

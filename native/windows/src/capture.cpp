@@ -257,7 +257,7 @@ struct Capture {
     volatile LONG bitrate_kbps = 0;
     volatile LONG fps = 0;
     volatile LONG keyframe_req = 0;
-    volatile LONG refine_qp = 0;  // pending rc_encode_refine, 0 = none
+    volatile LONG refine_qp = 0;  // pending rc_encode_refine, 0 = none, -1 = a repeat pass
     volatile LONG refine_ok = 0;  // the current encoder can refine
     const char *volatile encoder = "mf";
 
@@ -536,10 +536,11 @@ static void run_loop(Capture *c) {
         int32_t flags = refine ? RC_FRAME_STATIC : (dirty && changed >= 0 && changed <= 0.02f) ? RC_FRAME_MINOR : 0;
 #ifdef RC_HAVE_VPX
         if (c->vpx)
-            accepted = encode_full_color(c, idx, now, key || !sent_any, (int)refine, flags);
+            accepted = encode_full_color(c, idx, now, key || !sent_any, refine > 0 ? (int)refine : 0, flags);
         else
 #endif
-            accepted = encoder_encode(c->enc, c->ring[idx].get(), now, key || !sent_any, &fatal, (int)refine, flags);
+            accepted = encoder_encode(c->enc, c->ring[idx].get(), now, key || !sent_any, &fatal,
+                                      refine > 0 ? (int)refine : 0, flags);
         if (accepted) {
             idx = (idx + 1) % kRing;
             last_encode = now;
@@ -721,8 +722,8 @@ void capture_request_keyframe() {
 int capture_refine(int32_t max_qp) {
     Guard g(g_cap_lock);
     if (!g_cap) return RC_ERR;
-    if (!g_cap->refine_ok) return RC_ERR_UNSUPPORTED;
-    InterlockedExchange(&g_cap->refine_qp, max_qp < 1 ? 1 : max_qp > 51 ? 51 : max_qp);
+    if (max_qp > 0 && !g_cap->refine_ok) return RC_ERR_UNSUPPORTED;
+    InterlockedExchange(&g_cap->refine_qp, max_qp <= 0 ? -1 : max_qp > 51 ? 51 : max_qp);
     return RC_OK;
 }
 

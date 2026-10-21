@@ -119,8 +119,9 @@ type Backend interface {
 	ConfigureEncoder(bitrateKbps, fps int)
 	RequestKeyframe()
 	// RefineEncoder re-encodes the last frame with its quantizer at most
-	// maxQP (static-screen refinement). ErrUnsupported when the encoder
-	// cannot bound it.
+	// maxQP (static-screen refinement); maxQP 0 is a repeat pass under the
+	// normal rate control. ErrUnsupported when maxQP > 0 and the encoder
+	// cannot bound its quantizer.
 	RefineEncoder(maxQP int) error
 	EncoderName() string
 	// SupportsCodec reports whether captures can use codec (Codec*).

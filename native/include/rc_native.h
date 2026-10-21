@@ -116,10 +116,12 @@ void rc_encode_configure(int32_t bitrate_kbps, int32_t fps);
 void rc_request_keyframe(void);
 /* Static-screen refinement: re-encodes the last captured frame as a P-frame
  * with no macroblock above quantizer max_qp (1..51, H.264 scale; VP9 maps it
- * onto its own), flagged RC_FRAME_STATIC.
- * The clamp ends with that frame. Dropped silently when new content arrived
- * in the last 100 ms. Returns RC_OK, RC_ERR_UNSUPPORTED when the encoder
- * cannot bound its quantizer, or RC_ERR when not capturing. */
+ * onto its own), flagged RC_FRAME_STATIC. The clamp ends with that frame.
+ * max_qp 0 is a repeat pass: the same re-encode with the normal rate control,
+ * which every encoder supports; repeats converge on the picture where the
+ * quantizer cannot be bounded. Dropped silently when new content arrived in
+ * the last 100 ms. Returns RC_OK, RC_ERR_UNSUPPORTED when max_qp > 0 and the
+ * encoder cannot bound its quantizer, or RC_ERR when not capturing. */
 int  rc_encode_refine(int32_t max_qp);
 /* "videotoolbox" | "mf-hw" | "mf-sw" | "x264" | "openh264" ...; "libvpx-vp9"
  * while an RC_CODEC_VP9 capture runs. */

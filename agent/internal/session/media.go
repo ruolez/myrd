@@ -130,9 +130,10 @@ type mediaPipe struct {
 	fec     fecPolicy
 	fecRate float64 // repair overhead in use; the encoder gets bwe/(1+fecRate)
 
-	refine    refiner
-	refineOff bool // the encoder cannot refine
-	refineQP  int  // last pass requested since new content, 0 = none
+	refine     refiner
+	refineOff  bool // the encoder cannot refine
+	refineQP   int  // last pass requested since new content, 0 = none
+	refinePass int  // passes sent since new content
 
 	frames, keyframes, bytes atomic.Int64
 	posX, posY               atomic.Uint32
@@ -538,7 +539,7 @@ func (p *mediaPipe) startCaptureLocked() error {
 	}
 	p.mu.Lock()
 	p.running = true
-	p.refine, p.refineOff, p.refineQP = refiner{}, false, 0
+	p.refine, p.refineOff, p.refineQP, p.refinePass = refiner{}, false, 0, 0
 	p.mu.Unlock()
 	p.refreshEncoder()
 	return nil
@@ -648,13 +649,13 @@ func (p *mediaPipe) loop() {
 			b, f := p.bytes.Load(), p.frames.Load()
 			secs := statsInterval.Seconds()
 			p.mu.Lock()
-			a, bwe, enc, est, rqp, fec := p.applied, p.bweKbps, p.encoder, p.est, p.refineQP, p.fecRate
+			a, bwe, enc, est, rqp, rpass, fec := p.applied, p.bweKbps, p.encoder, p.est, p.refineQP, p.refinePass, p.fecRate
 			p.mu.Unlock()
 			loss, _, rtt := estimatorStats(est)
 			p.sendControl(map[string]any{"t": "stats", "bitrate_kbps": int(float64(b-lastBytes) * 8 / 1000 / secs),
 				"fps": float64(f-lastFrames) / secs, "encoder": enc, "width": a.w, "height": a.h,
 				"keyframes": p.keyframes.Load(), "target_fps": a.fps, "target_kbps": a.kbps, "bwe_kbps": bwe, "loss": loss,
-				"refine_qp": rqp, "rtt_ms": rtt.Milliseconds(), "fec_pct": int(math.Round(fec * 100)),
+				"refine_qp": rqp, "refine_pass": rpass, "rtt_ms": rtt.Milliseconds(), "fec_pct": int(math.Round(fec * 100)),
 				"fec_packets": p.s.fec.repair.Load()})
 			lastBytes, lastFrames = b, f
 		case <-shape.C:
@@ -681,14 +682,20 @@ func (p *mediaPipe) refineStep() {
 	}
 	qp, ok := p.refine.due(p.now())
 	if ok {
-		p.refineQP = qp
+		p.refineQP, p.refinePass = qp, p.refine.pass
 	}
 	p.mu.Unlock()
-	if ok && errors.Is(p.b.RefineEncoder(qp), platform.ErrUnsupported) {
-		p.mu.Lock()
-		p.refineOff, p.refineQP = true, 0
-		p.mu.Unlock()
+	if !ok || !errors.Is(p.b.RefineEncoder(qp), platform.ErrUnsupported) {
+		return
 	}
+	p.mu.Lock()
+	if qp > 0 {
+		p.refine.useRepeats(p.now()) // the encoder cannot bound its quantizer
+	} else {
+		p.refineOff = true
+	}
+	p.refineQP, p.refinePass = 0, 0
+	p.mu.Unlock()
 }
 
 func (p *mediaPipe) pollClipboard() {
@@ -812,7 +819,7 @@ func (p *mediaPipe) Frame(data []byte, pts int64, flags platform.FrameFlags) {
 	frame := time.Second / time.Duration(max(p.applied.fps, 1))
 	codec := p.applied.codec
 	if p.refine.onFrame(p.now(), len(data), flags, p.applied.kbps) {
-		p.refineQP = 0
+		p.refineQP, p.refinePass = 0, 0
 	}
 	p.mu.Unlock()
 	p.frames.Add(1)

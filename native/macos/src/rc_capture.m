@@ -263,11 +263,11 @@ static void vpx_drain(void) {
 }
 
 // Queues pb for the VP9 encoder, replacing a picture still waiting; a
-// refinement pass (max_qp > 0) never replaces new content, and replaced
+// refinement pass (flagged static) never replaces new content, and replaced
 // content stays minor only if both changes were.
 static void vpx_submit(CVPixelBufferRef pb, bool force_key, int max_qp, int32_t flags, int64_t pts) {
     pthread_mutex_lock(&g_vpx_mu);
-    if (max_qp > 0 && g_vpx_pb && g_vpx_qp == 0) {
+    if ((flags & RC_FRAME_STATIC) && g_vpx_pb && !(g_vpx_flags & RC_FRAME_STATIC)) {
         pthread_mutex_unlock(&g_vpx_mu);
         return;
     }
@@ -704,8 +704,8 @@ void rc_request_keyframe(void) {
 
 int rc_encode_refine(int32_t max_qp) {
     if (!atomic_load(&g_running) || !g_queue) return RC_ERR;
-    if (!atomic_load(&g_refine_ok)) return RC_ERR_UNSUPPORTED;
-    int qp = MIN(51, MAX(1, max_qp));
+    if (max_qp > 0 && !atomic_load(&g_refine_ok)) return RC_ERR_UNSUPPORTED;
+    int qp = max_qp > 0 ? MIN(51, max_qp) : 0; // 0: a repeat pass
     dispatch_async(g_queue, ^{
         if (atomic_load(&g_running) && g_last && rc_now_us() - g_last_content_us >= 100000)
             encode_pixbuf(g_last, false, qp, RC_FRAME_STATIC);

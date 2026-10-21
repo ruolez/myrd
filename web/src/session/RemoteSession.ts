@@ -66,6 +66,8 @@ export type HudStats = {
   encodeHeight: number | null;
   /** Quantizer of the latest static-screen refinement pass; null while the screen changes. */
   refineQp: number | null;
+  /** Refinement passes since new content (repeat passes where the encoder has no quantizer cap). */
+  refinePass: number | null;
   /** Repair overhead the agent adds (FlexFEC), percent; 0 = off. */
   fecPct: number | null;
   /** Repair packets this browser received so far. */
@@ -123,6 +125,7 @@ const emptyStats: HudStats = {
   encodeWidth: null,
   encodeHeight: null,
   refineQp: null,
+  refinePass: null,
   fecPct: null,
   fecReceived: null,
   codec: null,
@@ -639,6 +642,7 @@ export class RemoteSession {
             encodeWidth: num(m.width),
             encodeHeight: num(m.height),
             refineQp: num(m.refine_qp) || null,
+            refinePass: num(m.refine_pass) || null,
             fecPct: num(m.fec_pct),
           },
         });

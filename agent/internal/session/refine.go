@@ -10,6 +10,10 @@ import (
 // refineIdle, the encoder re-encodes the last frame in passes of falling
 // quantizer until the text is sharp (Chrome Remote Desktop's approach). Each
 // pass is paced so refinement takes at most refineShare of the target bitrate.
+// An encoder that cannot bound its quantizer (some Windows hardware MFTs)
+// gets repeat passes instead: the same picture again under the normal rate
+// control, each one correcting what the last left, until one comes back
+// small. Without them its first, coarse frame of a still screen stayed.
 
 var refineQPs = []int{36, 33, 30, 27, 24, 21, 18}
 
@@ -24,10 +28,14 @@ const (
 	// rest of the screen refined: the passes still to come cover it, and a
 	// finished refinement sends its finest pass again.
 	refineSmall = 4096
+
+	refineRepeatMax = 24   // repeat passes at most
+	refineSettled   = 1500 // a repeat pass this small changed next to nothing: converged
 )
 
 type refiner struct {
-	pass    int // next index into refineQPs
+	pass    int  // next index into refineQPs, or repeat passes sent
+	repeat  bool // repeat passes (quantizer 0) instead of refineQPs
 	pending bool
 	sentAt  time.Time
 	next    time.Time // earliest next pass; zero until the first frame
@@ -42,30 +50,52 @@ func (r *refiner) onFrame(now time.Time, size int, f platform.FrameFlags, kbps i
 	minor := f&platform.FrameMinor != 0 || size < refineSmall
 	switch {
 	case f&platform.FrameKey != 0 || (!static && !minor):
-		*r = refiner{next: now.Add(refineIdle)}
+		*r = refiner{repeat: r.repeat, next: now.Add(refineIdle)}
 		return true
 	case !static:
-		r.pass, r.pending = min(r.pass, len(refineQPs)-1), false
+		r.pending = false
+		if r.repeat {
+			r.pass = 0 // repeats converge on the changed area and stop when small
+		} else {
+			r.pass = min(r.pass, len(refineQPs)-1)
+		}
 		if quiet := now.Add(refineIdle); quiet.After(r.next) {
 			r.next = quiet
 		}
 	default:
 		r.pending = false
+		if r.repeat && size < refineSettled {
+			r.pass = refineRepeatMax
+		}
 		gap := time.Duration(float64(size*8) / (refineShare * float64(max(kbps, 1)*1000)) * float64(time.Second))
 		r.next = now.Add(max(refineMinGap, gap))
 	}
 	return false
 }
 
-// due returns the quantizer for the next pass when one should be sent now.
+// useRepeats switches to repeat passes and starts them now: the encoder
+// refused a bounded quantizer.
+func (r *refiner) useRepeats(now time.Time) {
+	*r = refiner{repeat: true, next: now}
+}
+
+// due returns the quantizer for the next pass (0: a repeat pass) when one
+// should be sent now.
 func (r *refiner) due(now time.Time) (int, bool) {
 	if r.pending && now.Sub(r.sentAt) >= refineLost {
 		r.pending = false
 	}
-	if r.pending || r.next.IsZero() || now.Before(r.next) || r.pass >= len(refineQPs) {
+	passes := len(refineQPs)
+	if r.repeat {
+		passes = refineRepeatMax
+	}
+	if r.pending || r.next.IsZero() || now.Before(r.next) || r.pass >= passes {
 		return 0, false
 	}
-	qp := refineQPs[r.pass]
+	qp := 0
+	if !r.repeat {
+		qp = refineQPs[r.pass]
+	}
 	r.pass++
 	r.pending, r.sentAt = true, now
 	return qp, true

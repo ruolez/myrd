@@ -115,7 +115,10 @@ export function Hud({
     ["Jitter", fmt(stats.jitterMs, "ms")],
     ["Decoded", stats.frameWidth ? `${stats.frameWidth}×${stats.frameHeight}` : "—"],
     ["Encoded", encodeText(stats, stream)],
-    ["Sharpen", stats.refineQp ? `QP ${stats.refineQp}` : "—"],
+    [
+      "Sharpen",
+      stats.refineQp ? `QP ${stats.refineQp}` : stats.refinePass ? `pass ${stats.refinePass}` : "—",
+    ],
     ["FEC", fecText(stats)],
     ...(stream?.auto ? [["Auto", describeAuto(stream) ?? "—"] as [string, string]] : []),
     ["Path", stats.path ?? "—"],

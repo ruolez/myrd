@@ -193,7 +193,9 @@ func TestLoopbackStaticScreenIsRefinedOnce(t *testing.T) {
 		h.waitControl(t, "hello")
 		want := refineQPs
 		if !supported {
-			want = refineQPs[:1] // asked once, then never again
+			// The bounded pass is refused; a repeat pass follows, and the
+			// fake's tiny frame says the picture has converged.
+			want = []int{refineQPs[0], 0}
 		}
 		waitFor(t, "refinement passes", func() bool { return len(h.backend.Refines()) >= len(want) })
 		time.Sleep(500 * time.Millisecond) // nothing more once the finest pass is out

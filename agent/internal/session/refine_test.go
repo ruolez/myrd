@@ -199,3 +199,55 @@ func TestRefinerMinorChangeKeepsThePacing(t *testing.T) {
 		t.Fatalf("after the gap: %d, %v; want the next pass (%d)", qp, ok, refineQPs[1])
 	}
 }
+
+// An encoder that cannot bound its quantizer gets repeat passes, each paced
+// to its size, until one comes back small: the picture has converged.
+func TestRefinerRepeatsUntilThePictureSettles(t *testing.T) {
+	const kbps = 4000 // 2 Mbps for refinement: 50 KB takes 200 ms
+	t0 := time.Unix(1000, 0)
+	var r refiner
+	r.onFrame(t0, 80_000, platform.FrameKey, kbps)
+	now := t0.Add(refineIdle)
+	if qp, ok := r.due(now); !ok || qp != refineQPs[0] {
+		t.Fatalf("first pass %d, %v", qp, ok)
+	}
+	r.useRepeats(now) // the encoder refused it
+	sizes := []int{50_000, 30_000, 8_000, refineSettled - 1}
+	for i, size := range sizes {
+		qp, ok := r.due(now)
+		if !ok || qp != 0 {
+			t.Fatalf("repeat %d: %d, %v; want a repeat pass (0)", i, qp, ok)
+		}
+		r.onFrame(now, size, platform.FrameStatic, kbps)
+		gap := max(refineMinGap, time.Duration(size*8)*time.Second/(kbps*1000/2))
+		if _, early := r.due(now.Add(gap - time.Millisecond)); early {
+			t.Fatalf("repeat %d after %d bytes: due before %v", i+1, size, gap)
+		}
+		now = now.Add(gap)
+	}
+	if _, ok := r.due(now.Add(time.Hour)); ok {
+		t.Fatal("repeated after a pass came back small")
+	}
+	// New content starts the repeats over, still without a quantizer.
+	r.onFrame(now, 80_000, 0, kbps)
+	if qp, ok := r.due(now.Add(refineIdle)); !ok || qp != 0 {
+		t.Fatalf("after new content: %d, %v; want a repeat pass", qp, ok)
+	}
+}
+
+func TestRefinerRepeatsStopAtTheLimit(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	var r refiner
+	r.useRepeats(t0)
+	now, n := t0, 0
+	for ; n < 100; n++ {
+		if _, ok := r.due(now); !ok {
+			break
+		}
+		r.onFrame(now, 20_000, platform.FrameStatic, 40_000) // never converges
+		now = now.Add(time.Second)
+	}
+	if n != refineRepeatMax {
+		t.Fatalf("%d repeat passes on a picture that never settles, want %d", n, refineRepeatMax)
+	}
+}
