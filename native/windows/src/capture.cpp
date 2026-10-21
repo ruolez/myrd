@@ -218,6 +218,8 @@ struct Capture {
     volatile LONG bitrate_kbps = 0;
     volatile LONG fps = 0;
     volatile LONG keyframe_req = 0;
+    volatile LONG refine_qp = 0;  // pending rc_encode_refine, 0 = none
+    volatile LONG refine_ok = 0;  // the current encoder can refine
     const char *volatile encoder = "mf";
 
     // Thread-owned resources.
@@ -247,8 +249,8 @@ static void target_size(const rc_capture_config &cfg, UINT w, UINT h, UINT *ow, 
     double s = 1.0;
     if (cfg.max_width > 0 && (int)w > cfg.max_width) s = (double)cfg.max_width / w;
     if (cfg.max_height > 0 && h * s > cfg.max_height) s = (double)cfg.max_height / h;
-    *ow = ((UINT)(w * s)) & ~1u;
-    *oh = ((UINT)(h * s)) & ~1u;
+    *ow = ((UINT)(w * s + 0.5)) & ~1u; // nearest: a bound the agent sized exactly stays exact
+    *oh = ((UINT)(h * s + 0.5)) & ~1u;
     if (*ow < 16) *ow = 16;
     if (*oh < 16) *oh = 16;
 }
@@ -373,7 +375,7 @@ static Source *open_source(Capture *c) {
 
 static void run_loop(Capture *c) {
     int64_t interval = 1000000 / (c->fps > 0 ? c->fps : 30);
-    int64_t last_encode = 0;
+    int64_t last_encode = 0, last_content = 0;
     int64_t last_desktop_check = now_us();
     LONG applied_bitrate = c->bitrate_kbps;
     bool dirty = false, have = false, sent_any = false;
@@ -413,6 +415,7 @@ static void run_loop(Capture *c) {
                 c->ctx->CopyResource(c->last.get(), frame);
                 dirty = true;
                 have = true;
+                last_content = now_us();
             }
             frame->Release();
             c->src->done();
@@ -438,8 +441,12 @@ static void run_loop(Capture *c) {
 
         bool key = InterlockedExchange(&c->keyframe_req, 0) != 0;
         if (key && have) dirty = true;
-        if (!dirty || !have || now - last_encode < interval - 1000) {
+        // A refinement pass re-encodes `last` while nothing new arrived.
+        LONG refine = InterlockedExchange(&c->refine_qp, 0);
+        if (dirty || !sent_any || now - last_content < 100000) refine = 0;
+        if ((!dirty && !refine) || !have || now - last_encode < interval - 1000) {
             if (key) InterlockedExchange(&c->keyframe_req, 1);
+            if (refine) InterlockedCompareExchange(&c->refine_qp, refine, 0);
             continue;
         }
         if (!convert(c, idx)) {
@@ -448,7 +455,7 @@ static void run_loop(Capture *c) {
             continue;
         }
         bool fatal = false;
-        bool accepted = encoder_encode(c->enc, c->ring[idx].get(), now, key || !sent_any, &fatal);
+        bool accepted = encoder_encode(c->enc, c->ring[idx].get(), now, key || !sent_any, &fatal, (int)refine);
         if (accepted) {
             idx = (idx + 1) % kRing;
             last_encode = now;
@@ -469,6 +476,7 @@ static void run_loop(Capture *c) {
                 return;
             }
             c->encoder = encoder_name(c->enc);
+            InterlockedExchange(&c->refine_ok, encoder_can_refine(c->enc) ? 1 : 0);
             sent_any = false;
         }
     }
@@ -498,6 +506,7 @@ static DWORD WINAPI capture_thread(void *p) {
             break;
         }
         c->encoder = encoder_name(c->enc);
+        InterlockedExchange(&c->refine_ok, encoder_can_refine(c->enc) ? 1 : 0);
         c->src = open_source(c);
         result = RC_OK;
     } while (0);
@@ -601,6 +610,14 @@ void capture_configure(int32_t bitrate_kbps, int32_t fps) {
 void capture_request_keyframe() {
     Guard g(g_cap_lock);
     if (g_cap) InterlockedExchange(&g_cap->keyframe_req, 1);
+}
+
+int capture_refine(int32_t max_qp) {
+    Guard g(g_cap_lock);
+    if (!g_cap) return RC_ERR;
+    if (!g_cap->refine_ok) return RC_ERR_UNSUPPORTED;
+    InterlockedExchange(&g_cap->refine_qp, max_qp < 1 ? 1 : max_qp > 51 ? 51 : max_qp);
+    return RC_OK;
 }
 
 const char *capture_encoder_name() {

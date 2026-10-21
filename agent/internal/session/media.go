@@ -6,6 +6,7 @@ import (
 	"errors"
 	"image"
 	"image/png"
+	"math"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -23,7 +24,7 @@ const (
 	floorKbps     = 1000
 	initialKbps   = 3000
 	maxCeilKbps   = proto.StreamMaxKbps // manual caps; also the GCC maximum
-	autoCeilKbps  = 16000               // automatic ceiling (pixel-scaled)
+	autoCeilKbps  = 40000               // automatic ceiling (pixel- and fps-scaled)
 	relayCeilKbps = 6000
 	ceil1080pKbps = 8000
 	// Keyframes come when the browser asks (PLI); a periodic one costs a
@@ -43,11 +44,12 @@ const (
 	TierHigh       = 2
 )
 
-// CeilingKbps scales the 8 Mbps @1080p ceiling by pixel count (at most
-// 16 Mbps); relay paths are capped at 6 Mbps.
-func CeilingKbps(width, height uint32, relay bool) int {
+// CeilingKbps scales the 8 Mbps @1080p30 ceiling by pixel count and by
+// (fps/30)^0.6, since frames at a higher rate differ less (at most 40 Mbps:
+// 4K60); relay paths are capped at 6 Mbps.
+func CeilingKbps(width, height uint32, fps int, relay bool) int {
 	px := float64(width) * float64(height)
-	c := int(ceil1080pKbps * px / (1920 * 1080))
+	c := int(ceil1080pKbps * px / (1920 * 1080) * math.Pow(float64(max(fps, 1))/30, 0.6))
 	c = max(2000, min(c, autoCeilKbps))
 	if relay {
 		c = min(c, relayCeilKbps)
@@ -70,7 +72,9 @@ func ScaledSize(w, h uint32, maxW, maxH int) (uint32, uint32) {
 	if maxH > 0 && float64(h)*scale > float64(maxH) {
 		scale = float64(maxH) / float64(h)
 	}
-	sw, sh := uint32(float64(w)*scale), uint32(float64(h)*scale)
+	// Nearest, as the native layer rounds: a bound sized exactly (the
+	// viewer's window) comes out exactly.
+	sw, sh := uint32(float64(w)*scale+0.5), uint32(float64(h)*scale+0.5)
 	return sw &^ 1, sh &^ 1
 }
 
@@ -119,6 +123,10 @@ type mediaPipe struct {
 	clipXfer   uint16
 
 	wpHidden bool // hidden on the device right now; guarded by capMu
+
+	refine    refiner
+	refineOff bool // the encoder cannot refine
+	refineQP  int  // last pass requested since new content, 0 = none
 
 	frames, keyframes, bytes atomic.Int64
 	posX, posY               atomic.Uint32
@@ -185,8 +193,18 @@ func (p *mediaPipe) planLocked() StreamPlan { return PlanStream(p.inputLocked())
 func (p *mediaPipe) resetAutoLocked() {
 	r := ResolveSettings(p.settings, p.maxFPS)
 	nw, nh := p.nativeLocked()
-	p.ladder = AutoLadder(r.FPS, r.Res, nw, nh, p.s.m.o.MaxWidth, p.s.m.o.MaxHeight)
+	p.ladder = AutoLadder(r.FPS, r.Res, nw, nh, p.s.m.o.MaxWidth, p.s.m.o.MaxHeight, p.settings.View)
 	p.auto = NewAutoState(p.now())
+}
+
+// resizeAutoLocked follows a new view: the rungs get new sizes and Auto keeps
+// its place on the ladder.
+func (p *mediaPipe) resizeAutoLocked() {
+	rung := p.auto.Rung
+	r := ResolveSettings(p.settings, p.maxFPS)
+	nw, nh := p.nativeLocked()
+	p.ladder = AutoLadder(r.FPS, r.Res, nw, nh, p.s.m.o.MaxWidth, p.s.m.o.MaxHeight, p.settings.View)
+	p.auto.Rung = min(rung, len(p.ladder)-1)
 }
 
 // ---- encoder control ----
@@ -289,8 +307,13 @@ func (p *mediaPipe) reconcile() {
 func (p *mediaPipe) setStream(s StreamSettings, background, wallpaper bool, id *uint32, reply bool) {
 	p.mu.Lock()
 	if s != p.settings {
+		viewOnly := withView(p.settings, s.View) == s
 		p.settings = s
-		p.resetAutoLocked()
+		if viewOnly {
+			p.resizeAutoLocked()
+		} else {
+			p.resetAutoLocked()
+		}
 	} else if background != p.background {
 		p.auto.Since = p.now() // back from background: warm up again
 	}
@@ -301,6 +324,11 @@ func (p *mediaPipe) setStream(s StreamSettings, background, wallpaper bool, id *
 	}
 	p.mu.Unlock()
 	p.kick()
+}
+
+func withView(s StreamSettings, v View) StreamSettings {
+	s.View = v
+	return s
 }
 
 func (p *mediaPipe) setTier(t int) {
@@ -367,28 +395,31 @@ func (p *mediaPipe) refreshEncoder() {
 	}
 }
 
-// estimatorStats reads loss (0..1) and the delay detector from GCC.
-func estimatorStats(e cc.BandwidthEstimator) (loss float64, overuse bool) {
+// estimatorStats reads loss (0..1), the delay detector and the feedback
+// round-trip time from GCC.
+func estimatorStats(e cc.BandwidthEstimator) (loss float64, overuse bool, rtt time.Duration) {
 	if e == nil {
-		return 0, false
+		return 0, false, 0
 	}
 	st := e.GetStats()
 	loss, _ = st["averageLoss"].(float64)
-	return loss, st["usage"] == "overuse"
+	ms, _ := st["rtt"].(float64)
+	return loss, st["usage"] == "overuse", time.Duration(ms * float64(time.Millisecond))
 }
 
 func (p *mediaPipe) sampleAuto(sendKbps int) {
 	p.mu.Lock()
 	est := p.est
 	p.mu.Unlock()
-	loss, overuse := estimatorStats(est)
+	loss, overuse, rtt := estimatorStats(est)
 	p.mu.Lock()
 	if !p.running || p.background || p.settings.Preset != proto.PresetAuto {
 		p.mu.Unlock()
 		return
 	}
 	prev := p.auto
-	p.auto = NextAuto(p.auto, p.now(), AutoSample{SendKbps: sendKbps, TargetKbps: p.applied.kbps, Loss: loss, Overuse: overuse}, p.ladder)
+	p.auto = NextAuto(p.auto, p.now(), AutoSample{SendKbps: sendKbps, TargetKbps: p.applied.kbps, Loss: loss,
+		Overuse: overuse, RTT: rtt}, p.ladder)
 	changed := prev.Rung != p.auto.Rung || prev.Reason != p.auto.Reason
 	p.mu.Unlock()
 	if changed {
@@ -454,6 +485,7 @@ func (p *mediaPipe) startCaptureLocked() error {
 	}
 	p.mu.Lock()
 	p.running = true
+	p.refine, p.refineOff, p.refineQP = refiner{}, false, 0
 	p.mu.Unlock()
 	p.refreshEncoder()
 	return nil
@@ -531,6 +563,8 @@ func (p *mediaPipe) loop() {
 	cursor := time.NewTicker(cursorInterval)
 	clip := time.NewTicker(clipboardPoll)
 	shape := time.NewTicker(shapeResend)
+	refine := time.NewTicker(refineTick)
+	defer refine.Stop()
 	defer stats.Stop()
 	defer auto.Stop()
 	defer cursor.Stop()
@@ -560,12 +594,13 @@ func (p *mediaPipe) loop() {
 			b, f := p.bytes.Load(), p.frames.Load()
 			secs := statsInterval.Seconds()
 			p.mu.Lock()
-			a, bwe, enc, est := p.applied, p.bweKbps, p.encoder, p.est
+			a, bwe, enc, est, rqp := p.applied, p.bweKbps, p.encoder, p.est, p.refineQP
 			p.mu.Unlock()
-			loss, _ := estimatorStats(est)
+			loss, _, rtt := estimatorStats(est)
 			p.sendControl(map[string]any{"t": "stats", "bitrate_kbps": int(float64(b-lastBytes) * 8 / 1000 / secs),
 				"fps": float64(f-lastFrames) / secs, "encoder": enc, "width": a.w, "height": a.h,
-				"keyframes": p.keyframes.Load(), "target_fps": a.fps, "target_kbps": a.kbps, "bwe_kbps": bwe, "loss": loss})
+				"keyframes": p.keyframes.Load(), "target_fps": a.fps, "target_kbps": a.kbps, "bwe_kbps": bwe, "loss": loss,
+				"refine_qp": rqp, "rtt_ms": rtt.Milliseconds()})
 			lastBytes, lastFrames = b, f
 		case <-shape.C:
 			p.mu.Lock()
@@ -576,7 +611,28 @@ func (p *mediaPipe) loop() {
 			}
 		case <-clip.C:
 			p.pollClipboard()
+		case <-refine.C:
+			p.refineStep()
 		}
+	}
+}
+
+// refineStep sends the next static-screen refinement pass when one is due.
+func (p *mediaPipe) refineStep() {
+	p.mu.Lock()
+	if !p.running || p.background || p.refineOff {
+		p.mu.Unlock()
+		return
+	}
+	qp, ok := p.refine.due(p.now())
+	if ok {
+		p.refineQP = qp
+	}
+	p.mu.Unlock()
+	if ok && errors.Is(p.b.RefineEncoder(qp), platform.ErrUnsupported) {
+		p.mu.Lock()
+		p.refineOff, p.refineQP = true, 0
+		p.mu.Unlock()
 	}
 }
 
@@ -696,9 +752,13 @@ func (p *mediaPipe) onControlText(b []byte) {
 
 // ---- platform.CaptureSink (native threads) ----
 
-func (p *mediaPipe) Frame(data []byte, pts int64, keyframe bool) {
+func (p *mediaPipe) Frame(data []byte, pts int64, keyframe, static bool) {
 	p.mu.Lock()
 	frame := time.Second / time.Duration(max(p.applied.fps, 1))
+	p.refine.onFrame(p.now(), len(data), keyframe, static, p.applied.kbps)
+	if keyframe || (!static && len(data) >= refineSmall) {
+		p.refineQP = 0
+	}
 	p.mu.Unlock()
 	p.frames.Add(1)
 	p.bytes.Add(int64(len(data)))

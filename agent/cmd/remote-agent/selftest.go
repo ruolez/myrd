@@ -24,7 +24,7 @@ type selftestSink struct {
 	firstAU      []byte
 }
 
-func (s *selftestSink) Frame(d []byte, _ int64, key bool) {
+func (s *selftestSink) Frame(d []byte, _ int64, key, _ bool) {
 	if s.frames.Add(1) == 1 {
 		s.firstFrame.Store(int64(time.Since(s.start)))
 		s.mu.Lock()

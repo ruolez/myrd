@@ -1,5 +1,6 @@
 // Package fake is an in-memory platform.Backend for tests: it emits a tiny
-// fixed H.264 access unit at the configured fps and records injected input.
+// fixed H.264 access unit at the configured fps (or, with SetStatic, only the
+// first frame, keyframes and refinement passes) and records injected input.
 package fake
 
 import (
@@ -37,6 +38,10 @@ type Backend struct {
 	wg         sync.WaitGroup
 	sink       platform.CaptureSink
 	forceKey   bool
+	static     bool
+	refineQP   int // pending pass
+	refines    []int
+	noRefine   bool
 
 	canHideWallpaper bool
 	wallpaperHidden  bool
@@ -83,14 +88,18 @@ func (b *Backend) StartCapture(cfg platform.CaptureConfig, sink platform.Capture
 				return
 			case <-t.C:
 				b.mu.Lock()
-				key := b.forceKey || n%(fps*2) == 0
-				b.forceKey = false
+				key := b.forceKey || (!b.static && n%(fps*2) == 0)
+				refine := b.refineQP > 0
+				emit := key || refine || !b.static
+				b.forceKey, b.refineQP = false, 0
 				b.mu.Unlock()
 				au := deltaAU
 				if key {
 					au = keyframeAU
 				}
-				sink.Frame(au, time.Since(start).Microseconds(), key)
+				if emit {
+					sink.Frame(au, time.Since(start).Microseconds(), key, refine && !key)
+				}
 				sink.CursorPos(uint16(n*100), 1000, true)
 				n++
 			}
@@ -122,6 +131,17 @@ func (b *Backend) RequestKeyframe() {
 	b.keyReqs++
 	b.forceKey = true
 	b.mu.Unlock()
+}
+
+func (b *Backend) RefineEncoder(maxQP int) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refines = append(b.refines, maxQP)
+	if b.noRefine {
+		return platform.ErrUnsupported
+	}
+	b.refineQP = maxQP
+	return nil
 }
 
 func (b *Backend) Inject(ev platform.InputEvent) error {
@@ -176,6 +196,28 @@ func (b *Backend) ConsentPrompt(title, message string, _ int) (platform.Consent,
 }
 
 // ---- test accessors ----
+
+// SetStatic makes the screen static: after the first frame only keyframes
+// and refinement passes are emitted.
+func (b *Backend) SetStatic(on bool) {
+	b.mu.Lock()
+	b.static = on
+	b.mu.Unlock()
+}
+
+// SetRefineUnsupported makes RefineEncoder report ErrUnsupported.
+func (b *Backend) SetRefineUnsupported(on bool) {
+	b.mu.Lock()
+	b.noRefine = on
+	b.mu.Unlock()
+}
+
+// Refines lists every RefineEncoder quantizer in order, refused ones included.
+func (b *Backend) Refines() []int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]int(nil), b.refines...)
+}
 
 // SetCanHideWallpaper makes HideWallpaper work; by default it reports
 // ErrUnsupported, like the Linux demo device.

@@ -29,7 +29,7 @@ import {
   serializeStreamPrefs,
   streamPrefsKey,
 } from "../lib/stream";
-import type { StreamPrefs, StreamRequestId, StreamState } from "../lib/stream";
+import type { StreamPrefs, StreamRequestId, StreamState, StreamView } from "../lib/stream";
 import { FileChannel } from "./FileChannel";
 
 export type Phase =
@@ -63,6 +63,8 @@ export type HudStats = {
   agentLossPct: number | null;
   encodeWidth: number | null;
   encodeHeight: number | null;
+  /** Quantizer of the latest static-screen refinement pass; null while the screen changes. */
+  refineQp: number | null;
 };
 
 export type Snapshot = {
@@ -113,9 +115,13 @@ const emptyStats: HudStats = {
   agentLossPct: null,
   encodeWidth: null,
   encodeHeight: null,
+  refineQp: null,
 };
 
 const STREAM_DEBOUNCE_MS = 200;
+// Each new view size restarts capture on the device (a keyframe): let a
+// window drag finish first.
+const VIEW_DEBOUNCE_MS = 400;
 
 function loadStreamPrefs(deviceId: string): StreamPrefs {
   try {
@@ -185,6 +191,7 @@ export class RemoteSession {
   private fileChannel: FileChannel | null = null;
   private streamReqId = 0;
   private streamTimer: ReturnType<typeof setTimeout> | null = null;
+  private view: StreamView | null = null;
   private offs: (() => void)[] = [];
   private timers: ReturnType<typeof setInterval>[] = [];
   private pendingCandidates: RTCIceCandidateInit[] = [];
@@ -618,6 +625,7 @@ export class RemoteSession {
             agentLossPct: num(m.loss) === null ? null : (m.loss as number) * 100,
             encodeWidth: num(m.width),
             encodeHeight: num(m.height),
+            refineQp: num(m.refine_qp) || null,
           },
         });
         break;
@@ -682,6 +690,21 @@ export class RemoteSession {
     }, STREAM_DEBOUNCE_MS);
   }
 
+  /**
+   * The stage's size in device pixels (null at actual size): the agent sizes
+   * the stream to it. A new size restarts capture, so it waits for a resize
+   * to settle.
+   */
+  setView(view: StreamView | null) {
+    if (view?.w === this.view?.w && view?.h === this.view?.h) return;
+    this.view = view;
+    if (this.streamTimer) clearTimeout(this.streamTimer);
+    this.streamTimer = setTimeout(() => {
+      this.streamTimer = null;
+      this.applyStream();
+    }, VIEW_DEBOUNCE_MS);
+  }
+
   /** `stream` on control for agents with the feature, legacy `0x20 op 3` otherwise. */
   private applyStream() {
     const hidden = document.hidden;
@@ -689,7 +712,8 @@ export class RemoteSession {
     if (this.snap.streamFeature === true) {
       if (this.control?.readyState !== "open") return;
       this.streamReqId = (this.streamReqId + 1) >>> 0;
-      this.control.send(encodeStreamRequest(prefs, hidden, this.streamReqId as StreamRequestId));
+      const id = this.streamReqId as StreamRequestId;
+      this.control.send(encodeStreamRequest(prefs, hidden, id, this.view));
     } else if (this.snap.streamFeature === false) {
       this.sendInput(encodeControl(ControlOp.SetQuality, legacyTier(prefs, hidden)));
     }

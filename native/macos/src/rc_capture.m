@@ -36,6 +36,9 @@ static NSSet<NSNumber *> *g_wp_ids;     // windows the current filter leaves out
 static VTCompressionSessionRef g_vt;
 static CVPixelBufferRef g_last;
 static int64_t g_last_pts;
+static int64_t g_last_content_us; // g_queue only
+static bool g_clamped;            // MaxAllowedFrameQP is set below 51 (g_queue only)
+static atomic_bool g_refine_ok;   // the encoder accepts MaxAllowedFrameQP
 
 static uint32_t g_display;
 static CGRect g_bounds;
@@ -141,7 +144,8 @@ static void vt_output(void *refcon, void *frame_refcon, OSStatus status, VTEncod
     }
     free(tmp);
 
-    if (n > ps_bytes) g_on_frame(g_user, g_out, (int32_t)n, pts_us, key ? 1 : 0);
+    int fl = (key ? RC_FRAME_KEY : 0) | ((int)(intptr_t)frame_refcon & RC_FRAME_STATIC);
+    if (n > ps_bytes) g_on_frame(g_user, g_out, (int32_t)n, pts_us, fl);
     pthread_mutex_unlock(&g_cb);
 }
 
@@ -158,7 +162,7 @@ static void vt_set_rate(VTCompressionSessionRef s, int kbps, int fps) {
 // (constrained high when the browser negotiated high, else constrained
 // baseline; the only two profiles it supports), plain hardware, software.
 static VTCompressionSessionRef vt_create(int w, int h, int fps, int kbps, int gop_ms, int profile_idc, char *name,
-                                         size_t name_cap) {
+                                         size_t name_cap, bool *refine_ok) {
     NSDictionary *ll = @{(__bridge NSString *)kVTVideoEncoderSpecification_EnableLowLatencyRateControl: @YES};
     NSDictionary *hw = @{(__bridge NSString *)kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: @YES};
     BOOL high = profile_idc >= 100;
@@ -195,6 +199,9 @@ static VTCompressionSessionRef vt_create(int w, int h, int fps, int kbps, int go
         VTSessionSetProperty(s, kVTCompressionPropertyKey_TransferFunction, kCMFormatDescriptionTransferFunction_ITU_R_709_2);
         VTSessionSetProperty(s, kVTCompressionPropertyKey_YCbCrMatrix, kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2);
         vt_set_rate(s, kbps, fps);
+        // Refinement passes bound the quantizer of one frame (rc_encode_refine).
+        *refine_ok = VTSessionSetProperty(s, kVTCompressionPropertyKey_MaxAllowedFrameQP,
+                                          (__bridge CFNumberRef)@51) == noErr;
         VTCompressionSessionPrepareToEncodeFrames(s);
 
         // The low-latency encoder (rtvc) is hardware-only and does not answer this query.
@@ -204,20 +211,29 @@ static VTCompressionSessionRef vt_create(int w, int h, int fps, int kbps, int go
         BOOL hardware = qs == noErr ? (using_hw && CFBooleanGetValue(using_hw)) : (attempts[i].spec == ll);
         if (using_hw) CFRelease(using_hw);
         strlcpy(name, hardware ? "videotoolbox" : "videotoolbox-sw", name_cap);
-        RCLOG(@"encoder attempt %zu ok, hardware=%d profile=%@", i, hardware, attempts[i].profile);
+        RCLOG(@"encoder attempt %zu ok, hardware=%d profile=%@ refine=%d", i, hardware, attempts[i].profile,
+              *refine_ok);
         return s;
     }
     return NULL;
 }
 
-static void encode_pixbuf(CVPixelBufferRef pb, bool force_key) {
+// max_qp > 0 encodes a refinement pass: the frame's quantizer is bounded and
+// it is flagged static; any other frame lifts the bound first.
+static void encode_pixbuf(CVPixelBufferRef pb, bool force_key, int max_qp) {
     if (!g_vt || !pb) return;
     int64_t now = rc_now_us();
     if (now <= g_last_pts) now = g_last_pts + 1;
     g_last_pts = now;
+    if (max_qp > 0 || g_clamped) {
+        VTSessionSetProperty(g_vt, kVTCompressionPropertyKey_MaxAllowedFrameQP,
+                             (__bridge CFNumberRef)@(max_qp > 0 ? max_qp : 51));
+        g_clamped = max_qp > 0;
+    }
     NSDictionary *opts = force_key ? @{(__bridge NSString *)kVTEncodeFrameOptionKey_ForceKeyFrame: @YES} : nil;
     VTCompressionSessionEncodeFrame(g_vt, pb, CMTimeMake(now, 1000000), kCMTimeInvalid,
-                                    (__bridge CFDictionaryRef)opts, NULL, NULL);
+                                    (__bridge CFDictionaryRef)opts, (void *)(intptr_t)(max_qp > 0 ? RC_FRAME_STATIC : 0),
+                                    NULL);
 }
 
 // ---------------- stream output ----------------
@@ -236,7 +252,8 @@ static void encode_pixbuf(CVPixelBufferRef pb, bool force_key) {
     CVPixelBufferRetain(pb);
     if (g_last) CVPixelBufferRelease(g_last);
     g_last = pb;
-    encode_pixbuf(pb, atomic_exchange(&g_force_key, false));
+    g_last_content_us = rc_now_us();
+    encode_pixbuf(pb, atomic_exchange(&g_force_key, false), 0);
 }
 
 - (void)stream:(SCStream *)stream didStopWithError:(NSError *)error {
@@ -391,6 +408,7 @@ static void wp_refresh_locked(BOOL force) {
 
 static void teardown_locked(void) {
     atomic_store(&g_running, false);
+    atomic_store(&g_refine_ok, false);
     if (g_cursor_timer) {
         dispatch_source_cancel(g_cursor_timer);
         g_cursor_timer = nil;
@@ -426,8 +444,8 @@ static void even_fit(uint32_t pw, uint32_t ph, int maxw, int maxh, int *w, int *
     double s = 1.0;
     if (maxw > 0 && pw > (uint32_t)maxw) s = MIN(s, (double)maxw / pw);
     if (maxh > 0 && ph > (uint32_t)maxh) s = MIN(s, (double)maxh / ph);
-    *w = MAX(2, ((int)(pw * s)) & ~1);
-    *h = MAX(2, ((int)(ph * s)) & ~1);
+    *w = MAX(2, ((int)(pw * s + 0.5)) & ~1); // nearest: a bound the agent sized exactly stays exact
+    *h = MAX(2, ((int)(ph * s + 0.5)) & ~1);
 }
 
 static int start_locked(const rc_capture_config *cfg, rc_frame_fn on_frame, rc_cursor_shape_fn on_shape,
@@ -464,8 +482,12 @@ static int start_locked(const rc_capture_config *cfg, rc_frame_fn on_frame, rc_c
         sc.colorMatrix = kCGDisplayStreamYCbCrMatrix_ITU_R_709_2;
         sc.capturesAudio = NO;
 
-        g_vt = vt_create(w, h, fps, kbps, gop, cfg->profile_idc, g_encoder, sizeof(g_encoder));
+        bool refine_ok = false;
+        g_vt = vt_create(w, h, fps, kbps, gop, cfg->profile_idc, g_encoder, sizeof(g_encoder), &refine_ok);
         if (!g_vt) return RC_ERR;
+        atomic_store(&g_refine_ok, refine_ok);
+        g_clamped = false;
+        g_last_content_us = 0;
 
         if (!g_queue) {
             dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL,
@@ -565,8 +587,19 @@ void rc_request_keyframe(void) {
     // A static screen produces no new frames, so re-encode the last one.
     dispatch_async(g_queue, ^{
         if (atomic_load(&g_running) && g_last && atomic_exchange(&g_force_key, false))
-            encode_pixbuf(g_last, true);
+            encode_pixbuf(g_last, true, 0);
     });
+}
+
+int rc_encode_refine(int32_t max_qp) {
+    if (!atomic_load(&g_running) || !g_queue) return RC_ERR;
+    if (!atomic_load(&g_refine_ok)) return RC_ERR_UNSUPPORTED;
+    int qp = MIN(51, MAX(1, max_qp));
+    dispatch_async(g_queue, ^{
+        if (atomic_load(&g_running) && g_last && rc_now_us() - g_last_content_us >= 100000)
+            encode_pixbuf(g_last, false, qp);
+    });
+    return RC_OK;
 }
 
 int rc_wallpaper_hide(int hide) {
@@ -581,7 +614,8 @@ int rc_wallpaper_hide(int hide) {
 const char *rc_encoder_name(void) {
     pthread_mutex_lock(&g_ctl);
     if (g_encoder[0] == 0) {
-        VTCompressionSessionRef s = vt_create(1280, 720, 60, 4000, 2000, 66, g_encoder, sizeof(g_encoder));
+        bool refine_ok = false;
+        VTCompressionSessionRef s = vt_create(1280, 720, 60, 4000, 2000, 66, g_encoder, sizeof(g_encoder), &refine_ok);
         if (s) { VTCompressionSessionInvalidate(s); CFRelease(s); }
         else strlcpy(g_encoder, "none", sizeof(g_encoder));
     }

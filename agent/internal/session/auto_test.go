@@ -20,36 +20,36 @@ func TestAutoLadder(t *testing.T) {
 		nw, nh uint32
 		want   []Rung
 	}{
-		{"1080p60 drops fps then resolution", 60, proto.ResNative, 1920, 1080, []Rung{
-			{60, proto.ResNative, 1920, 1080, 3732}, {30, proto.ResNative, 1920, 1080, 1866},
-			{15, proto.ResNative, 1920, 1080, 933}, {15, proto.Res720p, 1280, 720, 414},
-			{10, proto.Res720p, 1280, 720, 276}, {5, proto.Res720p, 1280, 720, 138},
+		{"1080p60 drops 60 fps, then resolution at 30, then fps", 60, proto.ResNative, 1920, 1080, []Rung{
+			{60, proto.ResNative, 1920, 1080, 2488}, {30, proto.ResNative, 1920, 1080, 1244},
+			{30, proto.Res720p, 1280, 720, 552}, {15, proto.Res720p, 1280, 720, 276},
+			{10, proto.Res720p, 1280, 720, 184}, {5, proto.Res720p, 1280, 720, 92},
 		}},
-		{"5K60 walks every resolution", 60, proto.ResNative, 5120, 2880, []Rung{
-			{60, proto.ResNative, 5120, 2880, 26542}, {30, proto.ResNative, 5120, 2880, 13271},
-			{15, proto.ResNative, 5120, 2880, 6635}, {15, proto.Res1440p, 2560, 1440, 1658},
-			{15, proto.Res1080p, 1920, 1080, 933}, {15, proto.Res720p, 1280, 720, 414},
-			{10, proto.Res720p, 1280, 720, 276}, {5, proto.Res720p, 1280, 720, 138},
+		{"5K60 walks every resolution at 30 fps", 60, proto.ResNative, 5120, 2880, []Rung{
+			{60, proto.ResNative, 5120, 2880, 17694}, {30, proto.ResNative, 5120, 2880, 8847},
+			{30, proto.Res1440p, 2560, 1440, 2211}, {30, proto.Res1080p, 1920, 1080, 1244},
+			{30, proto.Res720p, 1280, 720, 552}, {15, proto.Res720p, 1280, 720, 276},
+			{10, proto.Res720p, 1280, 720, 184}, {5, proto.Res720p, 1280, 720, 92},
 		}},
 		{"ceilings bound the top rung", 30, proto.Res1080p, 3840, 2160, []Rung{
-			{30, proto.Res1080p, 1920, 1080, 1866}, {15, proto.Res1080p, 1920, 1080, 933},
-			{15, proto.Res720p, 1280, 720, 414}, {10, proto.Res720p, 1280, 720, 276}, {5, proto.Res720p, 1280, 720, 138},
+			{30, proto.Res1080p, 1920, 1080, 1244}, {30, proto.Res720p, 1280, 720, 552},
+			{15, proto.Res720p, 1280, 720, 276}, {10, proto.Res720p, 1280, 720, 184}, {5, proto.Res720p, 1280, 720, 92},
 		}},
 		{"24 fps cap", 24, proto.Res720p, 1920, 1080, []Rung{
-			{24, proto.Res720p, 1280, 720, 663}, {15, proto.Res720p, 1280, 720, 414},
-			{10, proto.Res720p, 1280, 720, 276}, {5, proto.Res720p, 1280, 720, 138},
+			{24, proto.Res720p, 1280, 720, 442}, {15, proto.Res720p, 1280, 720, 276},
+			{10, proto.Res720p, 1280, 720, 184}, {5, proto.Res720p, 1280, 720, 92},
 		}},
 		{"5 fps cap only lowers resolution", 5, proto.ResNative, 1920, 1080, []Rung{
-			{5, proto.ResNative, 1920, 1080, 311}, {5, proto.Res720p, 1280, 720, 138},
+			{5, proto.ResNative, 1920, 1080, 207}, {5, proto.Res720p, 1280, 720, 92},
 		}},
 		{"small screen", 60, proto.ResNative, 1024, 768, []Rung{
-			{60, proto.ResNative, 1024, 768, 1415}, {30, proto.ResNative, 1024, 768, 707},
-			{15, proto.ResNative, 1024, 768, 353}, {15, proto.Res720p, 960, 720, 311},
-			{10, proto.Res720p, 960, 720, 207}, {5, proto.Res720p, 960, 720, 103},
+			{60, proto.ResNative, 1024, 768, 943}, {30, proto.ResNative, 1024, 768, 471},
+			{30, proto.Res720p, 960, 720, 414}, {15, proto.Res720p, 960, 720, 207},
+			{10, proto.Res720p, 960, 720, 138}, {5, proto.Res720p, 960, 720, 69},
 		}},
 	}
 	for _, c := range cases {
-		if got := AutoLadder(c.fps, c.res, c.nw, c.nh, 0, 0); !reflect.DeepEqual(got, c.want) {
+		if got := AutoLadder(c.fps, c.res, c.nw, c.nh, 0, 0, View{}); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s:\n got %+v\nwant %+v", c.name, got, c.want)
 		}
 	}
@@ -76,15 +76,15 @@ func runAuto(st AutoState, ladder []Rung, n int, sample func(sec int) AutoSample
 }
 
 var (
-	busySample      = AutoSample{SendKbps: 4000, TargetKbps: 4000} // feeds 1080p60 (3732)
+	busySample      = AutoSample{SendKbps: 4000, TargetKbps: 4000} // feeds 1080p60 (2488)
 	overuseSample   = AutoSample{SendKbps: 3000, TargetKbps: 3000, Overuse: true}
 	lossSample      = AutoSample{SendKbps: 3000, TargetKbps: 3000, Loss: 0.12}
-	healthySample   = AutoSample{SendKbps: 3000, TargetKbps: 6000} // 6000 ≥ 1.3 × 3732
+	healthySample   = AutoSample{SendKbps: 3000, TargetKbps: 6000} // 6000 ≥ 1.3 × 2488
 	idleSample      = AutoSample{SendKbps: 40, TargetKbps: 3000}
 	idleLowEstimate = AutoSample{SendKbps: 30, TargetKbps: 1000, Loss: 0.2, Overuse: true}
 )
 
-func ladder1080p() []Rung { return AutoLadder(60, proto.ResNative, 1920, 1080, 0, 0) }
+func ladder1080p() []Rung { return AutoLadder(60, proto.ResNative, 1920, 1080, 0, 0, View{}) }
 
 func TestAutoIdleScreenNeverStepsDown(t *testing.T) {
 	st, steps := runAuto(NewAutoState(t0), ladder1080p(), 600, func(int) AutoSample { return idleLowEstimate })
@@ -96,8 +96,8 @@ func TestAutoIdleScreenNeverStepsDown(t *testing.T) {
 func TestAutoCongestionStepsDownSpaced(t *testing.T) {
 	_, steps := runAuto(NewAutoState(t0), ladder1080p(), 60, func(int) AutoSample { return overuseSample })
 	want := []autoStep{
-		{5, 1, AutoCongestion}, {10, 2, AutoCongestion}, {15, 3, AutoCongestion}, // 720p: 15 s after start
-		{20, 4, AutoCongestion}, {25, 5, AutoCongestion},
+		{5, 1, AutoCongestion}, {15, 2, AutoCongestion}, // 720p: 15 s after start
+		{20, 3, AutoCongestion}, {25, 4, AutoCongestion}, {30, 5, AutoCongestion},
 	}
 	if !reflect.DeepEqual(steps, want) {
 		t.Fatalf("steps = %+v, want %+v", steps, want)
@@ -124,7 +124,7 @@ func TestAutoSingleOveruseIsNotCongestion(t *testing.T) {
 }
 
 func TestAutoWarmupDelaysStarvation(t *testing.T) {
-	starved := AutoSample{SendKbps: 1800, TargetKbps: 2000} // below 1080p60's 3732, encoder using it
+	starved := AutoSample{SendKbps: 1800, TargetKbps: 2000} // below 1080p60's 2488, encoder using it
 	st := NewAutoState(t0)
 	st = NextAuto(st, t0.Add(time.Second), starved, ladder1080p())
 	if st.Reason != AutoWarmup {
@@ -132,7 +132,7 @@ func TestAutoWarmupDelaysStarvation(t *testing.T) {
 	}
 	_, steps := runAuto(NewAutoState(t0), ladder1080p(), 40, func(int) AutoSample { return starved })
 	// Warm-up ends at 10 s; three starved samples (10, 11, 12) step down once,
-	// and 2000 kbps feeds 1080p30 (1866) so it stays there.
+	// and 2000 kbps feeds 1080p30 (1244) so it stays there.
 	if want := []autoStep{{12, 1, AutoStarved}}; !reflect.DeepEqual(steps, want) {
 		t.Fatalf("steps = %+v, want %+v", steps, want)
 	}
@@ -177,7 +177,7 @@ func TestAutoHoldDoublesOnBounceAndResetsWhenCalm(t *testing.T) {
 func TestAutoStepUpNeedsHeadroom(t *testing.T) {
 	st := NewAutoState(t0)
 	st.Rung = 1
-	short := AutoSample{SendKbps: 3000, TargetKbps: 4800} // < 1.3 × 3732
+	short := AutoSample{SendKbps: 3000, TargetKbps: 3200} // < 1.3 × 2488
 	if _, steps := runAuto(st, ladder1080p(), 60, func(int) AutoSample { return short }); len(steps) != 0 {
 		t.Fatalf("stepped up without headroom: %+v", steps)
 	}
@@ -193,7 +193,7 @@ func TestAutoIdleProbesUpward(t *testing.T) {
 }
 
 func TestAutoResolutionChangesAtMostEvery15s(t *testing.T) {
-	ladder := AutoLadder(15, proto.ResNative, 5120, 2880, 0, 0) // every step down is a resolution change until 720p
+	ladder := AutoLadder(15, proto.ResNative, 5120, 2880, 0, 0, View{}) // every step down is a resolution change until 720p
 	st, steps := runAuto(NewAutoState(t0), ladder, 70, func(int) AutoSample { return overuseSample })
 	want := []autoStep{{15, 1, AutoCongestion}, {30, 2, AutoCongestion}, {45, 3, AutoCongestion},
 		{50, 4, AutoCongestion}, {55, 5, AutoCongestion}}
@@ -227,7 +227,7 @@ func sampleFrom(seed uint32, idle bool) AutoSample {
 }
 
 func TestAutoInvariants(t *testing.T) {
-	ladder := AutoLadder(60, proto.ResNative, 5120, 2880, 0, 0)
+	ladder := AutoLadder(60, proto.ResNative, 5120, 2880, 0, 0, View{})
 	cfg := &quick.Config{MaxCount: 300}
 
 	idleNeverDown := func(start uint8, seeds []uint32) bool {
@@ -279,5 +279,59 @@ func TestAutoInvariants(t *testing.T) {
 	}
 	if err := quick.Check(spaced, cfg); err != nil {
 		t.Errorf("changes not spaced: %v", err)
+	}
+}
+
+func TestAutoQueueingDelayStepsDown(t *testing.T) {
+	cases := []struct {
+		name     string
+		base, at time.Duration // RTT for the first 15 s, then from then on
+		want     []autoStep
+	}{
+		{"LAN queue builds to 80 ms", 2 * time.Millisecond, 80 * time.Millisecond, []autoStep{{17, 1, AutoLatency}}},
+		{"under the 60 ms margin", 2 * time.Millisecond, 55 * time.Millisecond, nil},
+		{"WAN: margin is half the baseline", 150 * time.Millisecond, 220 * time.Millisecond, nil},
+		{"WAN queue", 150 * time.Millisecond, 230 * time.Millisecond, []autoStep{{17, 1, AutoLatency}}},
+	}
+	for _, c := range cases {
+		_, steps := runAuto(NewAutoState(t0), ladder1080p(), 21, func(sec int) AutoSample {
+			s := busySample
+			s.RTT = c.base
+			if sec >= 15 {
+				s.RTT = c.at
+			}
+			return s
+		})
+		if !reflect.DeepEqual(steps, c.want) {
+			t.Errorf("%s: steps = %+v, want %+v", c.name, steps, c.want)
+		}
+	}
+}
+
+func TestAutoRTTBaselineForgetsAfterTheWindow(t *testing.T) {
+	st := NewAutoState(t0)
+	for i := range autoRTTWindow + 5 {
+		rtt := 100 * time.Millisecond
+		if i < 5 {
+			rtt = 10 * time.Millisecond // an old, faster path
+		}
+		st = NextAuto(st, t0.Add(time.Duration(i+1)*time.Second), AutoSample{RTT: rtt}, ladder1080p())
+	}
+	if b := st.rttBaseline(); b != 100*time.Millisecond {
+		t.Fatalf("baseline = %v, want 100ms once the 10 ms samples left the window", b)
+	}
+}
+
+func TestAutoIdleQueueingDelayIsIgnored(t *testing.T) {
+	_, steps := runAuto(NewAutoState(t0), ladder1080p(), 60, func(sec int) AutoSample {
+		s := idleSample
+		s.RTT = 2 * time.Millisecond
+		if sec >= 15 {
+			s.RTT = 300 * time.Millisecond
+		}
+		return s
+	})
+	if len(steps) != 0 {
+		t.Fatalf("idle screen stepped down on delay: %+v", steps)
 	}
 }

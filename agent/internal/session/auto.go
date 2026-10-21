@@ -8,7 +8,9 @@ import (
 )
 
 // Auto preset: a ladder of (fps, size) rungs walked by a pure state machine
-// fed one sample per second. Frame rate goes first, then resolution.
+// fed one sample per second. Between rungs the bitrate follows the bandwidth
+// estimate; a rung drops only when even its floor does not fit. Down the
+// ladder 60 fps goes first, then resolution at 30 fps, then frame rate.
 
 const (
 	AutoSteady     = "steady"
@@ -16,6 +18,7 @@ const (
 	AutoCongestion = "congestion"
 	AutoLoss       = "loss"
 	AutoStarved    = "starved"
+	AutoLatency    = "latency"
 	AutoProbe      = "probe"
 )
 
@@ -31,9 +34,13 @@ const (
 	autoIdleProbeN = 30
 	autoMaxLoss    = 0.05
 	autoHeadroom   = 1.3
+	autoRTTWindow  = 60                    // samples the RTT baseline is the minimum of
+	autoRTTMargin  = 60 * time.Millisecond // queueing delay above the baseline that counts
+	autoLatencyN   = 3
 )
 
-// Rung is one ladder step. MinKbps ≈ 0.03 bit per pixel per frame.
+// Rung is one ladder step. MinKbps ≈ 0.02 bit per pixel per frame: screen
+// content stays readable well below what camera video needs.
 type Rung struct {
 	FPS     int
 	Res     string
@@ -42,28 +49,26 @@ type Rung struct {
 }
 
 func newRung(fps int, res string, w, h uint32) Rung {
-	return Rung{fps, res, w, h, int(int64(w) * int64(h) * int64(fps) * 3 / 100000)}
+	return Rung{fps, res, w, h, int(int64(w) * int64(h) * int64(fps) * 2 / 100000)}
 }
 
-// AutoLadder: fps 60→30→15 at the resolution ceiling, then 1440p→1080p→720p
-// at 15 fps (sizes that are not smaller are skipped), then 10 and 5 fps.
-func AutoLadder(fpsCap int, resCap string, nw, nh uint32, maxW, maxH int) []Rung {
-	w, h := OutputSize(nw, nh, resCap, maxW, maxH)
+// AutoLadder: 60→30 fps at the resolution ceiling, then 1440p→1080p→720p at
+// 30 fps (sizes that are not smaller are skipped), then 15, 10 and 5 fps.
+func AutoLadder(fpsCap int, resCap string, nw, nh uint32, maxW, maxH int, view View) []Rung {
+	w, h := OutputSize(nw, nh, resCap, maxW, maxH, view)
 	ladder := []Rung{newRung(fpsCap, resCap, w, h)}
-	for _, f := range []int{30, 15} {
-		if f < fpsCap {
-			ladder = append(ladder, newRung(f, resCap, w, h))
-		}
+	fps, res := min(30, fpsCap), resCap
+	if fps < fpsCap {
+		ladder = append(ladder, newRung(fps, res, w, h))
 	}
-	fps, res := min(15, fpsCap), resCap
 	for _, r := range []string{proto.Res1440p, proto.Res1080p, proto.Res720p} {
-		rw, rh := OutputSize(nw, nh, r, maxW, maxH)
+		rw, rh := OutputSize(nw, nh, r, maxW, maxH, view)
 		if uint64(rw)*uint64(rh) < uint64(w)*uint64(h) {
 			w, h, res = rw, rh, r
 			ladder = append(ladder, newRung(fps, res, w, h))
 		}
 	}
-	for _, f := range []int{10, 5} {
+	for _, f := range []int{15, 10, 5} {
 		if f < fps {
 			ladder = append(ladder, newRung(f, res, w, h))
 		}
@@ -76,8 +81,9 @@ func AutoLadder(fpsCap int, resCap string, nw, nh uint32, maxW, maxH int) []Rung
 type AutoSample struct {
 	SendKbps   int
 	TargetKbps int
-	Loss       float64 // 0..1
-	Overuse    bool    // GCC delay detector state
+	Loss       float64       // 0..1
+	Overuse    bool          // GCC delay detector state
+	RTT        time.Duration // transport feedback round trip; 0 = unknown
 }
 
 type AutoState struct {
@@ -93,6 +99,28 @@ type AutoState struct {
 	overuse uint8 // last three samples, bit 0 newest
 	starved int
 	idle    int
+	latent  int                          // consecutive samples with queueing delay
+	rtts    [autoRTTWindow]time.Duration // ring; the baseline is its minimum
+	rttN    int
+}
+
+// rttBaseline is the lowest round trip seen in the window: the path without
+// queues. 0 until there is a sample.
+func (st *AutoState) rttBaseline() time.Duration {
+	var b time.Duration
+	for _, r := range st.rtts[:min(st.rttN, autoRTTWindow)] {
+		if b == 0 || r < b {
+			b = r
+		}
+	}
+	return b
+}
+
+// queued reports whether rtt sits well above the baseline: packets wait in a
+// bottleneck queue even when GCC's delay detector (which sees only the
+// trend) has settled.
+func queued(rtt, baseline time.Duration) bool {
+	return rtt > 0 && baseline > 0 && rtt > baseline+max(autoRTTMargin, baseline/2)
 }
 
 func NewAutoState(now time.Time) AutoState {
@@ -113,7 +141,7 @@ func (st AutoState) moveTo(now time.Time, ladder []Rung, to int, reason string) 
 		st.LastResChange, st.Since = now, now
 	}
 	st.Rung, st.Reason, st.LastChange = to, reason, now
-	st.overuse, st.starved, st.idle = 0, 0, 0
+	st.overuse, st.starved, st.idle, st.latent = 0, 0, 0, 0
 	return st
 }
 
@@ -151,6 +179,15 @@ func NextAuto(st AutoState, now time.Time, s AutoSample, ladder []Rung) AutoStat
 	} else {
 		st.idle++
 	}
+	if s.RTT > 0 {
+		st.rtts[st.rttN%autoRTTWindow] = s.RTT
+		st.rttN++
+	}
+	if busy && queued(s.RTT, st.rttBaseline()) {
+		st.latent++
+	} else {
+		st.latent = 0
+	}
 
 	trouble := ""
 	switch {
@@ -158,6 +195,8 @@ func NextAuto(st AutoState, now time.Time, s AutoSample, ladder []Rung) AutoStat
 		trouble = AutoLoss
 	case bits.OnesCount8(st.overuse) >= 2:
 		trouble = AutoCongestion
+	case st.latent >= autoLatencyN:
+		trouble = AutoLatency
 	case st.starved >= autoStarvedN:
 		trouble = AutoStarved
 	}
@@ -174,7 +213,7 @@ func NextAuto(st AutoState, now time.Time, s AutoSample, ladder []Rung) AutoStat
 		next := ladder[st.Rung-1]
 		reason := ""
 		switch {
-		case busy && st.overuse == 0 && float64(s.TargetKbps) >= autoHeadroom*float64(next.MinKbps):
+		case busy && st.overuse == 0 && st.latent == 0 && float64(s.TargetKbps) >= autoHeadroom*float64(next.MinKbps):
 			reason = AutoSteady
 		case st.idle >= autoIdleProbeN:
 			reason = AutoProbe

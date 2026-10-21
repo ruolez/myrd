@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -36,8 +37,16 @@ func TestResolveSettings(t *testing.T) {
 		{"speed software", StreamSettings{Preset: proto.PresetSpeed}, 30, Resolved{30, proto.Res720p, 4000}},
 		{"balanced", StreamSettings{Preset: proto.PresetBalanced}, 60, Resolved{30, proto.Res1080p, 8000}},
 		{"balanced low cap", StreamSettings{Preset: proto.PresetBalanced}, 24, Resolved{24, proto.Res1080p, 8000}},
-		{"quality", StreamSettings{Preset: proto.PresetQuality}, 60, Resolved{30, proto.ResNative, 20000}},
-		{"quality fps override", StreamSettings{Preset: proto.PresetQuality, FPS: 60}, 60, Resolved{60, proto.ResNative, 20000}},
+		{"quality", StreamSettings{Preset: proto.PresetQuality}, 60, Resolved{30, proto.ResNative, 50000}},
+		{"quality fps override", StreamSettings{Preset: proto.PresetQuality, FPS: 60}, 60, Resolved{60, proto.ResNative, 50000}},
+		{"auto with a view fits the window", StreamSettings{Preset: proto.PresetAuto, View: View{1600, 900}}, 60,
+			Resolved{60, proto.ResWindow, 0}},
+		{"quality with a view fits the window", StreamSettings{Preset: proto.PresetQuality, View: View{1600, 900}}, 60,
+			Resolved{30, proto.ResWindow, 50000}},
+		{"speed keeps its size with a view", StreamSettings{Preset: proto.PresetSpeed, View: View{1600, 900}}, 60,
+			Resolved{60, proto.Res720p, 4000}},
+		{"explicit native beats the view", StreamSettings{Preset: proto.PresetCustom, Res: proto.ResNative, View: View{1600, 900}}, 60,
+			Resolved{60, proto.ResNative, 0}},
 		{"custom defaults", StreamSettings{Preset: proto.PresetCustom}, 60, Resolved{60, proto.ResNative, 0}},
 		{"custom all", StreamSettings{Preset: proto.PresetCustom, FPS: 15, Res: proto.Res720p, MaxKbps: 5000}, 60,
 			Resolved{15, proto.Res720p, 5000}},
@@ -57,26 +66,34 @@ func TestOutputSize(t *testing.T) {
 		nw, nh     uint32
 		res        string
 		maxW, maxH int
+		view       View
 		w, h       uint32
 	}{
-		{"native", 1920, 1080, proto.ResNative, 0, 0, 1920, 1080},
-		{"1080p on 1080p", 1920, 1080, proto.Res1080p, 0, 0, 1920, 1080},
-		{"1440p never upscales", 1920, 1080, proto.Res1440p, 0, 0, 1920, 1080},
-		{"720p", 1920, 1080, proto.Res720p, 0, 0, 1280, 720},
-		{"half", 1920, 1080, proto.ResHalf, 0, 0, 960, 540},
-		{"ultrawide caps the short edge", 3440, 1440, proto.Res1080p, 0, 0, 2580, 1080},
-		{"portrait caps the short edge", 1080, 1920, proto.Res720p, 0, 0, 720, 1280},
-		{"5K 1440p", 5120, 2880, proto.Res1440p, 0, 0, 2560, 1440},
-		{"5K half", 5120, 2880, proto.ResHalf, 0, 0, 2560, 1440},
-		{"16:10 1080p", 2560, 1600, proto.Res1080p, 0, 0, 1728, 1080},
-		{"odd laptop 720p even dims", 1366, 768, proto.Res720p, 0, 0, 1280, 720},
-		{"odd half even dims", 1366, 769, proto.ResHalf, 0, 0, 682, 384},
-		{"options cap applies to native", 3840, 2160, proto.ResNative, 1920, 0, 1920, 1080},
-		{"options cap and res cap", 3840, 2160, proto.Res720p, 1920, 0, 1280, 720},
-		{"empty res is native", 2560, 1440, "", 0, 0, 2560, 1440},
+		{"native", 1920, 1080, proto.ResNative, 0, 0, View{}, 1920, 1080},
+		{"1080p on 1080p", 1920, 1080, proto.Res1080p, 0, 0, View{}, 1920, 1080},
+		{"1440p never upscales", 1920, 1080, proto.Res1440p, 0, 0, View{}, 1920, 1080},
+		{"720p", 1920, 1080, proto.Res720p, 0, 0, View{}, 1280, 720},
+		{"half", 1920, 1080, proto.ResHalf, 0, 0, View{}, 960, 540},
+		{"ultrawide caps the short edge", 3440, 1440, proto.Res1080p, 0, 0, View{}, 2580, 1080},
+		{"portrait caps the short edge", 1080, 1920, proto.Res720p, 0, 0, View{}, 720, 1280},
+		{"5K 1440p", 5120, 2880, proto.Res1440p, 0, 0, View{}, 2560, 1440},
+		{"5K half", 5120, 2880, proto.ResHalf, 0, 0, View{}, 2560, 1440},
+		{"16:10 1080p", 2560, 1600, proto.Res1080p, 0, 0, View{}, 1728, 1080},
+		{"odd laptop 720p even dims", 1366, 768, proto.Res720p, 0, 0, View{}, 1280, 720},
+		{"odd half even dims", 1366, 769, proto.ResHalf, 0, 0, View{}, 682, 384},
+		{"options cap applies to native", 3840, 2160, proto.ResNative, 1920, 0, View{}, 1920, 1080},
+		{"options cap and res cap", 3840, 2160, proto.Res720p, 1920, 0, View{}, 1280, 720},
+		{"empty res is native", 2560, 1440, "", 0, 0, View{}, 2560, 1440},
+		{"window fits the view", 2560, 1440, proto.ResWindow, 0, 0, View{1600, 1000}, 1600, 900},
+		{"window keeps the binding edge exact", 2560, 1440, proto.ResWindow, 0, 0, View{1366, 800}, 1366, 768},
+		{"window by height", 2560, 1440, proto.ResWindow, 0, 0, View{2000, 768}, 1364, 768},
+		{"window never upscales", 1920, 1080, proto.ResWindow, 0, 0, View{2880, 1600}, 1920, 1080},
+		{"window without a view is native", 2560, 1440, proto.ResWindow, 0, 0, View{}, 2560, 1440},
+		{"view ignored for named sizes", 2560, 1440, proto.Res720p, 0, 0, View{800, 600}, 1280, 720},
+		{"options cap bounds the window", 3840, 2160, proto.ResWindow, 1920, 0, View{2880, 1600}, 1920, 1080},
 	}
 	for _, c := range cases {
-		if w, h := OutputSize(c.nw, c.nh, c.res, c.maxW, c.maxH); w != c.w || h != c.h {
+		if w, h := OutputSize(c.nw, c.nh, c.res, c.maxW, c.maxH, c.view); w != c.w || h != c.h {
 			t.Errorf("%s: OutputSize(%dx%d, %s) = %dx%d, want %dx%d", c.name, c.nw, c.nh, c.res, w, h, c.w, c.h)
 		}
 	}
@@ -86,25 +103,50 @@ func TestCaptureBoxReproducesOutputSize(t *testing.T) {
 	// The native layers fit the native size into the box with ScaledSize's
 	// arithmetic; the box must land exactly on the size the agent reports.
 	sizes := [][2]uint32{{1920, 1080}, {3440, 1440}, {1080, 1920}, {5120, 2880}, {1366, 768}, {2560, 1600}, {1280, 1024}}
+	views := []View{{}, {1600, 900}, {1366, 768}, {2880, 1600}, {1023, 777}}
 	for _, sz := range sizes {
-		for _, res := range []string{proto.ResNative, proto.Res1440p, proto.Res1080p, proto.Res720p, proto.ResHalf} {
-			bw, bh := CaptureBox(sz[0], sz[1], res, 0, 0)
-			gw, gh := ScaledSize(sz[0], sz[1], bw, bh)
-			if w, h := OutputSize(sz[0], sz[1], res, 0, 0); gw != w || gh != h {
-				t.Errorf("%v %s: box %dx%d gives %dx%d, OutputSize %dx%d", sz, res, bw, bh, gw, gh, w, h)
+		for _, res := range []string{proto.ResNative, proto.ResWindow, proto.Res1440p, proto.Res1080p, proto.Res720p, proto.ResHalf} {
+			for _, v := range views {
+				bw, bh := CaptureBox(sz[0], sz[1], res, 0, 0, v)
+				gw, gh := ScaledSize(sz[0], sz[1], bw, bh)
+				if w, h := OutputSize(sz[0], sz[1], res, 0, 0, v); gw != w || gh != h {
+					t.Errorf("%v %s %v: box %dx%d gives %dx%d, OutputSize %dx%d", sz, res, v, bw, bh, gw, gh, w, h)
+				}
 			}
 		}
 	}
 }
 
+// The window size fills one edge of the view exactly and fits the other, so
+// the browser draws it without scaling.
+func TestWindowSizeFillsTheView(t *testing.T) {
+	r := rand.New(rand.NewPCG(3, 4))
+	for i := 0; i < 2000; i++ {
+		nw, nh := uint32(640+r.IntN(7000)), uint32(480+r.IntN(4000))
+		v := View{(2 + r.IntN(int(nw))) &^ 1, (2 + r.IntN(int(nh))) &^ 1}
+		v.W, v.H = max(v.W, 2), max(v.H, 2)
+		w, h := OutputSize(nw, nh, proto.ResWindow, 0, 0, v)
+		if int(w) > v.W || int(h) > v.H {
+			t.Fatalf("%dx%d in view %v: %dx%d overflows", nw, nh, v, w, h)
+		}
+		if int(w) != v.W && int(h) != v.H {
+			t.Fatalf("%dx%d in view %v: %dx%d fills neither edge", nw, nh, v, w, h)
+		}
+	}
+}
+
 func TestResolutionOptions(t *testing.T) {
-	got := ResolutionOptions(5120, 2880, 0, 0)
+	got := ResolutionOptions(5120, 2880, 0, 0, View{})
 	want := []ResOption{
 		{proto.ResNative, 5120, 2880}, {proto.Res1440p, 2560, 1440}, {proto.Res1080p, 1920, 1080},
 		{proto.Res720p, 1280, 720}, {proto.ResHalf, 2560, 1440},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ResolutionOptions = %+v, want %+v", got, want)
+	}
+	got = ResolutionOptions(5120, 2880, 0, 0, View{2880, 1600})
+	if want = append([]ResOption{{proto.ResWindow, 2844, 1600}}, want...); !reflect.DeepEqual(got, want) {
+		t.Fatalf("ResolutionOptions with a view = %+v, want %+v", got, want)
 	}
 }
 
@@ -141,6 +183,7 @@ func TestSettingsFromRequestVectors(t *testing.T) {
 			Name   string `json:"name"`
 			JSON   string `json:"json"`
 			Hidden bool   `json:"hidden"`
+			View   View   `json:"view"`
 			Prefs  struct {
 				Preset    string  `json:"preset"`
 				FPS       *int    `json:"fps"`
@@ -162,7 +205,7 @@ func TestSettingsFromRequestVectors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", c.Name, err)
 		}
-		want := StreamSettings{Preset: c.Prefs.Preset}
+		want := StreamSettings{Preset: c.Prefs.Preset, View: c.View}
 		if c.Prefs.FPS != nil {
 			want.FPS = *c.Prefs.FPS
 		}
@@ -190,32 +233,36 @@ func TestPlanStream(t *testing.T) {
 		want StreamPlan
 	}{
 		{"auto top rung", base,
-			StreamPlan{Resolved{60, proto.ResNative, 0}, 60, 5000, 8000, 1920, 1080, 0, 0}},
+			StreamPlan{Resolved{60, proto.ResNative, 0}, 60, 5000, 12125, 1920, 1080, 0, 0}},
 		{"auto lower rung restarts smaller", with(func(in *StreamInput) { in.Rung = low }),
-			StreamPlan{Resolved{60, proto.ResNative, 0}, 15, 3555, 3555, 1280, 720, 0, 720}},
+			StreamPlan{Resolved{60, proto.ResNative, 0}, 15, 2345, 2345, 1280, 720, 0, 720}},
 		{"auto without a rung uses the ceilings", with(func(in *StreamInput) { in.Rung = nil }),
-			StreamPlan{Resolved{60, proto.ResNative, 0}, 60, 5000, 8000, 1920, 1080, 0, 0}},
+			StreamPlan{Resolved{60, proto.ResNative, 0}, 60, 5000, 12125, 1920, 1080, 0, 0}},
+		{"auto sized to the window", with(func(in *StreamInput) {
+			in.Settings.View, in.NativeW, in.NativeH = View{1600, 1000}, 2560, 1440
+			in.Rung = &Rung{FPS: 60, Res: proto.ResWindow, W: 1600, H: 900}
+		}), StreamPlan{Resolved{60, proto.ResWindow, 0}, 60, 5000, 8420, 1600, 900, 1600, 1000}},
 		{"auto relay ceiling", with(func(in *StreamInput) { in.Relay, in.BweKbps = true, 12000 }),
 			StreamPlan{Resolved{60, proto.ResNative, 0}, 60, 6000, 6000, 1920, 1080, 0, 0}},
 		{"estimate below the floor", with(func(in *StreamInput) { in.BweKbps = 200 }),
-			StreamPlan{Resolved{60, proto.ResNative, 0}, 60, 1000, 8000, 1920, 1080, 0, 0}},
+			StreamPlan{Resolved{60, proto.ResNative, 0}, 60, 1000, 12125, 1920, 1080, 0, 0}},
 		{"quality manual cap", with(func(in *StreamInput) { in.Settings, in.BweKbps = StreamSettings{Preset: proto.PresetQuality}, 25000 }),
-			StreamPlan{Resolved{30, proto.ResNative, 20000}, 30, 20000, 20000, 1920, 1080, 0, 0}},
+			StreamPlan{Resolved{30, proto.ResNative, 50000}, 30, 25000, 50000, 1920, 1080, 0, 0}},
 		{"manual cap clamped on relay", with(func(in *StreamInput) {
 			in.Settings, in.Relay, in.BweKbps = StreamSettings{Preset: proto.PresetQuality}, true, 25000
-		}), StreamPlan{Resolved{30, proto.ResNative, 20000}, 30, 6000, 6000, 1920, 1080, 0, 0}},
+		}), StreamPlan{Resolved{30, proto.ResNative, 50000}, 30, 6000, 6000, 1920, 1080, 0, 0}},
 		{"speed on a software encoder", with(func(in *StreamInput) { in.Settings, in.MaxFPS = StreamSettings{Preset: proto.PresetSpeed}, 30 }),
 			StreamPlan{Resolved{30, proto.Res720p, 4000}, 30, 4000, 4000, 1280, 720, 0, 720}},
 		{"custom 15 fps 720p 5 Mbps", with(func(in *StreamInput) {
 			in.Settings, in.BweKbps = StreamSettings{Preset: proto.PresetCustom, FPS: 15, Res: proto.Res720p, MaxKbps: 5000}, 9000
 		}), StreamPlan{Resolved{15, proto.Res720p, 5000}, 15, 5000, 5000, 1280, 720, 0, 720}},
 		{"background keeps the size", with(func(in *StreamInput) { in.Settings, in.Background = StreamSettings{Preset: proto.PresetQuality}, true }),
-			StreamPlan{Resolved{30, proto.ResNative, 20000}, 5, 1000, 20000, 1920, 1080, 0, 0}},
+			StreamPlan{Resolved{30, proto.ResNative, 50000}, 5, 1000, 50000, 1920, 1080, 0, 0}},
 		{"background keeps auto's rung size", with(func(in *StreamInput) { in.Rung, in.Background = low, true }),
-			StreamPlan{Resolved{60, proto.ResNative, 0}, 5, 1000, 3555, 1280, 720, 0, 720}},
+			StreamPlan{Resolved{60, proto.ResNative, 0}, 5, 1000, 2345, 1280, 720, 0, 720}},
 		{"background never raises fps", with(func(in *StreamInput) {
 			in.Settings, in.Background = StreamSettings{Preset: proto.PresetCustom, FPS: 3}, true
-		}), StreamPlan{Resolved{3, proto.ResNative, 0}, 3, 1000, 8000, 1920, 1080, 0, 0}},
+		}), StreamPlan{Resolved{3, proto.ResNative, 0}, 3, 1000, 2009, 1920, 1080, 0, 0}},
 	}
 	for _, c := range cases {
 		if got := PlanStream(c.in); got != c.want {
@@ -237,7 +284,7 @@ func TestBuildStreamStateJSON(t *testing.T) {
 	want := `{"t":"stream","id":7,"ok":true,"preset":"auto","fps":null,"res":"1440p","max_kbps":null,"background":false,"wallpaper":false,` +
 		`"resolved":{"fps":30,"res":"1440p","max_kbps":null},` +
 		`"target_fps":15,"max_fps":30,"width":2560,"height":1440,"native_width":5120,"native_height":2880,` +
-		`"ceil_kbps":14222,"relay":false,"auto":{"rung":2,"rungs":6,"reason":"congestion"},` +
+		`"ceil_kbps":9383,"relay":false,"auto":{"rung":2,"rungs":6,"reason":"congestion"},` +
 		`"options":{"fps":[5,10,15,24,30],"res":[{"id":"native","width":5120,"height":2880},{"id":"1440p","width":2560,"height":1440},` +
 		`{"id":"1080p","width":1920,"height":1080},{"id":"720p","width":1280,"height":720},{"id":"half","width":2560,"height":1440}]}}`
 	if string(b) != want {

@@ -16,6 +16,7 @@ import {
   serializeStreamPrefs,
   streamLabel,
   streamPrefsKey,
+  streamView,
 } from "./stream";
 import type { StreamPrefs, StreamRequestId, StreamState } from "./stream";
 
@@ -81,9 +82,36 @@ const prefs = (patch: Partial<StreamPrefs> = {}): StreamPrefs => ({
 
 describe("encodeStreamRequest", () => {
   test.each(vectors.stream_request)("$name matches the shared vector", (v) => {
-    expect(encodeStreamRequest(v.prefs as StreamPrefs, v.hidden, v.id as StreamRequestId)).toEqual(
+    const p = { ...DEFAULT_STREAM_PREFS, ...v.prefs } as StreamPrefs;
+    expect(encodeStreamRequest(p, v.hidden, v.id as StreamRequestId, v.view ?? null)).toEqual(
       v.json,
     );
+  });
+
+  test("the scale preference stays in the browser", () => {
+    const json = encodeStreamRequest(prefs({ scale: "actual" }), false, 1 as StreamRequestId, null);
+    expect(JSON.parse(json)).toEqual({
+      t: "stream",
+      id: 1,
+      preset: "auto",
+      fps: null,
+      res: null,
+      max_kbps: null,
+      background: false,
+      wallpaper: false,
+    });
+  });
+});
+
+describe("streamView", () => {
+  test.each([
+    ["1x", 1600, 900, 1, { w: 1600, h: 900 }],
+    ["retina", 1440, 812.5, 2, { w: 2880, h: 1624 }],
+    ["fractional scale floors to even device pixels", 1279.5, 719.2, 1.25, { w: 1598, h: 898 }],
+    ["odd device pixels", 801, 601, 1, { w: 800, h: 600 }],
+    ["collapsed stage", 0, 600, 2, null],
+  ])("%s", (_name, w, h, dpr, want) => {
+    expect(streamView(w, h, dpr)).toEqual(want);
   });
 });
 
@@ -150,6 +178,24 @@ describe("parseStreamState", () => {
     });
   });
 
+  test("reads the window size and the latency reason", () => {
+    const sized = {
+      ...wireState,
+      resolved: { fps: 60, res: "window", max_kbps: null },
+      auto: { rung: 1, rungs: 6, reason: "latency" },
+      options: {
+        fps: [30, 60],
+        res: [{ id: "window", width: 2844, height: 1600 }, ...wireState.options.res],
+      },
+    };
+    const got = parseStreamState(sized);
+    expect([got?.resolved.res, got?.auto?.reason, got?.options.res[0]]).toEqual([
+      "window",
+      "latency",
+      { id: "window", width: 2844, height: 1600 },
+    ]);
+  });
+
   test("keeps ok:false replies", () => {
     expect(parseStreamState({ ...wireState, ok: false })?.ok).toEqual(false);
   });
@@ -204,14 +250,16 @@ describe("selectPreset", () => {
       res: "1080p",
       max_kbps: 8000,
       wallpaper: false,
+      scale: "fit",
     });
   });
 
   test.each(["auto", "speed", "custom"] as const)(
-    "switching to %s keeps the wallpaper choice",
+    "switching to %s keeps the wallpaper and scale choices",
     (preset) => {
-      const shown = prefs({ preset: "quality", wallpaper: true });
-      expect(selectPreset(shown, preset, state()).wallpaper).toEqual(true);
+      const shown = prefs({ preset: "quality", wallpaper: true, scale: "actual" });
+      const next = selectPreset(shown, preset, state());
+      expect([next.wallpaper, next.scale]).toEqual([true, "actual"]);
     },
   );
 
@@ -235,6 +283,7 @@ describe("editStreamField", () => {
       res: "1080p",
       max_kbps: 4000,
       wallpaper: false,
+      scale: "fit",
     });
   });
 
@@ -264,7 +313,13 @@ describe("parseStreamPrefs / serializeStreamPrefs", () => {
       res: null,
       max_kbps: null,
       wallpaper: false,
+      scale: "fit",
     });
+  });
+
+  test("round-trips actual size", () => {
+    const p = prefs({ scale: "actual" });
+    expect(parseStreamPrefs(serializeStreamPrefs(p))).toEqual(p);
   });
 
   test("prefs saved before the wallpaper switch keep it hidden", () => {

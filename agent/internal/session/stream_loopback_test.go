@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -177,4 +178,68 @@ func TestLoopbackMoveChannelAndNegotiatedProfile(t *testing.T) {
 		ev := h.backend.Injected()
 		return len(ev) == 2 && ev[1].Type == platform.EvMouseMove && ev[1].X == 2000 && ev[1].MonitorID == 1
 	})
+}
+
+func TestLoopbackStaticScreenIsRefinedOnce(t *testing.T) {
+	for _, supported := range []bool{true, false} {
+		h := newHarness(t, platform.ConsentOnce)
+		h.backend.SetStatic(true)
+		h.backend.SetRefineUnsupported(!supported)
+		h.offer(false)
+		if err := <-h.answerOK; err != nil {
+			t.Fatal(err)
+		}
+		h.waitControl(t, "hello")
+		want := refineQPs
+		if !supported {
+			want = refineQPs[:1] // asked once, then never again
+		}
+		waitFor(t, "refinement passes", func() bool { return len(h.backend.Refines()) >= len(want) })
+		time.Sleep(500 * time.Millisecond) // nothing more once the finest pass is out
+		if got := h.backend.Refines(); !slices.Equal(got, want) {
+			t.Fatalf("supported=%v: passes = %v, want %v", supported, got, want)
+		}
+		h.mgr.Close()
+	}
+}
+
+func TestLoopbackStreamFollowsTheViewersWindow(t *testing.T) {
+	h := newHarness(t, platform.ConsentOnce)
+	h.offer(false)
+	if err := <-h.answerOK; err != nil {
+		t.Fatal(err)
+	}
+	h.waitControl(t, "hello")
+	waitFor(t, "capture", func() bool { return len(h.backend.Starts()) == 1 })
+	send := func(id int, view string) map[string]any {
+		msg := fmt.Sprintf(`{"t":"stream","id":%d,"preset":"auto","fps":null,"res":null,"max_kbps":null,"background":false%s}`, id, view)
+		if err := h.control.SendText(msg); err != nil {
+			t.Fatal(err)
+		}
+		return h.waitStreamReply(t, id)
+	}
+
+	st := send(2, `,"view":{"w":1280,"h":800}`)
+	expectFields(t, "window", st, map[string]any{"ok": true, "res": nil, "width": 1280, "height": 720})
+	if r := st["resolved"].(map[string]any); r["res"] != proto.ResWindow {
+		t.Fatalf("resolved = %v, want the window size", r)
+	}
+	if opt := st["options"].(map[string]any)["res"].([]any)[0]; fmt.Sprint(opt) != "map[height:720 id:window width:1280]" {
+		t.Fatalf("first resolution option = %v", opt)
+	}
+	if s := h.backend.Starts(); len(s) != 2 || s[1].MaxWidth != 1280 || s[1].MaxHeight != 800 {
+		t.Fatalf("starts = %+v, want a restart bounded by the view", s)
+	}
+
+	st = send(3, `,"view":{"w":961,"h":600}`) // odd widths round down to even
+	expectFields(t, "smaller window", st, map[string]any{"width": 960, "height": 540})
+	if auto := st["auto"].(map[string]any); auto["reason"] != AutoWarmup {
+		t.Fatalf("auto = %v: a resize keeps Auto's state (still warming up)", auto)
+	}
+
+	st = send(4, ``) // 1:1 view: no view reported
+	expectFields(t, "native", st, map[string]any{"width": 1920, "height": 1080})
+	if r := st["resolved"].(map[string]any); r["res"] != proto.ResNative {
+		t.Fatalf("resolved = %v, want native without a view", r)
+	}
 }

@@ -14,8 +14,9 @@ import {
   followsRemote,
   MAX_CSS_CURSOR,
 } from "../lib/cursor";
-import { contentBox, denormalizePoint } from "../lib/geometry";
+import { denormalizePoint } from "../lib/geometry";
 import type { RemoteSession } from "./RemoteSession";
+import { videoBox } from "./videoBox";
 
 type Shape = { bmp: ImageBitmap; hotX: number; hotY: number; w: number; h: number };
 
@@ -105,7 +106,7 @@ export function CursorLayer({
         return;
       }
       const v = video.current;
-      const box = contentBox(r.width, r.height, v?.videoWidth ?? 0, v?.videoHeight ?? 0);
+      const box = videoBox(r, v);
       // Shapes are in native monitor pixels; the video may be encoded smaller.
       const remoteW = widthRef.current || v?.videoWidth || box.width;
       const scale = remoteW > 0 ? box.width / remoteW : 1;

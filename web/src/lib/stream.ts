@@ -4,8 +4,13 @@ import type { Brand } from "../api/types";
 
 export type StreamPreset = "auto" | "speed" | "balanced" | "quality" | "custom";
 export type NamedPreset = Exclude<StreamPreset, "custom">;
-export type ResolutionId = "native" | "1440p" | "1080p" | "720p" | "half";
-export type AutoReason = "steady" | "warmup" | "congestion" | "loss" | "starved" | "probe";
+export type ResolutionId = "window" | "native" | "1440p" | "1080p" | "720p" | "half";
+export type AutoReason =
+  "steady" | "warmup" | "congestion" | "loss" | "starved" | "latency" | "probe";
+/** fit: the stream follows the window, shown pixel for pixel; actual: native size 1:1, scrolled. */
+export type StreamScale = "fit" | "actual";
+/** The viewer's video area in device pixels (even), sent so the agent encodes exactly that. */
+export type StreamView = { w: number; h: number };
 export type StreamRequestId = Brand<number, "StreamRequestId">;
 export type LegacyTier = 0 | 1 | 2;
 
@@ -16,6 +21,7 @@ export type StreamPrefs = {
   max_kbps: number | null;
   /** Show the device's wallpaper; hidden by default (cheaper to encode). */
   wallpaper: boolean;
+  scale: StreamScale;
 };
 
 export type ResolutionOption = { id: ResolutionId; width: number; height: number };
@@ -45,7 +51,7 @@ export type StreamState = {
 export const NAMED_PRESETS: readonly NamedPreset[] = ["auto", "speed", "balanced", "quality"];
 export const FPS_STEPS: readonly number[] = [5, 10, 15, 24, 30, 60];
 export const MIN_KBPS = 1000;
-export const MAX_KBPS = 20000;
+export const MAX_KBPS = 50000;
 export const KBPS_STEP = 500;
 export const RELAY_CAP_KBPS = 6000;
 export const DEFAULT_STREAM_PREFS: StreamPrefs = {
@@ -54,16 +60,18 @@ export const DEFAULT_STREAM_PREFS: StreamPrefs = {
   res: null,
   max_kbps: null,
   wallpaper: false,
+  scale: "fit",
 };
 
 const PRESETS: readonly StreamPreset[] = [...NAMED_PRESETS, "custom"];
-const RESOLUTIONS: readonly ResolutionId[] = ["native", "1440p", "1080p", "720p", "half"];
+const RESOLUTIONS: readonly ResolutionId[] = ["window", "native", "1440p", "1080p", "720p", "half"];
 const REASONS: Record<AutoReason, string> = {
   steady: "Steady",
   warmup: "Warming up",
   congestion: "Lowered: network congestion",
   loss: "Lowered: packet loss",
   starved: "Lowered: not enough bandwidth",
+  latency: "Lowered: network delay",
   probe: "Trying higher quality",
 };
 const PRESET_NAMES: Record<StreamPreset, string> = {
@@ -74,6 +82,7 @@ const PRESET_NAMES: Record<StreamPreset, string> = {
   custom: "Custom",
 };
 const RES_NAMES: Record<ResolutionId, string> = {
+  window: "Match window",
   native: "Native",
   "1440p": "1440p",
   "1080p": "1080p",
@@ -94,11 +103,15 @@ const fpsOrNull = (v: unknown) => intIn(v, 1, 60);
 const kbpsOrNull = (v: unknown) => intIn(v, MIN_KBPS, MAX_KBPS);
 const resOrNull = (v: unknown) => (isRes(v) ? v : null);
 
-/** The B→A `stream` message; key order matches the shared vectors. */
+/**
+ * The B→A `stream` message; key order matches the shared vectors. `view` is
+ * left out when null: at actual size, or before the stage was measured.
+ */
 export function encodeStreamRequest(
   prefs: StreamPrefs,
   hidden: boolean,
   id: StreamRequestId,
+  view: StreamView | null,
 ): string {
   return JSON.stringify({
     t: "stream",
@@ -109,7 +122,16 @@ export function encodeStreamRequest(
     max_kbps: prefs.max_kbps,
     background: hidden,
     wallpaper: prefs.wallpaper,
+    view: view ?? undefined,
   });
+}
+
+/** The stage's size in device pixels, rounded down to even: what the agent may encode at. */
+export function streamView(cssWidth: number, cssHeight: number, dpr: number): StreamView | null {
+  const even = (v: number) => Math.floor(v * dpr) & ~1;
+  const w = even(cssWidth);
+  const h = even(cssHeight);
+  return w >= 2 && h >= 2 ? { w, h } : null;
 }
 
 /** `0x20 op 3` argument for agents without the `stream` feature. */
@@ -167,18 +189,25 @@ export function parseStreamState(m: unknown): StreamState | null {
 
 /**
  * Picking a named preset drops every override; picking Custom starts from what
- * the agent resolved for the current settings. The wallpaper choice stays.
+ * the agent resolved for the current settings. The wallpaper and scale choices stay.
  */
 export function selectPreset(
   prefs: StreamPrefs,
   preset: StreamPreset,
   state: StreamState | null,
 ): StreamPrefs {
-  const { wallpaper } = prefs;
-  if (preset !== "custom") return { ...DEFAULT_STREAM_PREFS, preset, wallpaper };
+  const { wallpaper, scale } = prefs;
+  if (preset !== "custom") return { ...DEFAULT_STREAM_PREFS, preset, wallpaper, scale };
   if (prefs.preset === "custom") return prefs;
   const base = state?.resolved ?? prefs;
-  return { preset: "custom", fps: base.fps, res: base.res, max_kbps: base.max_kbps, wallpaper };
+  return {
+    preset: "custom",
+    fps: base.fps,
+    res: base.res,
+    max_kbps: base.max_kbps,
+    wallpaper,
+    scale,
+  };
 }
 
 type Field = "fps" | "res" | "max_kbps";
@@ -215,6 +244,7 @@ export function parseStreamPrefs(raw: string | null): StreamPrefs {
     res: resOrNull(v.res),
     max_kbps: kbpsOrNull(v.max_kbps),
     wallpaper: v.wallpaper === true,
+    scale: v.scale === "actual" ? "actual" : "fit",
   };
 }
 

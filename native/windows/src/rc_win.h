@@ -138,8 +138,11 @@ void encoder_destroy(Encoder *e);
 // Submits one NV12 texture (owned by the caller's ring; must stay untouched
 // until a later call reuses it). Returns false when the frame was dropped
 // (encoder busy) and true when it was accepted. *fatal is set on errors that
-// require recreating the encoder.
-bool encoder_encode(Encoder *e, ID3D11Texture2D *nv12, int64_t pts_us, bool force_key, bool *fatal);
+// require recreating the encoder. max_qp > 0 makes it a refinement pass: no
+// macroblock above that quantizer, delivered with RC_FRAME_STATIC.
+bool encoder_encode(Encoder *e, ID3D11Texture2D *nv12, int64_t pts_us, bool force_key, bool *fatal, int max_qp);
+// True when the encoder can bound its quantizer per frame (refinement).
+bool encoder_can_refine(Encoder *e);
 void encoder_set_bitrate(Encoder *e, int kbps);
 const char *encoder_name(Encoder *e);
 // Probes MF for an H.264 hardware MFT; "mf-hw" or "mf-sw".
@@ -151,6 +154,7 @@ int capture_start(const rc_capture_config *cfg, rc_frame_fn on_frame, rc_cursor_
 void capture_stop();
 void capture_configure(int32_t bitrate_kbps, int32_t fps);
 void capture_request_keyframe();
+int capture_refine(int32_t max_qp);
 const char *capture_encoder_name(); // nullptr when not capturing
 
 // ---- input + clipboard (input.cpp) ----

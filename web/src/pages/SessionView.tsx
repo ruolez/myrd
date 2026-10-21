@@ -3,6 +3,7 @@ import type {
   DragEvent as ReactDragEvent,
   PointerEvent as ReactPointerEvent,
   ReactNode,
+  RefObject,
 } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { api } from "../api/client";
@@ -10,7 +11,9 @@ import { useUser } from "../app/auth";
 import { Icon } from "../components/icons";
 import { Badge, Spinner } from "../components/ui";
 import { keyFingerprint } from "../lib/devicePins";
+import { displayRect } from "../lib/geometry";
 import { encodeText } from "../lib/input";
+import { streamView } from "../lib/stream";
 import { CursorLayer } from "../session/CursorLayer";
 import { DropOverlay } from "../session/files/DropOverlay";
 import { FilesPanel } from "../session/files/FilesPanel";
@@ -56,6 +59,63 @@ function droppedFiles(dt: DataTransfer): { files: File[]; folders: number } {
 
 const hasFiles = (e: { dataTransfer: DataTransfer | null }) =>
   !!e.dataTransfer && Array.from(e.dataTransfer.types).includes("Files");
+
+type StageSize = { w: number; h: number; dpr: number };
+
+/** Tracks an element's CSS size and the device pixel ratio (which changes across monitors). */
+function useStageSize(ref: RefObject<HTMLDivElement | null>): StageSize {
+  const [size, setSize] = useState<StageSize>({ w: 0, h: 0, dpr: window.devicePixelRatio || 1 });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    let mq: MediaQueryList | null = null;
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      setSize((s) =>
+        s.w === r.width && s.h === r.height && s.dpr === dpr ? s : { w: r.width, h: r.height, dpr },
+      );
+    };
+    const watchDpr = () => {
+      mq?.removeEventListener("change", onDpr);
+      mq = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+      mq.addEventListener("change", onDpr);
+    };
+    const onDpr = () => {
+      watchDpr();
+      measure();
+    };
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    watchDpr();
+    measure();
+    return () => {
+      ro.disconnect();
+      mq?.removeEventListener("change", onDpr);
+    };
+  }, [ref]);
+  return size;
+}
+
+/** The stream's encoded size, from the video element. */
+function useVideoSize(ref: RefObject<HTMLVideoElement | null>) {
+  const [size, setSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const v = ref.current;
+    if (!v) return;
+    const read = () =>
+      setSize((s) =>
+        s.w === v.videoWidth && s.h === v.videoHeight ? s : { w: v.videoWidth, h: v.videoHeight },
+      );
+    v.addEventListener("resize", read);
+    v.addEventListener("loadedmetadata", read);
+    return () => {
+      v.removeEventListener("resize", read);
+      v.removeEventListener("loadedmetadata", read);
+    };
+  }, [ref]);
+  return size;
+}
 
 const phaseText: Partial<Record<Snapshot["phase"], string>> = {
   preparing: "Preparing this browser's signing key…",
@@ -140,6 +200,16 @@ export function SessionView() {
 
   const live = snap?.phase === "connected" || snap?.phase === "reconnecting";
   const files = snap?.filesState === "ready" ? snap.files : null;
+
+  // The stream is sized to the stage in device pixels and drawn 1:1 (fit),
+  // or kept native and scrolled (actual).
+  const stage = useStageSize(stageRef);
+  const videoSize = useVideoSize(videoRef);
+  const scale = snap?.streamPrefs.scale ?? "fit";
+  const rect = displayRect(stage.w, stage.h, videoSize.w, videoSize.h, stage.dpr, scale);
+  useEffect(() => {
+    session?.setView(scale === "fit" ? streamView(stage.w, stage.h, stage.dpr) : null);
+  }, [session, scale, stage.w, stage.h, stage.dpr]);
   const transfers = useTransfers(snap?.files ?? null);
   const transfersActive = transfers.some((t) => !isFinal(t));
 
@@ -464,36 +534,49 @@ export function SessionView() {
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
-        <video
-          ref={videoRef}
-          className="absolute inset-0 h-full w-full"
-          playsInline
-          autoPlay
-          muted
-          disablePictureInPicture
-        />
-        <CursorLayer
-          session={session}
-          video={videoRef}
-          surface={surfaceRef}
-          nativeWidth={nativeWidth}
-          active={live}
-        />
         <div
-          ref={surfaceRef}
-          className="absolute inset-0 cursor-default touch-none select-none"
-          onClick={() => kbRef.current?.focus({ preventScroll: true })}
+          className={`absolute inset-0 ${scale === "actual" ? "overflow-auto" : "overflow-hidden"}`}
         >
-          <textarea
-            ref={kbRef}
-            aria-label="Remote keyboard input"
-            className="absolute top-0 left-0 h-px w-px resize-none overflow-hidden border-0 p-0 opacity-0"
-            autoCapitalize="off"
-            autoCorrect="off"
-            autoComplete="off"
-            spellCheck={false}
-            tabIndex={0}
-          />
+          <div
+            className="relative"
+            style={{
+              width: Math.max(stage.w, rect.left + rect.width),
+              height: Math.max(stage.h, rect.top + rect.height),
+            }}
+          >
+            <video
+              ref={videoRef}
+              className="absolute"
+              style={{ left: rect.left, top: rect.top, width: rect.width, height: rect.height }}
+              playsInline
+              autoPlay
+              muted
+              disablePictureInPicture
+            />
+            <CursorLayer
+              session={session}
+              video={videoRef}
+              surface={surfaceRef}
+              nativeWidth={nativeWidth}
+              active={live}
+            />
+            <div
+              ref={surfaceRef}
+              className="absolute inset-0 cursor-default touch-none select-none"
+              onClick={() => kbRef.current?.focus({ preventScroll: true })}
+            >
+              <textarea
+                ref={kbRef}
+                aria-label="Remote keyboard input"
+                className="absolute top-0 left-0 h-px w-px resize-none overflow-hidden border-0 p-0 opacity-0"
+                autoCapitalize="off"
+                autoCorrect="off"
+                autoComplete="off"
+                spellCheck={false}
+                tabIndex={0}
+              />
+            </div>
+          </div>
         </div>
         {hud && live && snap && (
           <Hud

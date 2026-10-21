@@ -86,6 +86,10 @@ public:
     int64_t last_in_pts = -1; // previous input pts (us), for real sample durations
     const char *name = "mf-sw";
     UINT32 profile = eAVEncH264VProfile_Base;
+    bool can_refine = false;
+    bool clamped = false;                         // AVEncVideoMaxQP is below 51
+    LONGLONG static_times[4] = {-1, -1, -1, -1}; // input sample times of refinement passes (out_lock)
+    int static_next = 0;
 
     ~Encoder() { shutdown(); }
 
@@ -151,6 +155,8 @@ public:
             }
         }
 
+        can_refine = codec && codec->IsSupported(&CODECAPI_AVEncVideoMaxQP) == S_OK &&
+                     codec->IsModifiable(&CODECAPI_AVEncVideoMaxQP) == S_OK;
         if (async) {
             if (FAILED(mft.as(events))) return false;
         }
@@ -304,14 +310,21 @@ public:
         int64_t pts = (base_pts < 0 ? 0 : base_pts) + t / 10;
 
         Guard g(out_lock);
+        int flags = key ? RC_FRAME_KEY : 0;
+        for (LONGLONG &st : static_times) {
+            if (st == t) {
+                flags |= RC_FRAME_STATIC;
+                st = -1;
+            }
+        }
         if (!stopping && on_frame) {
             if (key && !(types & (1u << 7)) && !seq_header.empty()) {
                 scratch.resize(seq_header.size() + len);
                 memcpy(scratch.data(), seq_header.data(), seq_header.size());
                 memcpy(scratch.data() + seq_header.size(), data, len);
-                on_frame(user, scratch.data(), (int32_t)scratch.size(), pts, 1);
+                on_frame(user, scratch.data(), (int32_t)scratch.size(), pts, flags);
             } else {
-                on_frame(user, data, (int32_t)len, pts, key ? 1 : 0);
+                on_frame(user, data, (int32_t)len, pts, flags);
             }
         }
         buf->Unlock();
@@ -351,7 +364,7 @@ public:
         return true;
     }
 
-    bool encode(ID3D11Texture2D *nv12, int64_t pts_us, bool force_key, bool *fatal) {
+    bool encode(ID3D11Texture2D *nv12, int64_t pts_us, bool force_key, bool *fatal, int max_qp) {
         *fatal = false;
         if (async && need_input <= 0) return false;
         if (base_pts < 0) base_pts = pts_us;
@@ -370,6 +383,15 @@ public:
         last_in_pts = pts_us;
         sample->SetSampleDuration(dur);
         if (force_key) codec_ui4(codec.get(), CODECAPI_AVEncVideoForceKeyFrame, 1);
+        if (can_refine && (max_qp > 0 || clamped)) {
+            codec_ui4(codec.get(), CODECAPI_AVEncVideoMaxQP, (ULONG)(max_qp > 0 ? max_qp : 51));
+            clamped = max_qp > 0;
+        }
+        if (max_qp > 0) {
+            Guard g(out_lock);
+            static_times[static_next] = (pts_us - base_pts) * 10;
+            static_next = (static_next + 1) % 4;
+        }
 
         HRESULT hr = mft->ProcessInput(in_id, sample.get(), 0);
         if (async) InterlockedDecrement(&need_input);
@@ -501,9 +523,11 @@ Encoder *encoder_create(ID3D11Device *dev, const EncoderConfig &cfg, bool prefer
 
 void encoder_destroy(Encoder *e) { delete e; }
 
-bool encoder_encode(Encoder *e, ID3D11Texture2D *nv12, int64_t pts_us, bool force_key, bool *fatal) {
-    return e->encode(nv12, pts_us, force_key, fatal);
+bool encoder_encode(Encoder *e, ID3D11Texture2D *nv12, int64_t pts_us, bool force_key, bool *fatal, int max_qp) {
+    return e->encode(nv12, pts_us, force_key, fatal, max_qp);
 }
+
+bool encoder_can_refine(Encoder *e) { return e && e->can_refine; }
 
 void encoder_set_bitrate(Encoder *e, int kbps) { e->set_bitrate(kbps); }
 

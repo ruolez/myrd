@@ -11,11 +11,11 @@ import (
 
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/cc"
-	"github.com/pion/interceptor/pkg/gcc"
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 
 	"github.com/ruolez/remotectl/agent/internal/files"
+	"github.com/ruolez/remotectl/agent/internal/gcc"
 	"github.com/ruolez/remotectl/agent/internal/platform"
 	"github.com/ruolez/remotectl/proto"
 )

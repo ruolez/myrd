@@ -1,22 +1,45 @@
 export type Rect = { left: number; top: number; width: number; height: number };
 
+// Within this of 1:1 the video is drawn unscaled: any resampling blurs text.
+const SNAP = 0.02;
+
 /**
- * The rectangle the video's pixels actually occupy inside an element of
- * elementW×elementH using object-fit: contain (letterboxed / pillarboxed).
+ * Where a videoW×videoH (device px) stream goes in a stage of stageW×stageH
+ * CSS px. fit: as large as fits (object-fit: contain), snapped to exactly 1:1
+ * when it would be enlarged by under 2%; actual: always 1:1, centered when
+ * smaller, else at the top-left of a stage that scrolls. Offsets land on
+ * device pixels. Before the stream size is known, the whole stage.
  */
-export function contentBox(
-  elementW: number,
-  elementH: number,
+export function displayRect(
+  stageW: number,
+  stageH: number,
   videoW: number,
   videoH: number,
+  dpr: number,
+  mode: "fit" | "actual",
 ): Rect {
-  if (elementW <= 0 || elementH <= 0 || videoW <= 0 || videoH <= 0) {
-    return { left: 0, top: 0, width: Math.max(0, elementW), height: Math.max(0, elementH) };
+  if (stageW <= 0 || stageH <= 0 || videoW <= 0 || videoH <= 0 || dpr <= 0) {
+    return { left: 0, top: 0, width: Math.max(0, stageW), height: Math.max(0, stageH) };
   }
-  const scale = Math.min(elementW / videoW, elementH / videoH);
-  const width = videoW * scale;
-  const height = videoH * scale;
-  return { left: (elementW - width) / 2, top: (elementH - height) / 2, width, height };
+  const sw = stageW * dpr;
+  const sh = stageH * dpr;
+  let s = mode === "actual" ? 1 : Math.min(sw / videoW, sh / videoH);
+  if (s >= 1 && s < 1 + SNAP) s = 1;
+  const w = videoW * s;
+  const h = videoH * s;
+  const left = Math.max(0, Math.round((sw - w) / 2));
+  const top = Math.max(0, Math.round((sh - h) / 2));
+  return { left: left / dpr, top: top / dpr, width: w / dpr, height: h / dpr };
+}
+
+/** inner's box relative to outer's top-left (both from getBoundingClientRect). */
+export function relativeRect(outer: Rect, inner: Rect): Rect {
+  return {
+    left: inner.left - outer.left,
+    top: inner.top - outer.top,
+    width: inner.width,
+    height: inner.height,
+  };
 }
 
 /**

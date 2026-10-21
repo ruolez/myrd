@@ -41,8 +41,9 @@ type CaptureConfig struct {
 // CaptureSink receives native callbacks. Implementations must be fast and
 // must not block (they run on native threads).
 type CaptureSink interface {
-	// Frame is one H.264 access unit, Annex-B. data is only valid during the call.
-	Frame(data []byte, ptsMicros int64, keyframe bool)
+	// Frame is one H.264 access unit, Annex-B. data is only valid during the
+	// call. static: no new screen content (a refinement pass, an idle repeat).
+	Frame(data []byte, ptsMicros int64, keyframe, static bool)
 	// CursorShape: RGBA8, w*h*4 bytes. data is only valid during the call.
 	CursorShape(id uint32, w, h, hotX, hotY uint16, rgba []byte)
 	// CursorPos: normalized 0..65535 within the captured monitor.
@@ -101,6 +102,10 @@ type Backend interface {
 	StopCapture()
 	ConfigureEncoder(bitrateKbps, fps int)
 	RequestKeyframe()
+	// RefineEncoder re-encodes the last frame with its quantizer at most
+	// maxQP (static-screen refinement). ErrUnsupported when the encoder
+	// cannot bound it.
+	RefineEncoder(maxQP int) error
 	EncoderName() string
 
 	Inject(ev InputEvent) error

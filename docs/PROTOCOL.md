@@ -226,7 +226,7 @@ Rules:
 
 The browser creates the offer with one `recvonly` video transceiver (H.264, packetization-mode=1, preferring high 640c1f/64001f, then main 4d001f, then constrained baseline 42e01f) and five data channels (exact labels).
 
-Video: the agent encodes at most the negotiated profile (high without B-frames, i.e. constrained high), stamps each frame's RTP timestamp with its capture time (90 kHz), sends a keyframe only when the browser asks (PLI/FIR, at most every 100 ms), and paces packets at 2.5× the bandwidth estimate (no packet waits more than 50 ms). When the browser negotiates `http://www.webrtc.org/experiments/rtp-hdrext/playout-delay` (Chrome does), every packet carries min = max = 0: render each frame as soon as it is decoded.
+Video: the agent encodes at most the negotiated profile (high without B-frames, i.e. constrained high), stamps each frame's RTP timestamp with its capture time (90 kHz), sends a keyframe only when the browser asks (PLI/FIR, at most every 100 ms), and paces packets at 2.5× the bandwidth estimate (no packet waits more than 50 ms). The estimate is GCC (forked in `agent/internal/gcc`): it holds instead of climbing while the screen sends less than it allows, and every large frame doubles as a bandwidth probe. Once the screen has not changed for 200 ms the agent re-encodes the last frame in passes of falling quantizer (36 → 18, each paced to half the target bitrate) until text is sharp; a small change (a caret, a clock) redoes only the last two passes, larger ones start over. When the browser negotiates `http://www.webrtc.org/experiments/rtp-hdrext/playout-delay` (Chrome does), every packet carries min = max = 0: render each frame as soon as it is decoded.
 
 | label | options | direction |
 |---|---|---|
@@ -280,7 +280,7 @@ JSON text messages, `{"t": "...", ...}`:
 | `stream` | A→B | stream state, see below |
 | `ping` | B→A | `id`, `ts` (ms, browser clock) |
 | `pong` | A→B | `id`, `ts` (echo) |
-| `stats` | A→B every 2 s | `bitrate_kbps`, `fps`, `encoder`, `width`, `height` (encoded size), `keyframes`, `target_fps`, `target_kbps`, `bwe_kbps`, `loss` (0..1) |
+| `stats` | A→B every 2 s | `bitrate_kbps`, `fps`, `encoder`, `width`, `height` (encoded size), `keyframes`, `target_fps`, `target_kbps`, `bwe_kbps`, `loss` (0..1), `refine_qp` (quantizer of the latest static-screen refinement pass, 0 while the screen changes), `rtt_ms` (transport feedback round trip) |
 | `error` | A→B | `code` (`permission_missing`, `capture_failed`, `encoder_failed`), `detail` |
 | `bye` | A→B | `reason` (just before closing) |
 
@@ -293,7 +293,7 @@ Monitor sizes in `hello.monitors` and `monitor` are always native pixels (physic
 B→A, the full desired state each time (idempotent; the latest wins). The browser sends it when `hello` arrives, on every change (debounced), and when the tab is hidden or shown. It never sends `0x20 op 3` to an agent with the `stream` feature.
 
 ```json
-{"t":"stream","id":7,"preset":"auto","fps":null,"res":null,"max_kbps":null,"background":false,"wallpaper":false}
+{"t":"stream","id":7,"preset":"auto","fps":null,"res":null,"max_kbps":null,"background":false,"wallpaper":false,"view":{"w":2880,"h":1600}}
 ```
 
 | field | type | meaning |
@@ -301,20 +301,21 @@ B→A, the full desired state each time (idempotent; the latest wins). The brows
 | `id` | u32, optional | echoed in the reply |
 | `preset` | `auto` \| `speed` \| `balanced` \| `quality` \| `custom` | required |
 | `fps` | null \| 1..60 | null = preset default; clamped to `max_fps`. In `auto` a ceiling |
-| `res` | null \| `native` \| `1440p` \| `1080p` \| `720p` \| `half` | null = preset default. Named sizes cap the **short edge** (1080p on 3440×1440 → 2580×1080), `half` halves both edges, nothing upscales. In `auto` a ceiling |
-| `max_kbps` | null \| 1000..20000 | null = automatic ceiling; otherwise a cap (sent bitrate = min(estimate, cap)); relay paths are capped at 6000 |
+| `res` | null \| `window` \| `native` \| `1440p` \| `1080p` \| `720p` \| `half` | null = preset default. `window` fits `view` (one edge exactly, so the browser draws the stream pixel for pixel; native without a `view`). Named sizes cap the **short edge** (1080p on 3440×1440 → 2580×1080), `half` halves both edges, nothing upscales. In `auto` a ceiling |
+| `max_kbps` | null \| 1000..50000 | null = automatic ceiling; otherwise a cap (sent bitrate = min(estimate, cap)); relay paths are capped at 6000 |
 | `background` | bool | hidden tab: 5 fps / 1 Mbps at the current size, Auto frozen |
 | `wallpaper` | bool, optional | show the device's wallpaper; false or absent hides it while the session runs (feature `"wallpaper"`, see below) |
+| `view` | `{w, h}`, optional | the browser's video area in device pixels (2..16384, sent even). Present: presets that would encode at native size use `window` instead. Absent: the browser shows the stream 1:1 ("actual size", scrolled) or predates the field. A change of only `view` keeps Auto's place on its ladder; the browser debounces it (400 ms), since a new size restarts capture |
 
 Presets (`max` = the encoder cap, 60 on hardware, 30 on software encoders):
 
 | preset | fps | resolution | bitrate cap | adaptive |
 |---|---|---|---|---|
-| `auto` | max (ceiling) | native (ceiling) | automatic (8 Mbps at 1080p, pixel-scaled, ≤ 16) | yes: lowers fps first, then resolution, on congestion; raises them back with hysteresis |
+| `auto` | max (ceiling) | window or native (ceiling) | automatic (8 Mbps at 1080p30, pixel-scaled and × (fps/30)^0.6, ≤ 40) | yes: the bitrate follows the estimate; a step down only when a step's floor (0.02 bit/pixel/frame) does not fit, on loss, GCC overuse or queueing delay (RTT 60 ms, or half the baseline, above the 60 s minimum): 60 → 30 fps, then resolution at 30 fps, then 15/10/5 fps; back up with hysteresis |
 | `speed` | max | 720p | 4000 | no |
 | `balanced` | min(30, max) | 1080p | 8000 | no |
-| `quality` | min(30, max) | native | 20000 | no |
-| `custom` | `fps` or max | `res` or native | `max_kbps` or automatic | no |
+| `quality` | min(30, max) | window or native | 50000 | no |
+| `custom` | `fps` or max | `res`, else window or native | `max_kbps` or automatic | no |
 
 An invalid message (unknown enum, wrong type, out of range) is ignored and answered with the current state and `"ok":false`.
 
@@ -329,7 +330,7 @@ A→B state, sent after `hello`, after every request, and when the monitor, Auto
  "options":{"fps":[5,10,15,24,30,60],"res":[{"id":"native","width":5120,"height":2880},{"id":"1440p","width":2560,"height":1440},{"id":"1080p","width":1920,"height":1080},{"id":"720p","width":1280,"height":720},{"id":"half","width":2560,"height":1440}]}}
 ```
 
-`resolved` is what the preset and overrides came to (so the browser can switch to `custom` without its own preset table); `width`/`height` are the encoded size; `auto` is null unless `preset` is `auto` (`reason`: `steady`, `warmup`, `congestion`, `loss`, `starved`, `probe`); `options.fps` lists only values ≤ `max_fps`.
+`resolved` is what the preset and overrides came to (so the browser can switch to `custom` without its own preset table); `width`/`height` are the encoded size; `auto` is null unless `preset` is `auto` (`reason`: `steady`, `warmup`, `congestion`, `loss`, `starved`, `latency`, `probe`); `options.fps` lists only values ≤ `max_fps`; `options.res` starts with `window` only when the request carried a `view`.
 
 Wallpaper (feature `"wallpaper"`, advertised when the agent's platform can hide it: macOS and Windows, not the Linux demo device): a solid background costs almost nothing to encode, so the bits go to what changes. The agent hides the wallpaper from capture start until the session ends and restores it then; toggling never restarts capture. macOS leaves the wallpaper windows out of the capture only, so the device's own screen is unchanged; Windows turns it off for the user's logon session without touching the registry (logoff, or the next agent start after a crash, brings it back), so the person at the device sees a plain background during the session. The browser shows the switch only with the feature and keeps the choice per device.
 

@@ -20,7 +20,14 @@ type StreamSettings struct {
 	FPS     int
 	Res     string
 	MaxKbps int
+	View    View
 }
+
+// View is the viewer's video area in device pixels, even; zero when the
+// viewer shows the stream 1:1 or does not report it.
+type View struct{ W, H int }
+
+func (v View) set() bool { return v.W > 0 && v.H > 0 }
 
 // DefaultStreamSettings applies until the browser sends `stream`.
 func DefaultStreamSettings() StreamSettings { return StreamSettings{Preset: proto.PresetAuto} }
@@ -37,7 +44,19 @@ func SettingsFromRequest(r proto.StreamRequest) StreamSettings {
 	if r.MaxKbps != nil {
 		s.MaxKbps = *r.MaxKbps
 	}
+	if r.View != nil {
+		s.View = View{r.View.W &^ 1, r.View.H &^ 1}
+	}
 	return s
+}
+
+// fullRes is the size of presets that do not cap it: the viewer's window,
+// so the browser shows the stream pixel for pixel, else native.
+func fullRes(s StreamSettings) string {
+	if s.View.set() {
+		return proto.ResWindow
+	}
+	return proto.ResNative
 }
 
 // LegacyTierSettings maps the input channel's op 3 (old browsers): 0 keeps the
@@ -78,9 +97,9 @@ func ResolveSettings(s StreamSettings, maxFPS int) Resolved {
 	case proto.PresetBalanced:
 		r = Resolved{min(30, maxFPS), proto.Res1080p, balancedKbps}
 	case proto.PresetQuality:
-		r = Resolved{min(30, maxFPS), proto.ResNative, qualityKbps}
+		r = Resolved{min(30, maxFPS), fullRes(s), qualityKbps}
 	default: // auto, custom
-		r = Resolved{maxFPS, proto.ResNative, 0}
+		r = Resolved{maxFPS, fullRes(s), 0}
 	}
 	if s.FPS > 0 {
 		r.FPS = s.FPS
@@ -115,9 +134,9 @@ func minBound(a, b int) int {
 }
 
 // CaptureBox is the MaxWidth/MaxHeight bound handed to the native layer for
-// res: named sizes cap the short edge, half halves the width (ScaledSize keeps
-// the aspect). maxW/maxH are Options caps (0 = none).
-func CaptureBox(nw, nh uint32, res string, maxW, maxH int) (int, int) {
+// res: named sizes cap the short edge, half halves the width, window fits
+// the view (ScaledSize keeps the aspect). maxW/maxH are Options caps (0 = none).
+func CaptureBox(nw, nh uint32, res string, maxW, maxH int, view View) (int, int) {
 	var bw, bh int
 	if c := shortEdgeCap(res); c > 0 {
 		if nh <= nw {
@@ -127,13 +146,15 @@ func CaptureBox(nw, nh uint32, res string, maxW, maxH int) (int, int) {
 		}
 	} else if res == proto.ResHalf {
 		bw = max(2, int(nw)/2)
+	} else if res == proto.ResWindow && view.set() {
+		bw, bh = view.W, view.H
 	}
 	return minBound(bw, maxW), minBound(bh, maxH)
 }
 
 // OutputSize is the encoded size for res: never upscaled, even dimensions.
-func OutputSize(nw, nh uint32, res string, maxW, maxH int) (uint32, uint32) {
-	bw, bh := CaptureBox(nw, nh, res, maxW, maxH)
+func OutputSize(nw, nh uint32, res string, maxW, maxH int, view View) (uint32, uint32) {
+	bw, bh := CaptureBox(nw, nh, res, maxW, maxH, view)
 	return ScaledSize(nw, nh, bw, bh)
 }
 
@@ -143,14 +164,17 @@ type ResOption struct {
 	Height uint32 `json:"height"`
 }
 
-var resOrder = []string{proto.ResNative, proto.Res1440p, proto.Res1080p, proto.Res720p, proto.ResHalf}
+var resOrder = []string{proto.ResWindow, proto.ResNative, proto.Res1440p, proto.Res1080p, proto.Res720p, proto.ResHalf}
 
 // ResolutionOptions lists every resolution choice with the size it gives on
-// this monitor.
-func ResolutionOptions(nw, nh uint32, maxW, maxH int) []ResOption {
+// this monitor; window only for a viewer that reports its view.
+func ResolutionOptions(nw, nh uint32, maxW, maxH int, view View) []ResOption {
 	out := make([]ResOption, 0, len(resOrder))
 	for _, id := range resOrder {
-		w, h := OutputSize(nw, nh, id, maxW, maxH)
+		if id == proto.ResWindow && !view.set() {
+			continue
+		}
+		w, h := OutputSize(nw, nh, id, maxW, maxH, view)
 		out = append(out, ResOption{id, w, h})
 	}
 	return out
@@ -198,7 +222,7 @@ func PlanStream(in StreamInput) StreamPlan {
 	if in.Rung != nil && in.Settings.Preset == proto.PresetAuto {
 		p.FPS, res = in.Rung.FPS, in.Rung.Res
 	}
-	p.BoxW, p.BoxH = CaptureBox(in.NativeW, in.NativeH, res, in.MaxW, in.MaxH)
+	p.BoxW, p.BoxH = CaptureBox(in.NativeW, in.NativeH, res, in.MaxW, in.MaxH, in.Settings.View)
 	p.W, p.H = ScaledSize(in.NativeW, in.NativeH, p.BoxW, p.BoxH)
 	if r.MaxKbps > 0 {
 		p.CeilKbps = r.MaxKbps
@@ -206,7 +230,7 @@ func PlanStream(in StreamInput) StreamPlan {
 			p.CeilKbps = min(p.CeilKbps, relayCeilKbps)
 		}
 	} else {
-		p.CeilKbps = CeilingKbps(p.W, p.H, in.Relay)
+		p.CeilKbps = CeilingKbps(p.W, p.H, p.FPS, in.Relay)
 	}
 	p.Kbps = EncoderTarget(in.BweKbps, p.CeilKbps)
 	if in.Background {
@@ -273,5 +297,5 @@ func BuildStreamState(in StreamInput, plan StreamPlan, auto *AutoInfo) StreamSta
 		Resolved:  streamResolved{plan.Resolved.FPS, plan.Resolved.Res, nonZero(plan.Resolved.MaxKbps)},
 		TargetFPS: plan.FPS, MaxFPS: in.MaxFPS, Width: plan.W, Height: plan.H, NativeWidth: in.NativeW, NativeHeight: in.NativeH,
 		CeilKbps: plan.CeilKbps, Relay: in.Relay, Auto: auto,
-		Options: streamOptions{FPSOptions(in.MaxFPS), ResolutionOptions(in.NativeW, in.NativeH, in.MaxW, in.MaxH)}}
+		Options: streamOptions{FPSOptions(in.MaxFPS), ResolutionOptions(in.NativeW, in.NativeH, in.MaxW, in.MaxH, s.View)}}
 }

@@ -54,16 +54,21 @@
     { "name": "auto with ceilings", "prefs": { "preset": "auto", "fps": 30, "res": "1080p", "max_kbps": null, "wallpaper": false }, "hidden": false, "id": 2, "json": "{\"t\":\"stream\",\"id\":2,\"preset\":\"auto\",\"fps\":30,\"res\":\"1080p\",\"max_kbps\":null,\"background\":false,\"wallpaper\":false}" },
     { "name": "custom 15 fps 720p 5 Mbps", "prefs": { "preset": "custom", "fps": 15, "res": "720p", "max_kbps": 5000, "wallpaper": false }, "hidden": false, "id": 3, "json": "{\"t\":\"stream\",\"id\":3,\"preset\":\"custom\",\"fps\":15,\"res\":\"720p\",\"max_kbps\":5000,\"background\":false,\"wallpaper\":false}" },
     { "name": "quality hidden tab", "prefs": { "preset": "quality", "fps": null, "res": null, "max_kbps": null, "wallpaper": false }, "hidden": true, "id": 4, "json": "{\"t\":\"stream\",\"id\":4,\"preset\":\"quality\",\"fps\":null,\"res\":null,\"max_kbps\":null,\"background\":true,\"wallpaper\":false}" },
-    { "name": "half resolution with wallpaper", "prefs": { "preset": "custom", "fps": 60, "res": "half", "max_kbps": 20000, "wallpaper": true }, "hidden": false, "id": 5, "json": "{\"t\":\"stream\",\"id\":5,\"preset\":\"custom\",\"fps\":60,\"res\":\"half\",\"max_kbps\":20000,\"background\":false,\"wallpaper\":true}" }
+    { "name": "half resolution with wallpaper", "prefs": { "preset": "custom", "fps": 60, "res": "half", "max_kbps": 20000, "wallpaper": true }, "hidden": false, "id": 5, "json": "{\"t\":\"stream\",\"id\":5,\"preset\":\"custom\",\"fps\":60,\"res\":\"half\",\"max_kbps\":20000,\"background\":false,\"wallpaper\":true}" },
+    { "name": "auto sized to the window", "prefs": { "preset": "auto", "fps": null, "res": null, "max_kbps": null, "wallpaper": false }, "hidden": false, "id": 6, "view": { "w": 2880, "h": 1600 }, "json": "{\"t\":\"stream\",\"id\":6,\"preset\":\"auto\",\"fps\":null,\"res\":null,\"max_kbps\":null,\"background\":false,\"wallpaper\":false,\"view\":{\"w\":2880,\"h\":1600}}" },
+    { "name": "custom match window 40 Mbps", "prefs": { "preset": "custom", "fps": 60, "res": "window", "max_kbps": 40000, "wallpaper": false }, "hidden": false, "id": 7, "view": { "w": 1600, "h": 900 }, "json": "{\"t\":\"stream\",\"id\":7,\"preset\":\"custom\",\"fps\":60,\"res\":\"window\",\"max_kbps\":40000,\"background\":false,\"wallpaper\":false,\"view\":{\"w\":1600,\"h\":900}}" }
   ],
   "stream_request_invalid": [
     { "name": "fps 0", "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"custom\",\"fps\":0,\"res\":null,\"max_kbps\":null,\"background\":false}" },
     { "name": "fps 61", "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"custom\",\"fps\":61,\"res\":null,\"max_kbps\":null,\"background\":false}" },
     { "name": "unknown resolution", "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"custom\",\"fps\":null,\"res\":\"4k\",\"max_kbps\":null,\"background\":false}" },
     { "name": "unknown preset", "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"turbo\",\"fps\":null,\"res\":null,\"max_kbps\":null,\"background\":false}" },
-    { "name": "bitrate over 20 Mbps", "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"custom\",\"fps\":null,\"res\":null,\"max_kbps\":25000,\"background\":false}" },
+    { "name": "bitrate over 50 Mbps", "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"custom\",\"fps\":null,\"res\":null,\"max_kbps\":55000,\"background\":false}" },
     { "name": "bitrate under 1 Mbps", "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"custom\",\"fps\":null,\"res\":null,\"max_kbps\":500,\"background\":false}" },
-    { "name": "fps as string", "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"custom\",\"fps\":\"30\",\"res\":null,\"max_kbps\":null,\"background\":false}" }
+    { "name": "fps as string", "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"custom\",\"fps\":\"30\",\"res\":null,\"max_kbps\":null,\"background\":false}" },
+    { "name": "view too small", "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"auto\",\"fps\":null,\"res\":null,\"max_kbps\":null,\"background\":false,\"view\":{\"w\":0,\"h\":900}}" },
+    { "name": "view too large", "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"auto\",\"fps\":null,\"res\":null,\"max_kbps\":null,\"background\":false,\"view\":{\"w\":20000,\"h\":900}}" },
+    { "name": "view as array", "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"auto\",\"fps\":null,\"res\":null,\"max_kbps\":null,\"background\":false,\"view\":[1600,900]}" }
   ],
   "legacy_tier": [
     { "name": "hidden tab is background", "prefs": { "preset": "quality", "fps": null, "res": null, "max_kbps": null }, "hidden": true, "tier": 0 },

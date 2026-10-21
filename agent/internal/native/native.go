@@ -11,7 +11,7 @@ package native
 #include <stdint.h>
 #include "rc_native.h"
 
-extern void rcGoFrame(void *user, uint8_t *data, int32_t len, int64_t pts_us, int32_t keyframe);
+extern void rcGoFrame(void *user, uint8_t *data, int32_t len, int64_t pts_us, int32_t flags);
 extern void rcGoCursorShape(void *user, uint32_t id, uint16_t w, uint16_t h, uint16_t hx, uint16_t hy, uint8_t *rgba, int32_t len);
 extern void rcGoCursorPos(void *user, uint16_t x, uint16_t y, uint8_t visible);
 
@@ -130,7 +130,10 @@ func (b *Backend) StopCapture() {
 func (b *Backend) ConfigureEncoder(kbps, fps int) {
 	C.rc_encode_configure(C.int32_t(kbps), C.int32_t(fps))
 }
-func (b *Backend) RequestKeyframe()    { C.rc_request_keyframe() }
+func (b *Backend) RequestKeyframe() { C.rc_request_keyframe() }
+func (b *Backend) RefineEncoder(maxQP int) error {
+	return rcErr(C.rc_encode_refine(C.int32_t(maxQP)))
+}
 func (b *Backend) EncoderName() string { return C.GoString(C.rc_encoder_name()) }
 
 func (b *Backend) Inject(ev platform.InputEvent) error {

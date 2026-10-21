@@ -16,6 +16,8 @@
  *    main or constrained high), no B-frames, no frame reordering,
  *    low-latency/real-time mode. Keyframes come from rc_request_keyframe;
  *    keyframe_interval_ms only bounds a lost request.
+ *  - A frame without new screen content (a refinement pass, an idle repeat)
+ *    carries RC_FRAME_STATIC; the agent restarts refinement on any other.
  *  - Callbacks may fire on any native thread; they must not be re-entered
  *    concurrently for the same kind (serialize frame callbacks).
  *  - After rc_capture_stop returns, no further callbacks may fire.
@@ -73,9 +75,13 @@ typedef struct {
                                       66 constrained baseline (also 0), 77 main, 100 constrained high */
 } rc_capture_config;
 
-/* One H.264 access unit, Annex-B. pts_us is a monotonic capture timestamp. */
+#define RC_FRAME_KEY    0x1 /* IDR with SPS+PPS */
+#define RC_FRAME_STATIC 0x2 /* same screen content as the frame before */
+
+/* One H.264 access unit, Annex-B. pts_us is a monotonic capture timestamp;
+ * flags are RC_FRAME_*. */
 typedef void (*rc_frame_fn)(void *user, const uint8_t *data, int32_t len,
-                            int64_t pts_us, int32_t keyframe);
+                            int64_t pts_us, int32_t flags);
 /* Cursor image changed. RGBA8 premultiplied=0, row stride = w*4. id is a
  * stable shape id so the browser can cache shapes. */
 typedef void (*rc_cursor_shape_fn)(void *user, uint32_t id, uint16_t w, uint16_t h,
@@ -94,6 +100,12 @@ void rc_capture_stop(void);
 void rc_encode_configure(int32_t bitrate_kbps, int32_t fps);
 /* Next emitted frame must be an IDR keyframe (PLI). */
 void rc_request_keyframe(void);
+/* Static-screen refinement: re-encodes the last captured frame as a P-frame
+ * with no macroblock above quantizer max_qp (1..51), flagged RC_FRAME_STATIC.
+ * The clamp ends with that frame. Dropped silently when new content arrived
+ * in the last 100 ms. Returns RC_OK, RC_ERR_UNSUPPORTED when the encoder
+ * cannot bound its quantizer, or RC_ERR when not capturing. */
+int  rc_encode_refine(int32_t max_qp);
 /* "videotoolbox" | "mf-hw" | "mf-sw" | "x264" | "openh264" ... */
 const char *rc_encoder_name(void);
 

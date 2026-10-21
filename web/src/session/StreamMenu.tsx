@@ -240,6 +240,34 @@ export function StreamMenu({
         </>
       )}
 
+      <div className="flex items-center gap-3">
+        <div className="flex-1">
+          <div className="text-xs">Display</div>
+          <p className="text-xs text-white/50">
+            {prefs.scale === "fit"
+              ? "Sized to this window, pixel for pixel."
+              : "The device's full size, 1:1; scroll to see all of it."}
+          </p>
+        </div>
+        <div
+          role="radiogroup"
+          aria-label="Display size"
+          className="flex gap-1 rounded-full bg-white/5 p-1"
+        >
+          {(["fit", "actual"] as const).map((scale) => (
+            <button
+              key={scale}
+              role="radio"
+              aria-checked={prefs.scale === scale}
+              className={`rounded-full px-2 py-0.5 text-xs font-medium ${prefs.scale === scale ? "bg-[#8ab4f8] text-[#0b1d36]" : "text-white/80 hover:bg-white/10"}`}
+              onClick={() => onChange({ ...prefs, scale })}
+            >
+              {scale === "fit" ? "Fit" : "1:1"}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {canHideWallpaper && (
         <div className="flex items-center gap-3">
           <div className="flex-1">

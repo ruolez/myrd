@@ -18,6 +18,7 @@ const (
 	PresetCustom   = "custom"
 
 	ResNative = "native"
+	ResWindow = "window" // the viewer's window (StreamRequest.View); native without one
 	Res1440p  = "1440p"
 	Res1080p  = "1080p"
 	Res720p   = "720p"
@@ -26,7 +27,8 @@ const (
 	StreamMinFPS  = 1
 	StreamMaxFPS  = 60
 	StreamMinKbps = 1000
-	StreamMaxKbps = 20000
+	StreamMaxKbps = 50000
+	StreamMaxView = 16384
 )
 
 // StreamRequest is the browser's full desired state (B→A `stream`).
@@ -39,6 +41,14 @@ type StreamRequest struct {
 	MaxKbps    *int    `json:"max_kbps"`
 	Background bool    `json:"background"`
 	Wallpaper  bool    `json:"wallpaper"` // show the desktop wallpaper; absent = hidden
+	// View is the viewer's video area in device pixels. Absent: the viewer
+	// shows the stream at its own size (1:1) or predates the field.
+	View *StreamView `json:"view,omitempty"`
+}
+
+type StreamView struct {
+	W int `json:"w"`
+	H int `json:"h"`
 }
 
 var errNotStream = errors.New("not a stream message")
@@ -67,13 +77,16 @@ func (r StreamRequest) Validate() error {
 	}
 	if r.Res != nil {
 		switch *r.Res {
-		case ResNative, Res1440p, Res1080p, Res720p, ResHalf:
+		case ResNative, ResWindow, Res1440p, Res1080p, Res720p, ResHalf:
 		default:
 			return fmt.Errorf("unknown resolution %q", *r.Res)
 		}
 	}
 	if r.MaxKbps != nil && (*r.MaxKbps < StreamMinKbps || *r.MaxKbps > StreamMaxKbps) {
 		return fmt.Errorf("max_kbps %d out of range", *r.MaxKbps)
+	}
+	if v := r.View; v != nil && (v.W < 2 || v.H < 2 || v.W > StreamMaxView || v.H > StreamMaxView) {
+		return fmt.Errorf("view %dx%d out of range", v.W, v.H)
 	}
 	return nil
 }

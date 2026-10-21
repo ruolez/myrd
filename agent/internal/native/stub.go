@@ -23,6 +23,7 @@ func (Backend) StartCapture(platform.CaptureConfig, platform.CaptureSink) error 
 func (Backend) StopCapture()                     {}
 func (Backend) ConfigureEncoder(int, int)        {}
 func (Backend) RequestKeyframe()                 {}
+func (Backend) RefineEncoder(int) error          { return platform.ErrUnsupported }
 func (Backend) EncoderName() string              { return "none" }
 func (Backend) Inject(platform.InputEvent) error { return platform.ErrUnsupported }
 func (Backend) InjectText(string) error          { return platform.ErrUnsupported }

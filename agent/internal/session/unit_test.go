@@ -33,18 +33,22 @@ func TestPathFor(t *testing.T) {
 func TestCeilingKbps(t *testing.T) {
 	cases := []struct {
 		w, h  uint32
+		fps   int
 		relay bool
 		want  int
 	}{
-		{1920, 1080, false, 8000},
-		{1920, 1080, true, 6000},
-		{3840, 2160, false, 16000}, // 4× pixels capped at 16 Mbps
-		{1280, 720, false, 3555},
-		{640, 480, false, 2000}, // floor of the ceiling
+		{1920, 1080, 30, false, 8000},
+		{1920, 1080, 30, true, 6000},
+		{1920, 1080, 60, false, 12125}, // × 2^0.6
+		{1920, 1080, 15, false, 5278},  // × 0.5^0.6
+		{3840, 2160, 30, false, 32000}, // 4× pixels
+		{3840, 2160, 60, false, 40000}, // 48.5 Mbps capped at 40
+		{1280, 720, 30, false, 3555},
+		{640, 480, 30, false, 2000}, // floor of the ceiling
 	}
 	for _, c := range cases {
-		if got := CeilingKbps(c.w, c.h, c.relay); got != c.want {
-			t.Errorf("CeilingKbps(%d,%d,%v) = %d, want %d", c.w, c.h, c.relay, got, c.want)
+		if got := CeilingKbps(c.w, c.h, c.fps, c.relay); got != c.want {
+			t.Errorf("CeilingKbps(%d,%d,%d,%v) = %d, want %d", c.w, c.h, c.fps, c.relay, got, c.want)
 		}
 	}
 }
@@ -233,7 +237,7 @@ func TestFrameLeavesKeyframesToTheBrowser(t *testing.T) {
 	}
 	p := &mediaPipe{b: b, track: track, now: time.Now, applied: encoderState{fps: 5}}
 	for i := 0; i < 60; i++ {
-		p.Frame([]byte{0, 0, 0, 1, 0x41}, int64(i)*200_000, i == 0)
+		p.Frame([]byte{0, 0, 0, 1, 0x41}, int64(i)*200_000, i == 0, false)
 	}
 	time.Sleep(50 * time.Millisecond)
 	if got := b.KeyframeRequests(); got != 0 {

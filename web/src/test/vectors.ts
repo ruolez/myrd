@@ -16,7 +16,14 @@ export type Vectors = {
   input_invalid: { name: string; hex: string }[];
   cursor: Vector[];
   fingerprint_message: { session_id: string; role: string; fingerprint: string; utf8: string }[];
-  stream_request: { name: string; prefs: VectorPrefs; hidden: boolean; id: number; json: string }[];
+  stream_request: {
+    name: string;
+    prefs: VectorPrefs;
+    hidden: boolean;
+    id: number;
+    view?: { w: number; h: number };
+    json: string;
+  }[];
   stream_request_invalid: { name: string; json: string }[];
   legacy_tier: { name: string; prefs: VectorPrefs; hidden: boolean; tier: number }[];
   file_data: { name: string; xfer: number; payload_hex: string; hex: string }[];

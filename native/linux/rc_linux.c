@@ -2,7 +2,8 @@
  * rc_linux.c — rc_native.h over X11 for the Docker demo device.
  *
  *   capture : XShm on the root window, XDamage so a static screen costs ~0
- *   encode  : libswscale BGRX→I420 (BT.709) + libx264 ultrafast/zerolatency
+ *   encode  : libswscale BGRX→I420 (BT.709) + libx264 superfast/zerolatency;
+ *             refinement passes force the frame quantizer
  *   cursor  : XFixes cursor image + XQueryPointer polling at 120 Hz
  *   input   : XTest; text via a temporary keysym remap of a spare keycode
  *   clipboard: xclip subprocess
@@ -40,6 +41,7 @@
 #define MAX_MONITORS 16
 #define WHEEL_NOTCH_PX 100
 #define IDLE_FRAME_NS 1000000000LL /* at least one frame per second on a static screen */
+#define REFINE_QUIET_NS 100000000LL /* rc_encode_refine: no new content for this long */
 
 typedef struct {
     pthread_mutex_t mu;
@@ -60,6 +62,7 @@ typedef struct {
     atomic_int want_keyframe;
     atomic_int new_bitrate; /* kbps, 0 = no change */
     atomic_int new_fps;
+    atomic_int refine_qp; /* 0 = none pending */
     rc_capture_config cfg;
     rc_monitor cap_mon;
     rc_frame_fn on_frame;
@@ -327,12 +330,28 @@ static void encoder_close(encoder *e) {
 
 /* ---------------- capture thread ---------------- */
 
+/* Encodes enc->pic; qp > 0 forces that quantizer (a refinement pass). */
+static void encode_emit(encoder *e, int64_t t, int key, int qp, int flags) {
+    e->pic.i_type = key ? X264_TYPE_IDR : X264_TYPE_AUTO;
+    e->pic.i_qpplus1 = qp > 0 ? qp + 1 : X264_QP_AUTO;
+    e->pic.i_pts = e->frame_no++;
+    x264_nal_t *nals;
+    int n_nals;
+    x264_picture_t out;
+    int size = x264_encoder_encode(e->enc, &nals, &n_nals, &e->pic, &out);
+    if (size > 0 && g.on_frame) {
+        if (out.b_keyframe) flags |= RC_FRAME_KEY;
+        /* x264 lays out all NAL payloads of a frame contiguously */
+        g.on_frame(g.user, nals[0].p_payload, size, t / 1000, flags);
+    }
+}
+
 static void compute_out_size(int w, int h, int max_w, int max_h, int *ow, int *oh) {
     double s = 1.0;
     if (max_w > 0 && w > max_w) s = (double)max_w / w;
     if (max_h > 0 && h * s > max_h) s = (double)max_h / h;
-    *ow = ((int)(w * s)) & ~1;
-    *oh = ((int)(h * s)) & ~1;
+    *ow = ((int)(w * s + 0.5)) & ~1; /* nearest: a bound the agent sized exactly stays exact */
+    *oh = ((int)(h * s + 0.5)) & ~1;
 }
 
 static void *capture_main(void *arg) {
@@ -376,7 +395,7 @@ static void *capture_main(void *arg) {
 
     int64_t interval = 1000000000LL / fps;
     int64_t next = now_ns();
-    int64_t last_emit = 0;
+    int64_t last_emit = 0, last_content = 0;
     int damaged = 1;
     while (atomic_load(&g.running)) {
         int nb = atomic_exchange(&g.new_bitrate, 0);
@@ -397,24 +416,22 @@ static void *capture_main(void *arg) {
         }
         if (!damage) damaged = 1;
         int key = atomic_exchange(&g.want_keyframe, 0);
+        int refine = atomic_exchange(&g.refine_qp, 0);
         int64_t t = now_ns();
-        if (damaged || key || t - last_emit >= IDLE_FRAME_NS) {
+        if (damaged) last_content = t;
+        if (refine && !damaged && !key && last_emit && t - last_content >= REFINE_QUIET_NS) {
+            /* enc.pic still holds the last captured picture */
+            encode_emit(&enc, t, 0, refine, RC_FRAME_STATIC);
+            last_emit = t;
+        } else if (damaged || key || t - last_emit >= IDLE_FRAME_NS) {
+            int fresh = damaged;
             if (damage) XDamageSubtract(d, damage, None, None);
             damaged = 0;
             if (XShmGetImage(d, root, img, mon.x, mon.y, AllPlanes)) {
                 const uint8_t *src[1] = {(const uint8_t *)img->data};
                 int src_stride[1] = {img->bytes_per_line};
                 sws_scale(enc.sws, src, src_stride, 0, ch, enc.pic.img.plane, enc.pic.img.i_stride);
-                enc.pic.i_type = key ? X264_TYPE_IDR : X264_TYPE_AUTO;
-                enc.pic.i_pts = enc.frame_no++;
-                x264_nal_t *nals;
-                int n_nals;
-                x264_picture_t out;
-                int size = x264_encoder_encode(enc.enc, &nals, &n_nals, &enc.pic, &out);
-                if (size > 0 && g.on_frame) {
-                    /* x264 lays out all NAL payloads of a frame contiguously */
-                    g.on_frame(g.user, nals[0].p_payload, size, t / 1000, out.b_keyframe ? 1 : 0);
-                }
+                encode_emit(&enc, t, key, 0, fresh || key ? 0 : RC_FRAME_STATIC);
                 last_emit = t;
             }
         }
@@ -546,6 +563,7 @@ int rc_capture_start(const rc_capture_config *cfg, rc_frame_fn on_frame, rc_curs
     atomic_store(&g.want_keyframe, 1);
     atomic_store(&g.new_bitrate, 0);
     atomic_store(&g.new_fps, 0);
+    atomic_store(&g.refine_qp, 0);
     atomic_store(&g.running, 1);
     if (pthread_create(&g.cap_thread, NULL, capture_main, NULL) != 0) {
         atomic_store(&g.running, 0);
@@ -583,6 +601,12 @@ void rc_encode_configure(int32_t bitrate_kbps, int32_t fps) {
 }
 
 void rc_request_keyframe(void) { atomic_store(&g.want_keyframe, 1); }
+
+int rc_encode_refine(int32_t max_qp) {
+    if (!atomic_load(&g.running)) return RC_ERR;
+    atomic_store(&g.refine_qp, max_qp < 1 ? 1 : max_qp > 51 ? 51 : max_qp);
+    return RC_OK;
+}
 
 /* ---------------- input ---------------- */
 

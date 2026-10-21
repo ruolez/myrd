@@ -59,6 +59,8 @@ void rc_encode_configure(int32_t bitrate_kbps, int32_t fps) { capture_configure(
 
 void rc_request_keyframe(void) { capture_request_keyframe(); }
 
+int rc_encode_refine(int32_t max_qp) { return capture_refine(max_qp); }
+
 const char *rc_encoder_name(void) {
     const char *n = capture_encoder_name();
     return n ? n : g_probed_encoder;

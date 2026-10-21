@@ -3,7 +3,7 @@
 
 import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
-import { contentBox, normalizePoint } from "../lib/geometry";
+import { normalizePoint } from "../lib/geometry";
 import { hidUsage, KeyState } from "../lib/hid";
 import {
   Button,
@@ -15,6 +15,7 @@ import {
 } from "../lib/input";
 import { isStreamMenuHotkey } from "../lib/stream";
 import type { RemoteSession } from "./RemoteSession";
+import { videoBox } from "./videoBox";
 
 export type LocalHotkey = "streamMenu";
 
@@ -66,9 +67,8 @@ export function useRemoteInput(
 
     let settle: ReturnType<typeof setTimeout> | null = null;
     const moveAbs = (e: PointerEvent | MouseEvent, reliable: boolean) => {
-      const v = video.current;
       const r = el.getBoundingClientRect();
-      const box = contentBox(r.width, r.height, v?.videoWidth ?? 0, v?.videoHeight ?? 0);
+      const box = videoBox(r, video.current);
       const { x, y } = normalizePoint(e.clientX - r.left, e.clientY - r.top, box);
       if (settle) clearTimeout(settle);
       settle = reliable
