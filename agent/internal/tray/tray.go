@@ -23,6 +23,7 @@ type Hooks struct {
 	OnPause      func(paused bool) // refuse new sessions while paused
 	OnQuit       func()
 	OnUninstall  func() // macOS "Uninstall RemoteAgent" menu item; nil hides it
+	OnEnroll     func() // "Enroll this device…" while not enrolled; nil hides it
 }
 
 // Run must be called from the main goroutine (Cocoa needs the main thread).

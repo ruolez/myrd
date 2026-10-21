@@ -250,6 +250,13 @@ func (a *App) adminPatchRelease(w http.ResponseWriter, r *http.Request) error {
 			a.log.Error("schedule update checks", "release", id, "err", err)
 		}
 	}
+	if rel.PublishedAt != nil && rel.RolloutPct == 100 && (before.PublishedAt == nil || before.RolloutPct < 100) {
+		if err := a.promoteInstaller(r, rel); err != nil {
+			a.log.Error("promote installer", "release", id, "err", err)
+		} else if rel, err = store.ReleaseByID(ctx, a.pool, id); err != nil {
+			return err
+		}
+	}
 	event := "release.updated"
 	if body.Published != nil && *body.Published {
 		event = "release.published"
@@ -295,24 +302,54 @@ func (a *App) adminSetReleaseInstaller(w http.ResponseWriter, r *http.Request) e
 	if err != nil {
 		return err
 	}
+	if err := a.setInstaller(r, rel, false); err != nil {
+		return err
+	}
+	if rel, err = store.ReleaseByID(ctx, a.pool, id); err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"release": rel})
+	return nil
+}
+
+func (a *App) setInstaller(r *http.Request, rel *store.Release, auto bool) error {
 	osName := downloadOS(rel.OS)
 	if err := linkOrCopy(a.releasePath(rel), a.downloadPath(osName)); errors.Is(err, os.ErrNotExist) {
 		return errf(http.StatusNotFound, "not_found", "the release file is missing")
 	} else if err != nil {
 		return err
 	}
-	u := userFrom(r)
-	if _, err := store.UpsertAgentDownload(ctx, a.pool, store.AgentDownload{OS: osName, Filename: rel.Filename, Size: rel.Size,
-		SHA256: rel.SHA256, ReleaseID: &rel.ID}, u.ID); err != nil {
+	if _, err := store.UpsertAgentDownload(r.Context(), a.pool, store.AgentDownload{OS: osName, Filename: rel.Filename, Size: rel.Size,
+		SHA256: rel.SHA256, ReleaseID: &rel.ID}, userFrom(r).ID); err != nil {
 		return err
 	}
 	a.adminAudit(r, store.Audit{Event: "release.installer_set", Meta: map[string]any{"release_id": rel.ID, "version": rel.Version,
-		"os": osName, "filename": rel.Filename}})
-	if rel, err = store.ReleaseByID(ctx, a.pool, id); err != nil {
-		return err
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"release": rel})
+		"os": osName, "filename": rel.Filename, "auto": auto}})
 	return nil
+}
+
+// promoteInstaller makes a release that just reached every device the
+// Add-device download, unless that download is already a release at least as
+// new. Only installers that run on every machine of the OS qualify.
+func (a *App) promoteInstaller(r *http.Request, rel *store.Release) error {
+	if (rel.OS != "darwin" || rel.Arch != "universal") && (rel.OS != "windows" || rel.Arch != "amd64") {
+		return nil
+	}
+	cur, err := store.AgentDownloadByOS(r.Context(), a.pool, downloadOS(rel.OS))
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+	case err != nil:
+		return err
+	case cur.ReleaseID != nil:
+		linked, err := store.ReleaseByID(r.Context(), a.pool, *cur.ReleaseID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+		if err == nil && proto.CompareVersions(linked.Version, rel.Version) >= 0 {
+			return nil
+		}
+	}
+	return a.setInstaller(r, rel, true)
 }
 
 // linkOrCopy atomically replaces dst with src: a hard link when both are on

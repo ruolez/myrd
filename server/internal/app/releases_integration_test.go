@@ -224,6 +224,71 @@ func TestReleaseUpload(t *testing.T) {
 	}
 }
 
+func TestPublishingPromotesInstaller(t *testing.T) {
+	e := newEnv(t)
+	admin := e.login(adminEmail, adminPass)
+	anon := e.client()
+	if resp, _ := e.raw(admin, "PUT", "/v1/admin/downloads/macos?filename=RemoteAgent-0.3.0.pkg", []byte("stale upload"), "Origin", testOrigin); resp.StatusCode != 200 {
+		t.Fatalf("upload: %d", resp.StatusCode)
+	}
+	installer := func(osName string) string {
+		t.Helper()
+		resp, body := e.raw(anon, "GET", "/v1/downloads/"+osName, nil)
+		if resp.StatusCode != 200 {
+			return ""
+		}
+		return string(body)
+	}
+	rel := func(version, osName, arch string) string { return "installer " + version + " " + osName + " " + arch }
+
+	steps := []struct {
+		name               string
+		publish            func()
+		wantMacOS, wantWin string
+	}{
+		{"a full release replaces an uploaded installer",
+			func() { e.release(admin, "0.3.8", "darwin", "universal", 100, true) },
+			rel("0.3.8", "darwin", "universal"), ""},
+		{"an older release keeps the newer installer",
+			func() { e.release(admin, "0.3.7", "darwin", "universal", 100, true) },
+			rel("0.3.8", "darwin", "universal"), ""},
+		{"a single-arch macOS release is not every Mac's installer",
+			func() { e.release(admin, "0.3.9", "darwin", "arm64", 100, true) },
+			rel("0.3.8", "darwin", "universal"), ""},
+		{"an unpublished release changes nothing",
+			func() { e.release(admin, "0.4.1", "darwin", "universal", 100, false) },
+			rel("0.3.8", "darwin", "universal"), ""},
+		{"a staged rollout waits",
+			func() { e.release(admin, "0.4.0", "darwin", "universal", 25, true) },
+			rel("0.3.8", "darwin", "universal"), ""},
+		{"Windows gets its own",
+			func() { e.release(admin, "0.3.8", "windows", "amd64", 100, true) },
+			rel("0.3.8", "darwin", "universal"), rel("0.3.8", "windows", "amd64")},
+	}
+	for _, s := range steps {
+		s.publish()
+		if got := [2]string{installer("macos"), installer("windows")}; got != [2]string{s.wantMacOS, s.wantWin} {
+			t.Fatalf("%s: installers %q, want %q", s.name, got, [2]string{s.wantMacOS, s.wantWin})
+		}
+	}
+
+	var list struct{ Items []store.Release }
+	e.call(admin, "GET", "/v1/admin/releases", nil, &list)
+	for _, r := range list.Items {
+		if r.Version == "0.4.0" {
+			if st := e.call(admin, "PATCH", "/v1/admin/releases/"+r.ID, map[string]any{"rollout_pct": 100}, nil); st != 200 {
+				t.Fatalf("rollout: %d", st)
+			}
+		}
+	}
+	if got := installer("macos"); got != rel("0.4.0", "darwin", "universal") {
+		t.Fatalf("after full rollout: %q", got)
+	}
+	if n := e.eventCount("release.installer_set"); n != 3 {
+		t.Fatalf("release.installer_set audited %d times, want 3", n)
+	}
+}
+
 func TestAgentUpdateSelection(t *testing.T) {
 	e := newEnv(t)
 	admin := e.login(adminEmail, adminPass)

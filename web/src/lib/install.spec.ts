@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { installSnippet } from "./install";
+import { installSnippet, macEnrollSnippet } from "./install";
 import type { InstallInput } from "./install";
 
 const token = "AB12-CD34";
@@ -83,5 +83,22 @@ describe("installSnippet", () => {
     expect(
       installSnippet({ ...base, target: "windows", downloadUrl: "https://x/it's.msi" }),
     ).toContain("-Uri 'https://x/it''s.msi'");
+  });
+});
+
+describe("macEnrollSnippet", () => {
+  test("enrolls the installed agent as the signed-in user, then restarts it", () => {
+    expect(macEnrollSnippet(token, serverUrl)).toBe(
+      [
+        `/Applications/RemoteAgent.app/Contents/MacOS/remote-agent enroll --server ${serverUrl} --token ${token}`,
+        "launchctl kickstart -k gui/$(id -u)/com.remotectl.agent",
+      ].join("\n"),
+    );
+  });
+
+  test("a server URL with shell metacharacters is quoted", () => {
+    expect(macEnrollSnippet(token, "https://my rd.example.com")).toContain(
+      "--server 'https://my rd.example.com' --token",
+    );
   });
 });

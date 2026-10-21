@@ -53,6 +53,11 @@ func onReady(h Hooks, ready func(update func(State))) {
 	updating := systray.AddMenuItem("", "")
 	updating.Disable()
 	updating.Hide()
+	var enroll *systray.MenuItem
+	if h.OnEnroll != nil {
+		enroll = systray.AddMenuItem("Enroll this device…", "Enter the enrollment token from the web app")
+		enroll.Hide()
+	}
 	systray.AddSeparator()
 	pause := systray.AddMenuItemCheckbox("Pause new sessions", "Refuse incoming sessions until unpaused", false)
 	end := systray.AddMenuItem("End session", "Disconnect the controlling browser now")
@@ -123,6 +128,13 @@ func onReady(h Hooks, ready func(update func(State))) {
 		}
 		systray.SetTooltip(truncTip(tip))
 
+		if enroll != nil {
+			if s.Enrolled {
+				enroll.Hide()
+			} else {
+				enroll.Show()
+			}
+		}
 		if s.InSession && s.Peer != "" {
 			peer.SetTitle("Controlled by " + s.Peer)
 			peer.Show()
@@ -142,9 +154,12 @@ func onReady(h Hooks, ready func(update func(State))) {
 	}
 
 	go func() {
-		var uninstallCh chan struct{}
+		var uninstallCh, enrollCh chan struct{}
 		if uninstall != nil {
 			uninstallCh = uninstall.ClickedCh
+		}
+		if enroll != nil {
+			enrollCh = enroll.ClickedCh
 		}
 		for {
 			select {
@@ -166,6 +181,8 @@ func onReady(h Hooks, ready func(update func(State))) {
 				}
 			case <-uninstallCh:
 				h.OnUninstall()
+			case <-enrollCh:
+				h.OnEnroll()
 			case <-quit.ClickedCh:
 				if h.OnQuit != nil {
 					h.OnQuit()

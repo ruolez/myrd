@@ -19,6 +19,7 @@ func PromptText(title, message, button string, timeout time.Duration) (text stri
 	defer cancel()
 	script := []string{
 		"on run argv",
+		"activate", // in front of the installer and System Settings
 		`set r to display dialog (item 2 of argv) default answer "" with title (item 1 of argv) ` +
 			`buttons {"Cancel", (item 3 of argv)} default button 2 cancel button 1 with icon note`,
 		"return text returned of r",

@@ -37,6 +37,19 @@ function macSnippet(i: InstallInput): string[] {
   ];
 }
 
+/**
+ * Enrolls a Mac whose agent is installed but not enrolled (the token dialog
+ * was missed). Run as the signed-in user, not sudo: the agent keeps its state
+ * in that user's Library. The restart is for agents before 0.3.9, which do
+ * not notice an enrollment made from the command line.
+ */
+export function macEnrollSnippet(token: string, serverUrl: string): string {
+  return [
+    `/Applications/RemoteAgent.app/Contents/MacOS/remote-agent enroll --server ${sh(serverUrl)} --token ${token}`,
+    "launchctl kickstart -k gui/$(id -u)/com.remotectl.agent",
+  ].join("\n");
+}
+
 function windowsSnippet(i: InstallInput): string[] {
   const file = i.filename ?? "RemoteAgent.msi";
   const lines = [

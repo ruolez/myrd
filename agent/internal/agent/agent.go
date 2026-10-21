@@ -73,7 +73,13 @@ type Agent struct {
 	autoAccept atomic.Bool
 	paused     atomic.Bool
 	installing atomic.Bool // refuse new sessions while the OS installer runs (BeforeInstall)
+	prompting  atomic.Bool // the enrollment token dialog is open
+	runCtx     context.Context
 }
+
+// enrollPoll is how often an unenrolled agent looks for an enrollment made
+// from the command line.
+var enrollPoll = 2 * time.Second
 
 func New(cfg Config) (*Agent, error) {
 	if cfg.Log == nil {
@@ -205,6 +211,23 @@ func (a *Agent) TrayHooks(quit func()) tray.Hooks {
 		OnPause:      a.SetPaused,
 		OnQuit:       quit,
 		OnUninstall:  uninstallAction,
+		OnEnroll:     a.enrollAction(),
+	}
+}
+
+// enrollAction reopens the token dialog from the tray ("Enroll this
+// device…"); nil where there is no native dialog.
+func (a *Agent) enrollAction() func() {
+	if promptEnrollToken == nil {
+		return nil
+	}
+	return func() {
+		a.mu.Lock()
+		ctx := a.runCtx
+		a.mu.Unlock()
+		if ctx != nil && !a.State().Enrolled() {
+			go a.promptForToken(ctx)
+		}
 	}
 }
 
@@ -340,10 +363,20 @@ func (a *Agent) syncPins() {
 // Run blocks until ctx ends: serves the console, waits for enrollment, then
 // keeps the control-plane connection up.
 func (a *Agent) Run(ctx context.Context) error {
+	a.mu.Lock()
+	a.runCtx = ctx
+	a.mu.Unlock()
 	if err := a.cfg.Backend.Init(); err != nil {
 		a.log.Error("native backend init failed; sessions will be refused", "backend", a.cfg.Backend.Name(), "err", err)
 	}
-	if requestPermissionsOnStart && a.cfg.Capabilities == nil {
+	// The OS permission dialogs cover the token dialog; an unenrolled agent
+	// asks for them once it is enrolled.
+	askedPermissions := false
+	askPermissions := func() {
+		if askedPermissions || !requestPermissionsOnStart || a.cfg.Capabilities != nil {
+			return
+		}
+		askedPermissions = true
 		p := a.cfg.Backend.Permissions()
 		if !p.Screen {
 			a.cfg.Backend.RequestPermission(true)
@@ -351,6 +384,9 @@ func (a *Agent) Run(ctx context.Context) error {
 		if !p.Input {
 			a.cfg.Backend.RequestPermission(false)
 		}
+	}
+	if a.State().Enrolled() {
+		askPermissions()
 	}
 	if a.cfg.Settings.ConsoleAddr != "" {
 		a.console = devconsole.New(devconsole.Options{Addr: a.cfg.Settings.ConsoleAddr, Log: a.log, Pins: a.pins,
@@ -375,13 +411,12 @@ func (a *Agent) Run(ctx context.Context) error {
 				if promptEnrollToken != nil {
 					go a.promptForToken(ctx)
 				}
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-a.enrolledCh():
+				if err := a.awaitEnrollment(ctx); err != nil {
+					return err
 				}
 			}
 		}
+		askPermissions()
 		err := a.runConnected(ctx)
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -406,6 +441,39 @@ func (a *Agent) Run(ctx context.Context) error {
 		a.pushTray()
 	}
 	return ctx.Err()
+}
+
+// awaitEnrollment returns once the agent is enrolled: through Enroll, or by
+// `remote-agent enroll` run in a terminal while this agent waits, which
+// writes the same state file.
+func (a *Agent) awaitEnrollment(ctx context.Context) error {
+	t := time.NewTicker(enrollPoll)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-a.enrolledCh():
+			return nil
+		case <-t.C:
+			if st, err := config.Load(a.cfg.Settings.DataDir); err == nil && st.Enrolled() {
+				a.adoptEnrollment(st)
+			}
+		}
+	}
+}
+
+func (a *Agent) adoptEnrollment(st config.State) {
+	a.mu.Lock()
+	if a.state.Enrolled() {
+		a.mu.Unlock()
+		return
+	}
+	a.state = st
+	close(a.enrolled)
+	a.mu.Unlock()
+	a.log.Info("enrolled from the command line", "device_id", st.DeviceID, "name", st.Name)
+	a.pushTray()
 }
 
 func (a *Agent) enrolledCh() chan struct{} {
@@ -553,6 +621,10 @@ func (a *Agent) watchPermissions(ctx context.Context) {
 // promptForToken shows the native first-run dialog until an enrollment
 // succeeds, the user cancels, or the agent enrolls another way.
 func (a *Agent) promptForToken(ctx context.Context) {
+	if !a.prompting.CompareAndSwap(false, true) {
+		return
+	}
+	defer a.prompting.Store(false)
 	var lastErr error
 	for ctx.Err() == nil && !a.State().Enrolled() {
 		tok, ok := promptEnrollToken(ctx, enrollPromptMessage(a.cfg.Settings.ServerURL, lastErr))

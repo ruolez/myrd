@@ -5,7 +5,7 @@ import { useAuth } from "../app/auth";
 import { Icon, OsIcon } from "../components/icons";
 import { CopyButton, ErrorBox, PageHeader, Spinner } from "../components/ui";
 import { bytes } from "../lib/format";
-import { installSnippet } from "../lib/install";
+import { installSnippet, macEnrollSnippet } from "../lib/install";
 import { signaling } from "../lib/signaling";
 import { useAsync, useNow } from "../lib/hooks";
 
@@ -211,7 +211,11 @@ export function AddDevice() {
                     On the Mac you are adding, download and run the macOS installer
                     {link?.file ? ` (${link.file.filename})` : ""}.
                   </li>
-                  <li>On first launch, enter the token above when the agent asks for it.</li>
+                  <li>
+                    On first launch, enter the token above when the agent asks for it. Missed the
+                    dialog? Choose <strong>Enroll this device…</strong> from the agent's menu bar
+                    icon, or run the command at the bottom of this page.
+                  </li>
                   <li>
                     Grant Screen Recording and Accessibility when prompted; the agent opens the
                     exact System Settings pane.
@@ -288,6 +292,18 @@ export function AddDevice() {
                 </div>
                 <Snippet code={snippet} />
               </div>
+              {target === "darwin" && (
+                <div>
+                  <div className="mb-2 text-sm font-medium">
+                    Already installed but not in your devices
+                  </div>
+                  <p className="mb-2 text-xs text-muted">
+                    In Terminal on that Mac, as the signed-in user (not sudo). The agent connects
+                    within seconds.
+                  </p>
+                  <Snippet code={macEnrollSnippet(t, serverUrl)} />
+                </div>
+              )}
             </>
           )}
         </section>

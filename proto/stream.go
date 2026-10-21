@@ -43,7 +43,7 @@ type StreamRequest struct {
 	Res        *string `json:"res"`
 	MaxKbps    *int    `json:"max_kbps"`
 	Background bool    `json:"background"`
-	Wallpaper  bool    `json:"wallpaper"` // show the desktop wallpaper; absent = hidden
+	Wallpaper  bool    `json:"wallpaper"`       // show the desktop wallpaper; absent = hidden
 	Color      string  `json:"color,omitempty"` // ColorStandard (also absent) or ColorFull
 	// View is the viewer's video area in device pixels. Absent: the viewer
 	// shows the stream at its own size (1:1) or predates the field.
