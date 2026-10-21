@@ -31,6 +31,10 @@ const (
 // follows it (ProfileIDC).
 var h264Profiles = []string{"42e01f", "4d001f", "640c1f", "64001f"}
 
+// Full color is VP9 profile 1 (4:4:4) on its own payload type, negotiated
+// next to H.264 and switched to mid-session.
+const fullColorPT = 110
+
 type sess struct {
 	m          *Manager
 	id         string
@@ -55,6 +59,7 @@ type sess struct {
 	started      bool // media pipeline started (first connect)
 
 	media *mediaPipe
+	fec   *fecControl
 	in    *inputState
 	files *files.Service // set when the browser opens the file channel
 }
@@ -62,7 +67,7 @@ type sess struct {
 func newSess(m *Manager, o proto.SessionOffer) *sess {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &sess{m: m, id: o.SessionID, log: m.o.Log.With("session", o.SessionID), ctx: ctx, cancel: cancel,
-		since: time.Now(), state: stateConnecting, done: make(chan struct{})}
+		since: time.Now(), state: stateConnecting, done: make(chan struct{}), fec: &fecControl{}}
 	if o.ClientKey != nil {
 		s.clientKey = *o.ClientKey
 	}
@@ -187,6 +192,13 @@ func (s *sess) newAPI(estimators chan<- cc.BandwidthEstimator) (*webrtc.API, err
 			return nil, err
 		}
 	}
+	if err := me.RegisterCodec(webrtc.RTPCodecParameters{
+		RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP9, ClockRate: 90000,
+			SDPFmtpLine: "profile-id=1", RTCPFeedback: fb},
+		PayloadType: fullColorPT,
+	}, webrtc.RTPCodecTypeVideo); err != nil {
+		return nil, err
+	}
 	reg := &interceptor.Registry{}
 	ccf, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
 		return gcc.NewSendSideBWE(
@@ -206,7 +218,7 @@ func (s *sess) newAPI(estimators chan<- cc.BandwidthEstimator) (*webrtc.API, err
 		}
 	})
 	reg.Add(ccf)
-	if err := webrtc.ConfigureTWCCHeaderExtensionSender(me, reg); err != nil {
+	if err := configureFEC(me, reg, s.fec); err != nil {
 		return nil, err
 	}
 	if err := webrtc.RegisterDefaultInterceptors(me, reg); err != nil {

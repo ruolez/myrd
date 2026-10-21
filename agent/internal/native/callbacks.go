@@ -25,7 +25,8 @@ func sinkFor(user unsafe.Pointer) platform.CaptureSink {
 //export rcGoFrame
 func rcGoFrame(user unsafe.Pointer, data *C.uint8_t, n C.int32_t, pts C.int64_t, flags C.int32_t) {
 	if s := sinkFor(user); s != nil && n > 0 {
-		s.Frame(C.GoBytes(unsafe.Pointer(data), C.int(n)), int64(pts), flags&C.RC_FRAME_KEY != 0, flags&C.RC_FRAME_STATIC != 0)
+		s.Frame(C.GoBytes(unsafe.Pointer(data), C.int(n)), int64(pts),
+			platform.FrameFlags(flags&(C.RC_FRAME_KEY|C.RC_FRAME_STATIC|C.RC_FRAME_MINOR)))
 	}
 }
 

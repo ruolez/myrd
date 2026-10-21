@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds native/macos/build/librcnative.a — the macOS implementation of
-# native/include/rc_native.h (Objective-C, ARC).
+# native/include/rc_native.h (Objective-C, ARC), with the shared full-color
+# encoder (native/common/rc_vpx.c) and a static libvpx merged in.
 #   ./build.sh             arm64 (host)
 #   ARCHS="arm64 x86_64"   or UNIVERSAL=1 → universal (lipo)
 #   DEBUG=1                -O0 -g and RCLOG to stderr
@@ -14,20 +15,26 @@ OPT=(-O2)
 [[ "${DEBUG:-0}" == "1" ]] && OPT=(-O0 -g -DRC_DEBUG=1)
 
 SRCS=(rc_display.m rc_capture.m rc_input.m rc_ui.m)
+COMMON="$HERE/../common"
 mkdir -p "$OUT"
 LIBS=()
 for arch in $ARCHS; do
+  VPX="$("$COMMON/build-libvpx.sh" "darwin-$arch" | tail -1)"
   OBJDIR="$OUT/obj-$arch"
   mkdir -p "$OBJDIR"
   OBJS=()
+  INC=(-I"$HERE/../include" -I"$HERE/src" -I"$COMMON" -I"$VPX/include")
   for s in "${SRCS[@]}"; do
     o="$OBJDIR/${s%.m}.o"
     xcrun clang -c "$HERE/src/$s" -o "$o" -arch "$arch" -mmacosx-version-min="$MIN_MACOS" \
       -fobjc-arc -fmodules -Wall -Wextra -Wno-unused-parameter -Werror=implicit-function-declaration \
-      "${OPT[@]}" -I"$HERE/../include" -I"$HERE/src"
+      "${OPT[@]}" "${INC[@]}"
     OBJS+=("$o")
   done
-  xcrun libtool -static -o "$OUT/librcnative-$arch.a" "${OBJS[@]}" 2>/dev/null
+  xcrun clang -c "$COMMON/rc_vpx.c" -o "$OBJDIR/rc_vpx.o" -arch "$arch" -mmacosx-version-min="$MIN_MACOS" \
+    -std=gnu11 -Wall -Wextra -Wno-unused-parameter "${OPT[@]}" "${INC[@]}"
+  OBJS+=("$OBJDIR/rc_vpx.o")
+  xcrun libtool -static -o "$OUT/librcnative-$arch.a" "${OBJS[@]}" "$VPX/lib/libvpx.a" 2>/dev/null
   LIBS+=("$OUT/librcnative-$arch.a")
 done
 if [[ ${#LIBS[@]} -gt 1 ]]; then

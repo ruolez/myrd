@@ -1,13 +1,21 @@
 // Capture thread: grabs desktop frames (Windows.Graphics.Capture on the user
 // desktop when built with RC_HAVE_WGC, DXGI Desktop Duplication otherwise and
 // always on secure desktops), converts BGRA → NV12 with the D3D11 video
-// processor, and feeds the MF encoder. One capture at a time.
+// processor, and feeds the MF encoder. Full color (RC_CODEC_VP9) scales to
+// BGRA instead, reads it back and encodes with rc_vpx on this thread. One
+// capture at a time.
 #include "rc_win.h"
+
+#ifdef RC_HAVE_VPX
+#include "rc_vpx.h"
+#endif
 
 #include <d3d10.h>
 #include <dxgi1_5.h>
 #include <mfapi.h>
 #include <mmsystem.h>
+
+#include <vector>
 
 #ifdef RC_HAVE_WGC
 #include <winrt/Windows.Foundation.h>
@@ -27,8 +35,9 @@ public:
     virtual ~Source() {}
     // S_OK with *frame (AddRef'd) when a frame is available; S_FALSE on
     // timeout; a failure HRESULT when the source must be re-opened.
-    // *fresh=false means only the pointer moved (no new pixels).
-    virtual HRESULT next(UINT timeout_ms, ID3D11Texture2D **frame, bool *fresh) = 0;
+    // *fresh=false means only the pointer moved (no new pixels). *dirty is
+    // the fraction of the frame that changed, -1 when the source cannot tell.
+    virtual HRESULT next(UINT timeout_ms, ID3D11Texture2D **frame, bool *fresh, float *dirty) = 0;
     // Releases the frame returned by next().
     virtual void done() = 0;
     virtual const char *kind() const = 0;
@@ -43,9 +52,10 @@ public:
         out_->Release();
     }
 
-    HRESULT next(UINT timeout_ms, ID3D11Texture2D **frame, bool *fresh) override {
+    HRESULT next(UINT timeout_ms, ID3D11Texture2D **frame, bool *fresh, float *dirty) override {
         *frame = nullptr;
         *fresh = false;
+        *dirty = -1;
         done();
         if (!dup_) {
             HRESULT hr = open();
@@ -64,8 +74,35 @@ public:
         // The first frame after (re)creating the duplication carries the whole
         // desktop but may report LastPresentTime == 0 on a static screen.
         *fresh = first_ || info.LastPresentTime.QuadPart != 0;
+        if (*fresh && !first_) *dirty = changed_fraction(info.TotalMetadataBufferSize);
         first_ = false;
         return res->QueryInterface(__uuidof(ID3D11Texture2D), (void **)frame);
+    }
+
+    // Dirty and move-destination rects over the output size; -1 unknown.
+    float changed_fraction(UINT meta_bytes) {
+        DXGI_OUTDUPL_DESC dd;
+        dup_->GetDesc(&dd);
+        double total = (double)dd.ModeDesc.Width * dd.ModeDesc.Height;
+        if (meta_bytes == 0 || total <= 0) return -1;
+        if (meta_.size() < meta_bytes) meta_.resize(meta_bytes);
+        double area = 0;
+        UINT got = 0;
+        if (SUCCEEDED(dup_->GetFrameMoveRects(meta_bytes, (DXGI_OUTDUPL_MOVE_RECT *)meta_.data(), &got))) {
+            const DXGI_OUTDUPL_MOVE_RECT *m = (const DXGI_OUTDUPL_MOVE_RECT *)meta_.data();
+            for (UINT i = 0; i < got / sizeof(*m); i++)
+                area += (double)(m[i].DestinationRect.right - m[i].DestinationRect.left) *
+                        (m[i].DestinationRect.bottom - m[i].DestinationRect.top);
+        } else {
+            return -1;
+        }
+        if (SUCCEEDED(dup_->GetFrameDirtyRects(meta_bytes, (RECT *)meta_.data(), &got))) {
+            const RECT *r = (const RECT *)meta_.data();
+            for (UINT i = 0; i < got / sizeof(*r); i++) area += (double)(r[i].right - r[i].left) * (r[i].bottom - r[i].top);
+        } else {
+            return -1;
+        }
+        return (float)(area < total ? area / total : 1.0);
     }
 
     void done() override {
@@ -99,6 +136,7 @@ private:
     Com<IDXGIOutputDuplication> dup_;
     bool holding_ = false;
     bool first_ = false;
+    std::vector<uint8_t> meta_; // move + dirty rects of the held frame
 };
 
 #ifdef RC_HAVE_WGC
@@ -148,9 +186,10 @@ public:
         }
     }
 
-    HRESULT next(UINT timeout_ms, ID3D11Texture2D **frame, bool *fresh) override {
+    HRESULT next(UINT timeout_ms, ID3D11Texture2D **frame, bool *fresh, float *dirty) override {
         *frame = nullptr;
         *fresh = false;
+        *dirty = -1;
         done();
         if (WaitForSingleObject(event_, timeout_ms) == WAIT_TIMEOUT) return S_FALSE;
         try {
@@ -240,6 +279,11 @@ struct Capture {
     Com<ID3D11VideoProcessorOutputView> ring_view[kRing];
     Encoder *enc = nullptr;
     Source *src = nullptr;
+    bool full_color = false; // cfg.codec == RC_CODEC_VP9: ring is BGRA, read back through staging
+#ifdef RC_HAVE_VPX
+    rc_vpx *vpx = nullptr;
+#endif
+    Com<ID3D11Texture2D> staging;
 };
 
 static Lock g_cap_lock;
@@ -325,12 +369,18 @@ static bool setup_processor(Capture *c, UINT w, UINT h, DXGI_FORMAT fmt) {
         nd.Height = c->dst_h;
         nd.MipLevels = 1;
         nd.ArraySize = 1;
-        nd.Format = DXGI_FORMAT_NV12;
+        nd.Format = c->full_color ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_NV12;
         nd.SampleDesc.Count = 1;
         nd.Usage = D3D11_USAGE_DEFAULT;
         nd.BindFlags = D3D11_BIND_RENDER_TARGET;
         for (int i = 0; i < kRing; i++)
             if (FAILED(c->dev->CreateTexture2D(&nd, nullptr, c->ring[i].put()))) return false;
+        if (c->full_color) {
+            nd.Usage = D3D11_USAGE_STAGING;
+            nd.BindFlags = 0;
+            nd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            if (FAILED(c->dev->CreateTexture2D(&nd, nullptr, c->staging.put()))) return false;
+        }
     }
     D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC ovd = {};
     ovd.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
@@ -343,8 +393,12 @@ static bool setup_processor(Capture *c, UINT w, UINT h, DXGI_FORMAT fmt) {
     in.RGB_Range = 0; // full range RGB desktop
     c->vctx->VideoProcessorSetStreamColorSpace(c->vp.get(), 0, &in);
     D3D11_VIDEO_PROCESSOR_COLOR_SPACE out = {};
-    out.YCbCr_Matrix = 1; // BT.709
-    out.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
+    if (c->full_color) {
+        out.RGB_Range = 0; // a plain scaler: full range BGRA in and out
+    } else {
+        out.YCbCr_Matrix = 1; // BT.709
+        out.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
+    }
     c->vctx->VideoProcessorSetOutputColorSpace(c->vp.get(), &out);
     c->vctx->VideoProcessorSetStreamFrameFormat(c->vp.get(), 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
     c->vctx->VideoProcessorSetStreamAutoProcessingMode(c->vp.get(), 0, FALSE);
@@ -362,6 +416,19 @@ static bool convert(Capture *c, int idx) {
     return SUCCEEDED(c->vctx->VideoProcessorBlt(c->vp.get(), c->ring_view[idx].get(), 0, 1, &st));
 }
 
+#ifdef RC_HAVE_VPX
+// Reads ring[idx] back and encodes it as full color; false when the frame
+// could not be read.
+static bool encode_full_color(Capture *c, int idx, int64_t now, bool key, int max_qp, int32_t flags) {
+    c->ctx->CopyResource(c->staging.get(), c->ring[idx].get());
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (FAILED(c->ctx->Map(c->staging.get(), 0, D3D11_MAP_READ, 0, &m))) return false;
+    rc_vpx_from_bgra(c->vpx, (const uint8_t *)m.pData, (int)m.RowPitch);
+    c->ctx->Unmap(c->staging.get(), 0);
+    return rc_vpx_encode(c->vpx, now, key, max_qp, flags, c->on_frame, c->user) == RC_OK;
+}
+#endif
+
 static Source *open_source(Capture *c) {
 #ifdef RC_HAVE_WGC
     if (input_desktop_is_default()) {
@@ -377,18 +444,26 @@ static void run_loop(Capture *c) {
     int64_t interval = 1000000 / (c->fps > 0 ? c->fps : 30);
     int64_t last_encode = 0, last_content = 0;
     int64_t last_desktop_check = now_us();
-    LONG applied_bitrate = c->bitrate_kbps;
+    LONG applied_bitrate = c->bitrate_kbps, applied_fps = c->fps;
     bool dirty = false, have = false, sent_any = false;
+    float changed = 0; // fraction of the frame changed since the last encode, -1 unknown
     int idx = 0;
     int failures = 0;
 
     while (!c->stop) {
         LONG br = c->bitrate_kbps;
+        LONG f = c->fps;
         if (br != applied_bitrate && c->enc) {
             encoder_set_bitrate(c->enc, br);
             applied_bitrate = br;
         }
-        LONG f = c->fps;
+#ifdef RC_HAVE_VPX
+        if (c->vpx && (br != applied_bitrate || f != applied_fps)) {
+            rc_vpx_rate(c->vpx, br, f);
+            applied_bitrate = br;
+            applied_fps = f;
+        }
+#endif
         interval = 1000000 / (f > 0 ? f : 30);
 
         int64_t now = now_us();
@@ -397,7 +472,8 @@ static void run_loop(Capture *c) {
 
         ID3D11Texture2D *frame = nullptr;
         bool fresh = false;
-        HRESULT hr = c->src->next((UINT)(wait_us / 1000), &frame, &fresh);
+        float part = -1;
+        HRESULT hr = c->src->next((UINT)(wait_us / 1000), &frame, &fresh, &part);
         if (hr == S_OK && frame) {
             failures = 0;
             if (fresh) {
@@ -413,6 +489,7 @@ static void run_loop(Capture *c) {
                     }
                 }
                 c->ctx->CopyResource(c->last.get(), frame);
+                changed = !dirty ? part : (changed < 0 || part < 0) ? -1 : changed + part;
                 dirty = true;
                 have = true;
                 last_content = now_us();
@@ -455,7 +532,14 @@ static void run_loop(Capture *c) {
             continue;
         }
         bool fatal = false;
-        bool accepted = encoder_encode(c->enc, c->ring[idx].get(), now, key || !sent_any, &fatal, (int)refine);
+        bool accepted;
+        int32_t flags = refine ? RC_FRAME_STATIC : (dirty && changed >= 0 && changed <= 0.02f) ? RC_FRAME_MINOR : 0;
+#ifdef RC_HAVE_VPX
+        if (c->vpx)
+            accepted = encode_full_color(c, idx, now, key || !sent_any, (int)refine, flags);
+        else
+#endif
+            accepted = encoder_encode(c->enc, c->ring[idx].get(), now, key || !sent_any, &fatal, (int)refine, flags);
         if (accepted) {
             idx = (idx + 1) % kRing;
             last_encode = now;
@@ -497,16 +581,32 @@ static DWORD WINAPI capture_thread(void *p) {
             logf("capture: video processor unavailable");
             break;
         }
-        EncoderConfig ec = {c->dst_w, c->dst_h, c->cfg.fps, c->cfg.bitrate_kbps, c->cfg.keyframe_interval_ms,
-                              c->cfg.profile_idc};
-        c->enc = encoder_create(c->dev.get(), ec, true, c->on_frame, c->user);
-        if (!c->enc) {
-            logf("capture: no H.264 encoder");
-            result = have_mf ? RC_ERR : RC_ERR_UNSUPPORTED;
-            break;
+        if (c->full_color) {
+#ifdef RC_HAVE_VPX
+            c->vpx = rc_vpx_open((int)c->dst_w, (int)c->dst_h, c->cfg.fps, c->cfg.bitrate_kbps);
+            bool ok = c->vpx != nullptr;
+#else
+            bool ok = false;
+#endif
+            if (!ok) {
+                logf("capture: no full-color encoder");
+                result = RC_ERR_UNSUPPORTED;
+                break;
+            }
+            c->encoder = "libvpx-vp9";
+            InterlockedExchange(&c->refine_ok, 1);
+        } else {
+            EncoderConfig ec = {c->dst_w, c->dst_h, c->cfg.fps, c->cfg.bitrate_kbps, c->cfg.keyframe_interval_ms,
+                                c->cfg.profile_idc};
+            c->enc = encoder_create(c->dev.get(), ec, true, c->on_frame, c->user);
+            if (!c->enc) {
+                logf("capture: no H.264 encoder");
+                result = have_mf ? RC_ERR : RC_ERR_UNSUPPORTED;
+                break;
+            }
+            c->encoder = encoder_name(c->enc);
+            InterlockedExchange(&c->refine_ok, encoder_can_refine(c->enc) ? 1 : 0);
         }
-        c->encoder = encoder_name(c->enc);
-        InterlockedExchange(&c->refine_ok, encoder_can_refine(c->enc) ? 1 : 0);
         c->src = open_source(c);
         result = RC_OK;
     } while (0);
@@ -524,6 +624,11 @@ static DWORD WINAPI capture_thread(void *p) {
     c->src = nullptr;
     if (c->enc) encoder_destroy(c->enc);
     c->enc = nullptr;
+#ifdef RC_HAVE_VPX
+    rc_vpx_close(c->vpx);
+    c->vpx = nullptr;
+#endif
+    c->staging.reset();
     for (int i = 0; i < kRing; i++) {
         c->ring_view[i].reset();
         c->ring[i].reset();
@@ -552,6 +657,7 @@ int capture_start(const rc_capture_config *cfg, rc_frame_fn on_frame, rc_cursor_
 
     Capture *c = new Capture();
     c->cfg = *cfg;
+    c->full_color = cfg->codec == RC_CODEC_VP9;
     if (c->cfg.fps <= 0 || c->cfg.fps > 60) c->cfg.fps = c->cfg.fps <= 0 ? 30 : 60;
     if (c->cfg.bitrate_kbps <= 0) c->cfg.bitrate_kbps = 4000;
     if (c->cfg.keyframe_interval_ms <= 0) c->cfg.keyframe_interval_ms = 2000;

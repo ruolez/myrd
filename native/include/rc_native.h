@@ -11,13 +11,18 @@
  * Rules:
  *  - Go never touches raw pixels. Capture + encode happen here; the frame
  *    callback delivers one complete H.264 access unit in Annex-B form
- *    (start codes 00 00 00 01). Keyframes MUST carry SPS+PPS in-band.
+ *    (start codes 00 00 00 01), or with RC_CODEC_VP9 one VP9 frame.
+ *    Keyframes MUST carry SPS+PPS in-band.
  *  - H.264 at most rc_capture_config.profile_idc (constrained baseline,
  *    main or constrained high), no B-frames, no frame reordering,
  *    low-latency/real-time mode. Keyframes come from rc_request_keyframe;
  *    keyframe_interval_ms only bounds a lost request.
- *  - A frame without new screen content (a refinement pass, an idle repeat)
- *    carries RC_FRAME_STATIC; the agent restarts refinement on any other.
+ *  - RC_CODEC_VP9 is full color: VP9 profile 1 (4:4:4) in software through
+ *    native/common/rc_vpx.h, the same on every backend.
+ *  - A frame without new screen content (a refinement pass, an idle repeat,
+ *    a capture the OS reported changed whose pixels are not) carries
+ *    RC_FRAME_STATIC; one that changed only a small area may carry
+ *    RC_FRAME_MINOR. The agent restarts refinement on any other.
  *  - Callbacks may fire on any native thread; they must not be re-entered
  *    concurrently for the same kind (serialize frame callbacks).
  *  - After rc_capture_stop returns, no further callbacks may fire.
@@ -73,10 +78,19 @@ typedef struct {
     int32_t  max_height;
     int32_t  profile_idc;          /* negotiated H.264 profile, the most the encoder may use:
                                       66 constrained baseline (also 0), 77 main, 100 constrained high */
+    int32_t  codec;                /* RC_CODEC_* */
 } rc_capture_config;
+
+#define RC_CODEC_H264 0
+#define RC_CODEC_VP9  1 /* VP9 profile 1, 4:4:4 */
+
+/* Bitmask of (1 << RC_CODEC_*) this build can encode. */
+int  rc_codecs(void);
 
 #define RC_FRAME_KEY    0x1 /* IDR with SPS+PPS */
 #define RC_FRAME_STATIC 0x2 /* same screen content as the frame before */
+#define RC_FRAME_MINOR  0x4 /* new content in a small area only (about 2% of the
+                               frame or less: a caret, a clock); optional */
 
 /* One H.264 access unit, Annex-B. pts_us is a monotonic capture timestamp;
  * flags are RC_FRAME_*. */
@@ -101,12 +115,14 @@ void rc_encode_configure(int32_t bitrate_kbps, int32_t fps);
 /* Next emitted frame must be an IDR keyframe (PLI). */
 void rc_request_keyframe(void);
 /* Static-screen refinement: re-encodes the last captured frame as a P-frame
- * with no macroblock above quantizer max_qp (1..51), flagged RC_FRAME_STATIC.
+ * with no macroblock above quantizer max_qp (1..51, H.264 scale; VP9 maps it
+ * onto its own), flagged RC_FRAME_STATIC.
  * The clamp ends with that frame. Dropped silently when new content arrived
  * in the last 100 ms. Returns RC_OK, RC_ERR_UNSUPPORTED when the encoder
  * cannot bound its quantizer, or RC_ERR when not capturing. */
 int  rc_encode_refine(int32_t max_qp);
-/* "videotoolbox" | "mf-hw" | "mf-sw" | "x264" | "openh264" ... */
+/* "videotoolbox" | "mf-hw" | "mf-sw" | "x264" | "openh264" ...; "libvpx-vp9"
+ * while an RC_CODEC_VP9 capture runs. */
 const char *rc_encoder_name(void);
 
 /* ---- input ---- */

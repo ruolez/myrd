@@ -664,7 +664,7 @@ func TestFeedbackAdapterTWCC(t *testing.T) {
 		assertNoError(t, err)
 
 		assertNotEmpty(t, results)
-		assertLen(t, results, 7)
+		assertLen(t, results, 2) // the five statuses of packets never sent are left out
 		assertContains(t, results, Acknowledgment{
 			SequenceNumber: 65535,
 			Size:           pkt65535.Header.MarshalSize() + 1200,
@@ -993,4 +993,54 @@ func TestFeedbackAdapterTWCC(t *testing.T) {
 			assertEmpty(t, packets)
 		})
 	})
+}
+
+// libwebrtc reports a range again when a packet arrives late; every sent
+// packet must count once, and packets the adapter never sent must not pass
+// as lost nor shift the arrival times of those after them.
+func TestFeedbackAdapterReportsEachPacketOnce(t *testing.T) {
+	attributes := make(interceptor.Attributes)
+	attributes.Set(TwccExtensionAttributesKey, hdrExtID)
+	fa := NewFeedbackAdapter()
+	for _, seq := range []uint16{10, 11, 12, 13} { // 9 was never sent through the adapter
+		assertNoError(t, fa.OnSent(time.Time{}, &getPacketWithTransportCCExt(t, seq).Header, 0, attributes))
+	}
+	recv, lost := rtcp.TypeTCCPacketReceivedSmallDelta, rtcp.TypeTCCPacketNotReceived
+	report := func(base uint16, symbols ...uint16) []Acknowledgment {
+		var deltas []*rtcp.RecvDelta
+		for _, s := range symbols {
+			if s != lost {
+				deltas = append(deltas, &rtcp.RecvDelta{Type: recv, Delta: 1000})
+			}
+		}
+		acks, err := fa.OnTransportCCFeedback(time.Time{}, &rtcp.TransportLayerCC{
+			BaseSequenceNumber: base, PacketStatusCount: uint16(len(symbols)),
+			PacketChunks: []rtcp.PacketStatusChunk{&rtcp.StatusVectorChunk{
+				SymbolSize: rtcp.TypeTCCSymbolSizeTwoBit, SymbolList: symbols}},
+			RecvDeltas: deltas,
+		})
+		assertNoError(t, err)
+
+		return acks
+	}
+	describe := func(acks []Acknowledgment) string {
+		out := ""
+		for _, a := range acks {
+			if a.Arrival.IsZero() {
+				out += fmt.Sprintf("%d:lost ", a.SequenceNumber)
+			} else {
+				out += fmt.Sprintf("%d:%dms ", a.SequenceNumber, a.Arrival.Sub(time.Time{}).Milliseconds())
+			}
+		}
+
+		return out
+	}
+	// 9 (unknown) received, 10 received, 11 lost, 12 received.
+	if got := describe(report(9, recv, recv, lost, recv)); got != "10:2ms 11:lost 12:3ms " {
+		t.Fatalf("first report: %s", got)
+	}
+	// 11 arrives late: the range is reported again from 11 with 13.
+	if got := describe(report(11, recv, recv, recv)); got != "13:3ms " {
+		t.Fatalf("second report: %s, want only the packet not reported before", got)
+	}
 }

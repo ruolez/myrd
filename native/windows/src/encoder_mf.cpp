@@ -88,8 +88,10 @@ public:
     UINT32 profile = eAVEncH264VProfile_Base;
     bool can_refine = false;
     bool clamped = false;                         // AVEncVideoMaxQP is below 51
-    LONGLONG static_times[4] = {-1, -1, -1, -1}; // input sample times of refinement passes (out_lock)
-    int static_next = 0;
+    // Input sample times with RC_FRAME_* flags to deliver with their output (out_lock).
+    LONGLONG tag_times[4] = {-1, -1, -1, -1};
+    int32_t tag_flags[4] = {};
+    int tag_next = 0;
 
     ~Encoder() { shutdown(); }
 
@@ -311,10 +313,10 @@ public:
 
         Guard g(out_lock);
         int flags = key ? RC_FRAME_KEY : 0;
-        for (LONGLONG &st : static_times) {
-            if (st == t) {
-                flags |= RC_FRAME_STATIC;
-                st = -1;
+        for (int i = 0; i < 4; i++) {
+            if (tag_times[i] == t) {
+                if (!key) flags |= tag_flags[i];
+                tag_times[i] = -1;
             }
         }
         if (!stopping && on_frame) {
@@ -364,7 +366,7 @@ public:
         return true;
     }
 
-    bool encode(ID3D11Texture2D *nv12, int64_t pts_us, bool force_key, bool *fatal, int max_qp) {
+    bool encode(ID3D11Texture2D *nv12, int64_t pts_us, bool force_key, bool *fatal, int max_qp, int32_t flags) {
         *fatal = false;
         if (async && need_input <= 0) return false;
         if (base_pts < 0) base_pts = pts_us;
@@ -387,10 +389,11 @@ public:
             codec_ui4(codec.get(), CODECAPI_AVEncVideoMaxQP, (ULONG)(max_qp > 0 ? max_qp : 51));
             clamped = max_qp > 0;
         }
-        if (max_qp > 0) {
+        if (flags) {
             Guard g(out_lock);
-            static_times[static_next] = (pts_us - base_pts) * 10;
-            static_next = (static_next + 1) % 4;
+            tag_times[tag_next] = (pts_us - base_pts) * 10;
+            tag_flags[tag_next] = flags;
+            tag_next = (tag_next + 1) % 4;
         }
 
         HRESULT hr = mft->ProcessInput(in_id, sample.get(), 0);
@@ -523,8 +526,9 @@ Encoder *encoder_create(ID3D11Device *dev, const EncoderConfig &cfg, bool prefer
 
 void encoder_destroy(Encoder *e) { delete e; }
 
-bool encoder_encode(Encoder *e, ID3D11Texture2D *nv12, int64_t pts_us, bool force_key, bool *fatal, int max_qp) {
-    return e->encode(nv12, pts_us, force_key, fatal, max_qp);
+bool encoder_encode(Encoder *e, ID3D11Texture2D *nv12, int64_t pts_us, bool force_key, bool *fatal, int max_qp,
+                    int32_t flags) {
+    return e->encode(nv12, pts_us, force_key, fatal, max_qp, flags);
 }
 
 bool encoder_can_refine(Encoder *e) { return e && e->can_refine; }

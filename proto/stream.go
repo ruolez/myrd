@@ -24,6 +24,9 @@ const (
 	Res720p   = "720p"
 	ResHalf   = "half"
 
+	ColorStandard = "standard" // 4:2:0 H.264
+	ColorFull     = "full"     // 4:4:4 (VP9 profile 1) where the agent and browser can
+
 	StreamMinFPS  = 1
 	StreamMaxFPS  = 60
 	StreamMinKbps = 1000
@@ -41,6 +44,7 @@ type StreamRequest struct {
 	MaxKbps    *int    `json:"max_kbps"`
 	Background bool    `json:"background"`
 	Wallpaper  bool    `json:"wallpaper"` // show the desktop wallpaper; absent = hidden
+	Color      string  `json:"color,omitempty"` // ColorStandard (also absent) or ColorFull
 	// View is the viewer's video area in device pixels. Absent: the viewer
 	// shows the stream at its own size (1:1) or predates the field.
 	View *StreamView `json:"view,omitempty"`
@@ -84,6 +88,9 @@ func (r StreamRequest) Validate() error {
 	}
 	if r.MaxKbps != nil && (*r.MaxKbps < StreamMinKbps || *r.MaxKbps > StreamMaxKbps) {
 		return fmt.Errorf("max_kbps %d out of range", *r.MaxKbps)
+	}
+	if r.Color != "" && r.Color != ColorStandard && r.Color != ColorFull {
+		return fmt.Errorf("unknown color %q", r.Color)
 	}
 	if v := r.View; v != nil && (v.W < 2 || v.H < 2 || v.W > StreamMaxView || v.H > StreamMaxView) {
 		return fmt.Errorf("view %dx%d out of range", v.W, v.H)

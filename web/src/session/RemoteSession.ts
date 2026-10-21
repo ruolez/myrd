@@ -4,6 +4,7 @@
 import type { ICEServer, Monitor, UserId } from "../api/types";
 import { ensureClientKey, signFingerprint } from "../lib/clientKey";
 import { checkDevicePin, pinDevice, verifyDeviceSignature } from "../lib/devicePins";
+import { codecName, preferredCodecs } from "../lib/codecs";
 import { sdpFingerprint } from "../lib/fingerprint";
 import { filesAvailability } from "../lib/files";
 import type { FilesAvailability } from "../lib/files";
@@ -65,6 +66,12 @@ export type HudStats = {
   encodeHeight: number | null;
   /** Quantizer of the latest static-screen refinement pass; null while the screen changes. */
   refineQp: number | null;
+  /** Repair overhead the agent adds (FlexFEC), percent; 0 = off. */
+  fecPct: number | null;
+  /** Repair packets this browser received so far. */
+  fecReceived: number | null;
+  /** What the browser decodes, e.g. "H.264" or "VP9 4:4:4". */
+  codec: string | null;
 };
 
 export type Snapshot = {
@@ -116,6 +123,9 @@ const emptyStats: HudStats = {
   encodeWidth: null,
   encodeHeight: null,
   refineQp: null,
+  fecPct: null,
+  fecReceived: null,
+  codec: null,
 };
 
 const STREAM_DEBOUNCE_MS = 200;
@@ -338,7 +348,7 @@ export class RemoteSession {
     this.pc = pc;
 
     const tr = pc.addTransceiver("video", { direction: "recvonly" });
-    preferH264(tr);
+    preferCodecs(tr);
 
     this.input = pc.createDataChannel("input", { ordered: true });
     // Absolute moves, latest wins: a lost one is superseded, never waited for.
@@ -515,6 +525,9 @@ export class RemoteSession {
           r.jitter !== undefined ? Math.round((r.jitter as number) * 1000) : next.jitterMs;
         next.frameWidth = (r.frameWidth as number | undefined) ?? next.frameWidth;
         next.frameHeight = (r.frameHeight as number | undefined) ?? next.frameHeight;
+        next.fecReceived = (r.fecPacketsReceived as number | undefined) ?? next.fecReceived;
+        const codec = byId.get(r.codecId as string);
+        if (codec) next.codec = codecName(codec.mimeType as string, codec.sdpFmtpLine as string);
         const decoded = r.framesDecoded as number | undefined;
         const decodeTime = r.totalDecodeTime as number | undefined;
         if (decoded && decodeTime !== undefined) next.decodeMs = (decodeTime / decoded) * 1000;
@@ -626,6 +639,7 @@ export class RemoteSession {
             encodeWidth: num(m.width),
             encodeHeight: num(m.height),
             refineQp: num(m.refine_qp) || null,
+            fecPct: num(m.fec_pct),
           },
         });
         break;
@@ -782,26 +796,13 @@ export class RemoteSession {
   }
 }
 
-function preferH264(tr: RTCRtpTransceiver) {
+function preferCodecs(tr: RTCRtpTransceiver) {
   const caps = RTCRtpReceiver.getCapabilities?.("video");
   if (!caps || typeof tr.setCodecPreferences !== "function") return;
-  const score = (c: RTCRtpCodec) => {
-    if (c.mimeType.toLowerCase() !== "video/h264") return -1;
-    const f = c.sdpFmtpLine ?? "";
-    // The agent encodes whatever profile is negotiated; high (CABAC, 8x8
-    // transform; no B-frames, so constrained) costs ~10-15% fewer bits than baseline.
-    let s = 1;
-    if (/packetization-mode=1/.test(f)) s += 8;
-    if (/profile-level-id=64/i.test(f)) s += 4;
-    else if (/profile-level-id=4d/i.test(f)) s += 3;
-    else if (/profile-level-id=42e0/i.test(f)) s += 2;
-    return s;
-  };
-  const h264 = caps.codecs.filter((c) => score(c) > 0).sort((a, b) => score(b) - score(a));
-  if (h264.length === 0) return;
-  const support = caps.codecs.filter((c) => /rtx|red|ulpfec|flexfec/i.test(c.mimeType));
+  const codecs = preferredCodecs(caps.codecs);
+  if (!codecs) return;
   try {
-    tr.setCodecPreferences([...h264, ...support]);
+    tr.setCodecPreferences(codecs);
   } catch {
     // leave browser defaults
   }

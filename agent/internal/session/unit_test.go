@@ -237,7 +237,11 @@ func TestFrameLeavesKeyframesToTheBrowser(t *testing.T) {
 	}
 	p := &mediaPipe{b: b, track: track, now: time.Now, applied: encoderState{fps: 5}}
 	for i := 0; i < 60; i++ {
-		p.Frame([]byte{0, 0, 0, 1, 0x41}, int64(i)*200_000, i == 0, false)
+		var fl platform.FrameFlags
+		if i == 0 {
+			fl = platform.FrameKey
+		}
+		p.Frame([]byte{0, 0, 0, 1, 0x41}, int64(i)*200_000, fl)
 	}
 	time.Sleep(50 * time.Millisecond)
 	if got := b.KeyframeRequests(); got != 0 {

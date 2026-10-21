@@ -8,6 +8,7 @@ import {
   describeAuto,
   editStreamField,
   fpsChoices,
+  fullColorAvailable,
   KBPS_STEP,
   MAX_KBPS,
   MIN_KBPS,
@@ -97,6 +98,12 @@ export function StreamMenu({
   const manual = capKbps !== null;
   const native = state ? { width: state.native_width, height: state.native_height } : null;
   const autoText = describeAuto(state);
+  const canFullColor = fullColorAvailable(state);
+  const colorHint = !canFullColor
+    ? "Full color (4:4:4) needs an updated agent and Chrome or Edge."
+    : prefs.color === "full"
+      ? "4:4:4: sharp colored text. Software encoded, up to 30 fps."
+      : "4:2:0 hardware video. Full color sharpens colored text.";
 
   return (
     <div
@@ -268,6 +275,33 @@ export function StreamMenu({
         </div>
       </div>
 
+      {full && (
+        <div className="flex items-center gap-3">
+          <div className="flex-1">
+            <div className="text-xs">Color</div>
+            <p className="text-xs text-white/50">{colorHint}</p>
+          </div>
+          <div
+            role="radiogroup"
+            aria-label="Color"
+            className="flex gap-1 rounded-full bg-white/5 p-1"
+          >
+            {(["standard", "full"] as const).map((color) => (
+              <button
+                key={color}
+                role="radio"
+                aria-checked={prefs.color === color}
+                disabled={color === "full" && !canFullColor && prefs.color !== "full"}
+                className={`rounded-full px-2 py-0.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-40 ${prefs.color === color ? "bg-[#8ab4f8] text-[#0b1d36]" : "text-white/80 hover:bg-white/10"}`}
+                onClick={() => onChange({ ...prefs, color })}
+              >
+                {color === "standard" ? "Standard" : "Full"}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {canHideWallpaper && (
         <div className="flex items-center gap-3">
           <div className="flex-1">
@@ -288,6 +322,7 @@ export function StreamMenu({
         {state ? (
           <div>
             Now {state.width}×{state.height} · {state.target_fps} fps
+            {state.resolved.color === "full" ? " · 4:4:4" : ""}
             {state.ceil_kbps ? ` · up to ${mbps(state.ceil_kbps)}` : ""}
             {state.relay ? " · relay" : ""}
             {state.background ? " · background" : ""}

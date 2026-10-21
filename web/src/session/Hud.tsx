@@ -84,6 +84,12 @@ function encodeText(stats: HudStats, stream: StreamState | null) {
   return `${w}×${h}${native}`;
 }
 
+function fecText(stats: HudStats): string {
+  if (stats.fecPct === null) return "—";
+  const recv = stats.fecReceived ? ` · ${stats.fecReceived} received` : "";
+  return stats.fecPct > 0 ? `${stats.fecPct}%${recv}` : `off${recv}`;
+}
+
 export function Hud({
   stats,
   encoder,
@@ -110,9 +116,11 @@ export function Hud({
     ["Decoded", stats.frameWidth ? `${stats.frameWidth}×${stats.frameHeight}` : "—"],
     ["Encoded", encodeText(stats, stream)],
     ["Sharpen", stats.refineQp ? `QP ${stats.refineQp}` : "—"],
+    ["FEC", fecText(stats)],
     ...(stream?.auto ? [["Auto", describeAuto(stream) ?? "—"] as [string, string]] : []),
     ["Path", stats.path ?? "—"],
     ["Encoder", encoder ?? "—"],
+    ["Codec", stats.codec ?? "—"],
   ];
   return (
     <div

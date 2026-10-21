@@ -141,7 +141,7 @@ func NewSendSideBWE(opts ...Option) (*SendSideBWE, error) {
 	if send.pacer == nil {
 		return nil, ErrNoPacer
 	}
-	send.lossController = newLossBasedBWE(send.latestBitrate, send.loggerFactory)
+	send.lossController = newLossBasedBWE(send.latestBitrate, send.minBitrate, send.maxBitrate, send.loggerFactory)
 	send.delayController = newDelayController(delayControllerConfig{
 		nowFn:          time.Now,
 		initialBitrate: send.latestBitrate,
@@ -165,7 +165,9 @@ func (e *SendSideBWE) AddStream(info *interceptor.StreamInfo, writer interceptor
 		}
 	}
 
-	e.pacer.AddStream(info.SSRC, interceptor.RTPWriterFunc(
+	// Repair (FEC) and retransmission (RTX) packets leave through the media
+	// stream's writer with their own SSRC; the pacer finds writers by SSRC.
+	w := interceptor.RTPWriterFunc(
 		func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) (int, error) {
 			if hdrExtID != 0 {
 				if attributes == nil {
@@ -179,7 +181,12 @@ func (e *SendSideBWE) AddStream(info *interceptor.StreamInfo, writer interceptor
 
 			return writer.Write(header, payload, attributes)
 		},
-	))
+	)
+	for _, ssrc := range []uint32{info.SSRC, info.SSRCForwardErrorCorrection, info.SSRCRetransmission} {
+		if ssrc != 0 {
+			e.pacer.AddStream(ssrc, w)
+		}
+	}
 
 	return e.pacer
 }

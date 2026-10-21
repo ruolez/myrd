@@ -61,6 +61,14 @@ void rc_request_keyframe(void) { capture_request_keyframe(); }
 
 int rc_encode_refine(int32_t max_qp) { return capture_refine(max_qp); }
 
+int rc_codecs(void) {
+#ifdef RC_HAVE_VPX
+    return 1 << RC_CODEC_H264 | 1 << RC_CODEC_VP9;
+#else
+    return 1 << RC_CODEC_H264;
+#endif
+}
+
 const char *rc_encoder_name(void) {
     const char *n = capture_encoder_name();
     return n ? n : g_probed_encoder;

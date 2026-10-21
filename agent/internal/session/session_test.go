@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pion/interceptor"
 	"github.com/pion/webrtc/v4"
 
 	"github.com/ruolez/remotectl/agent/internal/inputproto"
@@ -81,7 +82,10 @@ type harness struct {
 	signalOrder []string // session.file / session.end, as sent
 	fileText    chan map[string]any
 	fileData    chan []byte
-	videoFmtp   string // codec the browser side received
+	videoFmtp   string  // codec the browser side received
+	pts         []uint8 // payload types received, one entry per change
+
+	browserCodecs func(*webrtc.MediaEngine) // nil: pion's defaults
 }
 
 func newHarness(t *testing.T, answer platform.Consent, tweaks ...func(*Options)) *harness {
@@ -200,7 +204,17 @@ func (h *harness) signFP(fp string) string {
 // offer builds the browser peer and sends its offer. tamper swaps the signed fingerprint.
 func (h *harness) offer(tamper bool) {
 	t := h.t
-	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	api := webrtc.NewAPI()
+	if h.browserCodecs != nil {
+		me := &webrtc.MediaEngine{}
+		reg := &interceptor.Registry{}
+		h.browserCodecs(me)
+		if err := webrtc.RegisterDefaultInterceptors(me, reg); err != nil {
+			t.Fatal(err)
+		}
+		api = webrtc.NewAPI(webrtc.WithMediaEngine(me), webrtc.WithInterceptorRegistry(reg))
+	}
+	pc, err := api.NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,16 +261,19 @@ func (h *harness) offer(tamper bool) {
 		h.mu.Lock()
 		h.videoFmtp = tr.Codec().SDPFmtpLine
 		h.mu.Unlock()
-		if _, _, err := tr.ReadRTP(); err == nil {
+		if p, _, err := tr.ReadRTP(); err == nil {
+			h.recordPT(p.PayloadType)
 			select {
 			case h.rtpPackets <- struct{}{}:
 			default:
 			}
 		}
 		for {
-			if _, _, err := tr.ReadRTP(); err != nil {
+			p, _, err := tr.ReadRTP()
+			if err != nil {
 				return
 			}
+			h.recordPT(p.PayloadType)
 		}
 	})
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
@@ -286,6 +303,20 @@ func (h *harness) offer(tamper bool) {
 		FPSig: h.signFP(fp), ClientKey: &proto.ClientKeyInfo{ID: "ck1", PublicKey: h.spki, Label: "Test Chrome",
 			CreatedAt: "2026-10-19T00:00:00Z"}, User: &proto.UserInfo{Email: "owner@example.com"}})
 	h.mgr.HandleSignal(proto.TypeSessionOffer, b)
+}
+
+func (h *harness) recordPT(pt uint8) {
+	h.mu.Lock()
+	if n := len(h.pts); n == 0 || h.pts[n-1] != pt {
+		h.pts = append(h.pts, pt)
+	}
+	h.mu.Unlock()
+}
+
+func (h *harness) payloadTypes() []uint8 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]uint8(nil), h.pts...)
 }
 
 func waitFor(t *testing.T, what string, cond func() bool) {

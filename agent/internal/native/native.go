@@ -105,7 +105,7 @@ func (b *Backend) StartCapture(cfg platform.CaptureConfig, sink platform.Capture
 	c := C.rc_capture_config{
 		monitor_id: C.uint32_t(cfg.MonitorID), fps: C.int32_t(cfg.FPS), bitrate_kbps: C.int32_t(cfg.BitrateKbps),
 		keyframe_interval_ms: C.int32_t(cfg.KeyframeIntervalMS), max_width: C.int32_t(cfg.MaxWidth), max_height: C.int32_t(cfg.MaxHeight),
-		profile_idc: C.int32_t(cfg.ProfileIDC),
+		profile_idc: C.int32_t(cfg.ProfileIDC), codec: C.int32_t(cfg.Codec),
 	}
 	h := cgo.NewHandle(sink)
 	if err := rcErr(C.rc_start_with_handle(&c, C.uintptr_t(h))); err != nil {
@@ -135,6 +135,9 @@ func (b *Backend) RefineEncoder(maxQP int) error {
 	return rcErr(C.rc_encode_refine(C.int32_t(maxQP)))
 }
 func (b *Backend) EncoderName() string { return C.GoString(C.rc_encoder_name()) }
+func (b *Backend) SupportsCodec(codec int) bool {
+	return codec >= 0 && codec < 31 && C.rc_codecs()&(1<<codec) != 0
+}
 
 func (b *Backend) Inject(ev platform.InputEvent) error {
 	var down C.uint8_t

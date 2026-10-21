@@ -120,7 +120,8 @@ func TestSendSideBWE(t *testing.T) {
 	twccWriter := twcc.HeaderExtensionInterceptor{}
 	rtpWriter = twccWriter.BindLocalStream(streamInfo, rtpWriter)
 
-	for i := 0; i <= 100; i++ {
+	// 1.5 s of packets: the loss controller decides on full windows (lossWindowFull).
+	for i := 0; i <= 300; i++ {
 		_, err = rtpWriter.Write(&rtp.Header{SSRC: 1, Extensions: []rtp.Extension{}}, rtpPayload, nil)
 		assertNoError(t, err)
 		_, _, err = twccInboundRTP.Read(buffer, nil)
@@ -181,5 +182,32 @@ func BenchmarkSendSideBWE_WriteRTCP(b *testing.B) {
 
 			requireNoError(b, bwe.Close())
 		})
+	}
+}
+
+type ssrcRecorder struct {
+	mu    sync.Mutex
+	ssrcs []uint32
+}
+
+func (r *ssrcRecorder) Write(header *rtp.Header, payload []byte, _ interceptor.Attributes) (int, error) {
+	r.mu.Lock()
+	r.ssrcs = append(r.ssrcs, header.SSRC)
+	r.mu.Unlock()
+
+	return len(payload), nil
+}
+
+func TestSendSideBWE_PacesRepairAndRetransmissionStreams(t *testing.T) {
+	bwe, err := NewSendSideBWE(SendSideBWEPacer(newTestPacer(0)))
+	requireNoError(t, err)
+	rec := &ssrcRecorder{}
+	w := bwe.AddStream(&interceptor.StreamInfo{SSRC: 1, SSRCForwardErrorCorrection: 2, SSRCRetransmission: 3}, rec)
+	for _, ssrc := range []uint32{1, 2, 3} {
+		_, err = w.Write(&rtp.Header{SSRC: ssrc}, []byte{0}, nil)
+		requireNoError(t, err)
+	}
+	if fmt.Sprint(rec.ssrcs) != "[1 2 3]" {
+		t.Fatalf("sent SSRCs %v, want media, FEC and RTX packets all through the stream's writer", rec.ssrcs)
 	}
 }

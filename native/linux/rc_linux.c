@@ -3,6 +3,7 @@
  *
  *   capture : XShm on the root window, XDamage so a static screen costs ~0
  *   encode  : libswscale BGRX→I420 (BT.709) + libx264 superfast/zerolatency;
+ *             full color: libswscale BGRX→I444 + rc_vpx (VP9 profile 1);
  *             refinement passes force the frame quantizer
  *   cursor  : XFixes cursor image + XQueryPointer polling at 120 Hz
  *   input   : XTest; text via a temporary keysym remap of a spare keycode
@@ -27,6 +28,8 @@
 #include <libavutil/pixfmt.h>
 #include <x264.h>
 
+#include "rc_vpx.h"
+
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -42,6 +45,7 @@
 #define WHEEL_NOTCH_PX 100
 #define IDLE_FRAME_NS 1000000000LL /* at least one frame per second on a static screen */
 #define REFINE_QUIET_NS 100000000LL /* rc_encode_refine: no new content for this long */
+#define MINOR_ROWS_PER 50            /* at most 1/50 of the rows changed: RC_FRAME_MINOR */
 
 typedef struct {
     pthread_mutex_t mu;
@@ -223,7 +227,11 @@ void rc_shutdown(void) {
 }
 
 const char *rc_backend_name(void) { return "linux-x11"; }
-const char *rc_encoder_name(void) { return "x264"; }
+const char *rc_encoder_name(void) {
+    return atomic_load(&g.running) && g.cfg.codec == RC_CODEC_VP9 ? "libvpx-vp9" : "x264";
+}
+
+int rc_codecs(void) { return 1 << RC_CODEC_H264 | 1 << RC_CODEC_VP9; }
 
 int rc_list_monitors(rc_monitor *out, int max) {
     pthread_mutex_lock(&g.mu);
@@ -253,8 +261,11 @@ typedef struct {
     x264_t *enc;
     x264_param_t param;
     x264_picture_t pic;
+    rc_vpx *vpx; /* full color instead of x264 */
+    uint8_t *planes[3];
+    int strides[3];
     struct SwsContext *sws;
-    int out_w, out_h;
+    int out_w, out_h, kbps;
     int64_t frame_no;
 } encoder;
 
@@ -271,10 +282,30 @@ static void apply_rate(x264_param_t *p, int kbps, int fps) {
     p->i_fps_den = 1;
 }
 
+static int sws_open(encoder *e, int in_w, int in_h, enum AVPixelFormat out) {
+    e->sws = sws_getContext(in_w, in_h, AV_PIX_FMT_BGR0, e->out_w, e->out_h, out,
+                            (in_w == e->out_w && in_h == e->out_h) ? SWS_POINT : SWS_BILINEAR, NULL, NULL, NULL);
+    if (!e->sws) return RC_ERR;
+    sws_setColorspaceDetails(e->sws, sws_getCoefficients(SWS_CS_DEFAULT), 1, sws_getCoefficients(SWS_CS_ITU709), 0, 0,
+                             1 << 16, 1 << 16);
+    return RC_OK;
+}
+
 static int encoder_open(encoder *e, int in_w, int in_h, int out_w, int out_h, const rc_capture_config *cfg) {
     memset(e, 0, sizeof *e);
     e->out_w = out_w;
     e->out_h = out_h;
+    e->kbps = cfg->bitrate_kbps > 0 ? cfg->bitrate_kbps : 3000;
+    if (cfg->codec == RC_CODEC_VP9) {
+        e->vpx = rc_vpx_open(out_w, out_h, cfg->fps > 0 ? cfg->fps : 30, e->kbps);
+        if (!e->vpx) return RC_ERR;
+        rc_vpx_planes(e->vpx, e->planes, e->strides);
+        if (sws_open(e, in_w, in_h, AV_PIX_FMT_YUV444P) != RC_OK) {
+            rc_vpx_close(e->vpx);
+            return RC_ERR;
+        }
+        return RC_OK;
+    }
     x264_param_t *p = &e->param;
     /* superfast turns on the deblocking, intra 4x4/8x8 analysis and sub-pixel
      * motion search that ultrafast skips: cleaner text for ~2x the CPU. */
@@ -307,20 +338,31 @@ static int encoder_open(encoder *e, int in_w, int in_h, int out_w, int out_h, co
         x264_encoder_close(e->enc);
         return RC_ERR;
     }
-    e->sws = sws_getContext(in_w, in_h, AV_PIX_FMT_BGR0, out_w, out_h, AV_PIX_FMT_YUV420P,
-                            (in_w == out_w && in_h == out_h) ? SWS_POINT : SWS_BILINEAR, NULL, NULL, NULL);
-    if (!e->sws) {
+    for (int i = 0; i < 3; i++) {
+        e->planes[i] = e->pic.img.plane[i];
+        e->strides[i] = e->pic.img.i_stride[i];
+    }
+    if (sws_open(e, in_w, in_h, AV_PIX_FMT_YUV420P) != RC_OK) {
         x264_picture_clean(&e->pic);
         x264_encoder_close(e->enc);
         return RC_ERR;
     }
-    sws_setColorspaceDetails(e->sws, sws_getCoefficients(SWS_CS_DEFAULT), 1, sws_getCoefficients(SWS_CS_ITU709), 0, 0,
-                             1 << 16, 1 << 16);
     return RC_OK;
+}
+
+static void encoder_rate(encoder *e, int kbps, int fps) {
+    if (kbps) e->kbps = kbps;
+    if (e->vpx) {
+        rc_vpx_rate(e->vpx, e->kbps, fps);
+        return;
+    }
+    apply_rate(&e->param, e->kbps, fps);
+    x264_encoder_reconfig(e->enc, &e->param);
 }
 
 static void encoder_close(encoder *e) {
     if (e->sws) sws_freeContext(e->sws);
+    rc_vpx_close(e->vpx);
     if (e->enc) {
         x264_picture_clean(&e->pic);
         x264_encoder_close(e->enc);
@@ -330,8 +372,12 @@ static void encoder_close(encoder *e) {
 
 /* ---------------- capture thread ---------------- */
 
-/* Encodes enc->pic; qp > 0 forces that quantizer (a refinement pass). */
+/* Encodes the current picture; qp > 0 forces that quantizer (a refinement pass). */
 static void encode_emit(encoder *e, int64_t t, int key, int qp, int flags) {
+    if (e->vpx) {
+        rc_vpx_encode(e->vpx, t / 1000, key, qp, flags, g.on_frame, g.user);
+        return;
+    }
     e->pic.i_type = key ? X264_TYPE_IDR : X264_TYPE_AUTO;
     e->pic.i_qpplus1 = qp > 0 ? qp + 1 : X264_QP_AUTO;
     e->pic.i_pts = e->frame_no++;
@@ -352,6 +398,15 @@ static void compute_out_size(int w, int h, int max_w, int max_h, int *ow, int *o
     if (max_h > 0 && h * s > max_h) s = (double)max_h / h;
     *ow = ((int)(w * s + 0.5)) & ~1; /* nearest: a bound the agent sized exactly stays exact */
     *oh = ((int)(h * s + 0.5)) & ~1;
+}
+
+/* X reports damage that changes no pixel (a window raised over its own
+ * contents, a repainted wallpaper): rows that differ from the last capture. */
+static int changed_rows(const uint8_t *a, const uint8_t *b, size_t stride, int rows) {
+    int n = 0;
+    for (int r = 0; r < rows; r++)
+        if (memcmp(a + (size_t)r * stride, b + (size_t)r * stride, stride) != 0) n++;
+    return n;
 }
 
 static void *capture_main(void *arg) {
@@ -397,6 +452,9 @@ static void *capture_main(void *arg) {
     int64_t next = now_ns();
     int64_t last_emit = 0, last_content = 0;
     int damaged = 1;
+    size_t frame_bytes = (size_t)img->bytes_per_line * ch;
+    uint8_t *prev = malloc(frame_bytes); /* the last captured pixels */
+    int have_prev = 0;
     while (atomic_load(&g.running)) {
         int nb = atomic_exchange(&g.new_bitrate, 0);
         int nf = atomic_exchange(&g.new_fps, 0);
@@ -405,8 +463,7 @@ static void *capture_main(void *arg) {
                 fps = nf;
                 interval = 1000000000LL / fps;
             }
-            apply_rate(&enc.param, nb ? nb : enc.param.rc.i_bitrate, fps);
-            x264_encoder_reconfig(enc.enc, &enc.param);
+            encoder_rate(&enc, nb, fps);
         }
 
         while (XPending(d)) {
@@ -418,28 +475,41 @@ static void *capture_main(void *arg) {
         int key = atomic_exchange(&g.want_keyframe, 0);
         int refine = atomic_exchange(&g.refine_qp, 0);
         int64_t t = now_ns();
-        if (damaged) last_content = t;
-        if (refine && !damaged && !key && last_emit && t - last_content >= REFINE_QUIET_NS) {
-            /* enc.pic still holds the last captured picture */
-            encode_emit(&enc, t, 0, refine, RC_FRAME_STATIC);
-            last_emit = t;
-        } else if (damaged || key || t - last_emit >= IDLE_FRAME_NS) {
-            int fresh = damaged;
+        int captured = 0, changed = 0;
+        if (damaged || key || t - last_emit >= IDLE_FRAME_NS) {
             if (damage) XDamageSubtract(d, damage, None, None);
             damaged = 0;
             if (XShmGetImage(d, root, img, mon.x, mon.y, AllPlanes)) {
-                const uint8_t *src[1] = {(const uint8_t *)img->data};
-                int src_stride[1] = {img->bytes_per_line};
-                sws_scale(enc.sws, src, src_stride, 0, ch, enc.pic.img.plane, enc.pic.img.i_stride);
-                encode_emit(&enc, t, key, 0, fresh || key ? 0 : RC_FRAME_STATIC);
-                last_emit = t;
+                captured = 1;
+                changed = have_prev && prev ? changed_rows((const uint8_t *)img->data, prev, img->bytes_per_line, ch) : ch;
+                if (changed) {
+                    if (prev) memcpy(prev, img->data, frame_bytes);
+                    have_prev = 1;
+                    last_content = t;
+                    const uint8_t *src[1] = {(const uint8_t *)img->data};
+                    int src_stride[1] = {img->bytes_per_line};
+                    sws_scale(enc.sws, src, src_stride, 0, ch, enc.planes, enc.strides);
+                }
             }
+        }
+        /* the encoder's input holds the last captured picture */
+        if (captured && (changed || key)) {
+            int flags = !changed ? RC_FRAME_STATIC : changed * MINOR_ROWS_PER <= ch ? RC_FRAME_MINOR : 0;
+            encode_emit(&enc, t, key, 0, key ? 0 : flags);
+            last_emit = t;
+        } else if (refine && last_emit && t - last_content >= REFINE_QUIET_NS) {
+            encode_emit(&enc, t, 0, refine, RC_FRAME_STATIC);
+            last_emit = t;
+        } else if (captured && t - last_emit >= IDLE_FRAME_NS) {
+            encode_emit(&enc, t, 0, 0, RC_FRAME_STATIC);
+            last_emit = t;
         }
         next += interval;
         if (next < now_ns() - interval) next = now_ns(); /* fell behind: don't burst */
         sleep_until(next);
     }
     encoder_close(&enc);
+    free(prev);
 out:
     if (damage) XDamageDestroy(d, damage);
     XShmDetach(d, &shm);

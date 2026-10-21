@@ -7,8 +7,10 @@ EXPORTS
     rc_check_permissions
     rc_clipboard_get_text
     rc_clipboard_set_text
+    rc_codecs
     rc_consent_prompt
     rc_encode_configure
+    rc_encode_refine
     rc_encoder_name
     rc_free
     rc_indicator_show

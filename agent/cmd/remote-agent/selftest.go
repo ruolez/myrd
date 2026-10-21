@@ -24,7 +24,7 @@ type selftestSink struct {
 	firstAU      []byte
 }
 
-func (s *selftestSink) Frame(d []byte, _ int64, key, _ bool) {
+func (s *selftestSink) Frame(d []byte, _ int64, flags platform.FrameFlags) {
 	if s.frames.Add(1) == 1 {
 		s.firstFrame.Store(int64(time.Since(s.start)))
 		s.mu.Lock()
@@ -32,7 +32,7 @@ func (s *selftestSink) Frame(d []byte, _ int64, key, _ bool) {
 		s.mu.Unlock()
 	}
 	s.bytes.Add(int64(len(d)))
-	if key {
+	if flags&platform.FrameKey != 0 {
 		s.keys.Add(1)
 	}
 }
@@ -56,10 +56,22 @@ func nalTypes(au []byte) []int {
 	return out
 }
 
+// vp9Frame describes a VP9 frame's uncompressed header: its profile (1 is
+// 4:4:4) and whether it is a keyframe.
+func vp9Frame(f []byte) string {
+	if len(f) < 1 || f[0]>>6 != 2 {
+		return "not a VP9 frame"
+	}
+	profile := (f[0]>>5)&1 | ((f[0]>>4)&1)<<1
+	key := (f[0]>>3)&1 == 0 && (f[0]>>2)&1 == 0 // show_existing_frame=0, frame_type=0
+	return fmt.Sprintf("VP9 profile %d, keyframe=%v", profile, key)
+}
+
 func cmdSelftest(args []string) error {
 	fs := flag.NewFlagSet("selftest", flag.ExitOnError)
 	secs := fs.Int("seconds", 3, "capture duration")
 	fps := fs.Int("fps", 30, "target fps")
+	fullColor := fs.Bool("full-color", false, "encode full color (VP9 4:4:4) instead of H.264")
 	_ = fs.Parse(args)
 
 	b := native.New()
@@ -81,10 +93,18 @@ func cmdSelftest(args []string) error {
 		}
 	}
 
+	cfg := platform.CaptureConfig{MonitorID: mon.ID, FPS: *fps, BitrateKbps: 4000, KeyframeIntervalMS: 2000}
+	if *fullColor {
+		if !b.SupportsCodec(platform.CodecVP9) {
+			return fmt.Errorf("this build cannot encode full color")
+		}
+		cfg.Codec = platform.CodecVP9
+	}
 	sink := &selftestSink{start: time.Now()}
-	if err := b.StartCapture(platform.CaptureConfig{MonitorID: mon.ID, FPS: *fps, BitrateKbps: 4000, KeyframeIntervalMS: 2000}, sink); err != nil {
+	if err := b.StartCapture(cfg, sink); err != nil {
 		return fmt.Errorf("capture: %w", err)
 	}
+	fmt.Printf("capturing:   %s\n", b.EncoderName())
 	time.Sleep(500 * time.Millisecond)
 	// Input readback: move to 25%/75% of the monitor and watch the cursor stream.
 	const tx, ty = 16384, 49151
@@ -97,7 +117,11 @@ func cmdSelftest(args []string) error {
 	frames := sink.frames.Load()
 	fmt.Printf("capture:     %d frames, %d keyframes, %d bytes in %ds (%.1f fps, %.0f kbps)\n", frames, sink.keys.Load(),
 		sink.bytes.Load(), *secs, float64(frames)/float64(*secs), float64(sink.bytes.Load())*8/1000/float64(*secs))
-	fmt.Printf("first frame: %.1f ms after start; NAL types %v\n", float64(sink.firstFrame.Load())/1e6, nalTypes(sink.firstAU))
+	if *fullColor {
+		fmt.Printf("first frame: %.1f ms after start; %s\n", float64(sink.firstFrame.Load())/1e6, vp9Frame(sink.firstAU))
+	} else {
+		fmt.Printf("first frame: %.1f ms after start; NAL types %v\n", float64(sink.firstFrame.Load())/1e6, nalTypes(sink.firstAU))
+	}
 	fmt.Printf("cursor:      %d shape(s), %d position updates\n", sink.shapes.Load(), sink.positions)
 	sink.mu.Lock()
 	dx, dy := int(sink.lastX)-tx, int(sink.lastY)-ty

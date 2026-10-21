@@ -1,5 +1,6 @@
 // Capture (ScreenCaptureKit) → hardware H.264 (VideoToolbox) → Annex-B
-// access units, plus the out-of-band cursor stream.
+// access units, or BGRA → VP9 4:4:4 (rc_vpx, full color), plus the
+// out-of-band cursor stream.
 #import <AppKit/AppKit.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <VideoToolbox/VideoToolbox.h>
@@ -9,6 +10,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "rc_internal.h"
+#include "rc_vpx.h"
 
 @interface RCStreamOutput : NSObject <SCStreamOutput, SCStreamDelegate>
 @end
@@ -39,6 +41,18 @@ static int64_t g_last_pts;
 static int64_t g_last_content_us; // g_queue only
 static bool g_clamped;            // MaxAllowedFrameQP is set below 51 (g_queue only)
 static atomic_bool g_refine_ok;   // the encoder accepts MaxAllowedFrameQP
+
+// Full color: SCK delivers BGRA and rc_vpx encodes on g_vpx_queue. Encoding
+// takes longer than a frame at large sizes, so only the newest picture waits.
+static int g_codec; // RC_CODEC_* of the running capture
+static rc_vpx *g_vpx;
+static dispatch_queue_t g_vpx_queue;
+static pthread_mutex_t g_vpx_mu = PTHREAD_MUTEX_INITIALIZER;
+static CVPixelBufferRef g_vpx_pb; // newest picture waiting for the encoder
+static int64_t g_vpx_pts;
+static bool g_vpx_key, g_vpx_scheduled;
+static int g_vpx_qp;
+static int32_t g_vpx_flags;
 
 static uint32_t g_display;
 static CGRect g_bounds;
@@ -144,7 +158,7 @@ static void vt_output(void *refcon, void *frame_refcon, OSStatus status, VTEncod
     }
     free(tmp);
 
-    int fl = (key ? RC_FRAME_KEY : 0) | ((int)(intptr_t)frame_refcon & RC_FRAME_STATIC);
+    int fl = key ? RC_FRAME_KEY : (int)(intptr_t)frame_refcon & (RC_FRAME_STATIC | RC_FRAME_MINOR);
     if (n > ps_bytes) g_on_frame(g_user, g_out, (int32_t)n, pts_us, fl);
     pthread_mutex_unlock(&g_cb);
 }
@@ -218,13 +232,72 @@ static VTCompressionSessionRef vt_create(int w, int h, int fps, int kbps, int go
     return NULL;
 }
 
+static void vpx_emit(void *user, const uint8_t *data, int32_t len, int64_t pts_us, int32_t flags) {
+    pthread_mutex_lock(&g_cb);
+    if (atomic_load(&g_running) && g_on_frame) g_on_frame(g_user, data, len, pts_us, flags);
+    pthread_mutex_unlock(&g_cb);
+}
+
+// Encodes whatever picture is waiting until none is; runs on g_vpx_queue.
+static void vpx_drain(void) {
+    for (;;) {
+        pthread_mutex_lock(&g_vpx_mu);
+        CVPixelBufferRef pb = g_vpx_pb;
+        bool key = g_vpx_key;
+        int qp = g_vpx_qp;
+        int32_t flags = g_vpx_flags;
+        int64_t pts = g_vpx_pts;
+        g_vpx_pb = NULL;
+        g_vpx_key = false;
+        g_vpx_qp = 0;
+        if (!pb) g_vpx_scheduled = false;
+        pthread_mutex_unlock(&g_vpx_mu);
+        if (!pb) return;
+        if (g_vpx && atomic_load(&g_running) && CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly) == kCVReturnSuccess) {
+            rc_vpx_from_bgra(g_vpx, CVPixelBufferGetBaseAddress(pb), (int)CVPixelBufferGetBytesPerRow(pb));
+            CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+            rc_vpx_encode(g_vpx, pts, key, qp, key ? 0 : flags, vpx_emit, NULL);
+        }
+        CVPixelBufferRelease(pb);
+    }
+}
+
+// Queues pb for the VP9 encoder, replacing a picture still waiting; a
+// refinement pass (max_qp > 0) never replaces new content, and replaced
+// content stays minor only if both changes were.
+static void vpx_submit(CVPixelBufferRef pb, bool force_key, int max_qp, int32_t flags, int64_t pts) {
+    pthread_mutex_lock(&g_vpx_mu);
+    if (max_qp > 0 && g_vpx_pb && g_vpx_qp == 0) {
+        pthread_mutex_unlock(&g_vpx_mu);
+        return;
+    }
+    if (g_vpx_pb && g_vpx_qp == 0 && max_qp == 0) flags &= g_vpx_flags;
+    CVPixelBufferRetain(pb);
+    if (g_vpx_pb) CVPixelBufferRelease(g_vpx_pb);
+    g_vpx_pb = pb;
+    g_vpx_pts = pts;
+    g_vpx_key = g_vpx_key || force_key;
+    g_vpx_qp = max_qp;
+    g_vpx_flags = flags;
+    bool schedule = !g_vpx_scheduled;
+    g_vpx_scheduled = true;
+    pthread_mutex_unlock(&g_vpx_mu);
+    if (schedule) dispatch_async(g_vpx_queue, ^{ vpx_drain(); });
+}
+
 // max_qp > 0 encodes a refinement pass: the frame's quantizer is bounded and
-// it is flagged static; any other frame lifts the bound first.
-static void encode_pixbuf(CVPixelBufferRef pb, bool force_key, int max_qp) {
-    if (!g_vt || !pb) return;
+// it is flagged static; any other frame lifts the bound first. flags adds
+// RC_FRAME_MINOR to new content.
+static void encode_pixbuf(CVPixelBufferRef pb, bool force_key, int max_qp, int32_t flags) {
+    if (!pb || (!g_vt && !g_vpx)) return;
     int64_t now = rc_now_us();
     if (now <= g_last_pts) now = g_last_pts + 1;
     g_last_pts = now;
+    if (max_qp > 0) flags = RC_FRAME_STATIC;
+    if (g_vpx) {
+        vpx_submit(pb, force_key, max_qp, flags, now);
+        return;
+    }
     if (max_qp > 0 || g_clamped) {
         VTSessionSetProperty(g_vt, kVTCompressionPropertyKey_MaxAllowedFrameQP,
                              (__bridge CFNumberRef)@(max_qp > 0 ? max_qp : 51));
@@ -232,11 +305,22 @@ static void encode_pixbuf(CVPixelBufferRef pb, bool force_key, int max_qp) {
     }
     NSDictionary *opts = force_key ? @{(__bridge NSString *)kVTEncodeFrameOptionKey_ForceKeyFrame: @YES} : nil;
     VTCompressionSessionEncodeFrame(g_vt, pb, CMTimeMake(now, 1000000), kCMTimeInvalid,
-                                    (__bridge CFDictionaryRef)opts, (void *)(intptr_t)(max_qp > 0 ? RC_FRAME_STATIC : 0),
-                                    NULL);
+                                    (__bridge CFDictionaryRef)opts, (void *)(intptr_t)flags, NULL);
 }
 
 // ---------------- stream output ----------------
+
+// RC_FRAME_MINOR when the frame's dirty rects cover at most 2% of it.
+static int32_t minor_change(NSArray *dirty, CVPixelBufferRef pb) {
+    if (![dirty isKindOfClass:[NSArray class]] || dirty.count == 0) return 0;
+    double area = 0, total = (double)CVPixelBufferGetWidth(pb) * CVPixelBufferGetHeight(pb);
+    for (id d in dirty) {
+        CGRect r;
+        if ([d isKindOfClass:[NSDictionary class]] && CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)d, &r))
+            area += r.size.width * r.size.height;
+    }
+    return total > 0 && area <= total * 0.02 ? RC_FRAME_MINOR : 0;
+}
 
 @implementation RCStreamOutput
 - (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sb ofType:(SCStreamOutputType)type {
@@ -253,7 +337,7 @@ static void encode_pixbuf(CVPixelBufferRef pb, bool force_key, int max_qp) {
     if (g_last) CVPixelBufferRelease(g_last);
     g_last = pb;
     g_last_content_us = rc_now_us();
-    encode_pixbuf(pb, atomic_exchange(&g_force_key, false), 0);
+    encode_pixbuf(pb, atomic_exchange(&g_force_key, false), 0, minor_change(a[SCStreamFrameInfoDirtyRects], pb));
 }
 
 - (void)stream:(SCStream *)stream didStopWithError:(NSError *)error {
@@ -427,6 +511,17 @@ static void teardown_locked(void) {
         g_stream = nil;
     }
     if (g_queue) dispatch_sync(g_queue, ^{});
+    if (g_vpx_queue) dispatch_sync(g_vpx_queue, ^{});
+    pthread_mutex_lock(&g_vpx_mu);
+    if (g_vpx_pb) CVPixelBufferRelease(g_vpx_pb);
+    g_vpx_pb = NULL;
+    g_vpx_key = g_vpx_scheduled = false;
+    g_vpx_qp = 0;
+    pthread_mutex_unlock(&g_vpx_mu);
+    if (g_vpx) {
+        rc_vpx_close(g_vpx);
+        g_vpx = NULL;
+    }
     if (g_vt) {
         VTCompressionSessionCompleteFrames(g_vt, kCMTimeInvalid);
         VTCompressionSessionInvalidate(g_vt);
@@ -472,19 +567,33 @@ static int start_locked(const rc_capture_config *cfg, rc_frame_fn on_frame, rc_c
         int kbps = cfg->bitrate_kbps > 0 ? cfg->bitrate_kbps : 4000;
         int gop = cfg->keyframe_interval_ms > 0 ? cfg->keyframe_interval_ms : 2000;
 
+        bool full_color = cfg->codec == RC_CODEC_VP9;
         SCStreamConfiguration *sc = [[SCStreamConfiguration alloc] init];
         sc.width = w;
         sc.height = h;
-        sc.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
         sc.minimumFrameInterval = CMTimeMake(1, fps);
         sc.queueDepth = 4;
         sc.showsCursor = NO;
-        sc.colorMatrix = kCGDisplayStreamYCbCrMatrix_ITU_R_709_2;
         sc.capturesAudio = NO;
+        if (full_color) {
+            // sRGB has BT.709 primaries, so rc_vpx's matrix applies as is.
+            sc.pixelFormat = kCVPixelFormatType_32BGRA;
+            sc.colorSpaceName = kCGColorSpaceSRGB;
+        } else {
+            sc.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
+            sc.colorMatrix = kCGDisplayStreamYCbCrMatrix_ITU_R_709_2;
+        }
 
         bool refine_ok = false;
-        g_vt = vt_create(w, h, fps, kbps, gop, cfg->profile_idc, g_encoder, sizeof(g_encoder), &refine_ok);
-        if (!g_vt) return RC_ERR;
+        if (full_color) {
+            g_vpx = rc_vpx_open(w, h, fps, kbps);
+            if (!g_vpx) return RC_ERR;
+            refine_ok = true;
+        } else {
+            g_vt = vt_create(w, h, fps, kbps, gop, cfg->profile_idc, g_encoder, sizeof(g_encoder), &refine_ok);
+            if (!g_vt) return RC_ERR;
+        }
+        g_codec = full_color ? RC_CODEC_VP9 : RC_CODEC_H264;
         atomic_store(&g_refine_ok, refine_ok);
         g_clamped = false;
         g_last_content_us = 0;
@@ -494,6 +603,7 @@ static int start_locked(const rc_capture_config *cfg, rc_frame_fn on_frame, rc_c
                                                                                  QOS_CLASS_USER_INTERACTIVE, 0);
             g_queue = dispatch_queue_create("com.remotectl.capture", attr);
             g_cursor_queue = dispatch_queue_create("com.remotectl.cursor", attr);
+            g_vpx_queue = dispatch_queue_create("com.remotectl.vp9", attr);
             g_wp_queue = dispatch_queue_create("com.remotectl.wallpaper", DISPATCH_QUEUE_SERIAL);
         }
         if (!g_output) g_output = [[RCStreamOutput alloc] init];
@@ -564,13 +674,14 @@ void rc_capture_stop(void) {
 
 void rc_encode_configure(int32_t bitrate_kbps, int32_t fps) {
     pthread_mutex_lock(&g_ctl);
-    if (atomic_load(&g_running) && g_vt) {
+    if (atomic_load(&g_running) && (g_vt || g_vpx)) {
         int kbps = bitrate_kbps > 0 ? bitrate_kbps : g_kbps;
         int f = fps > 0 ? MIN(fps, 60) : g_fps;
         BOOL fps_changed = f != g_fps;
         g_kbps = kbps;
         g_fps = f;
-        dispatch_async(g_queue, ^{ if (g_vt) vt_set_rate(g_vt, kbps, f); });
+        if (g_vpx) dispatch_async(g_vpx_queue, ^{ if (g_vpx) rc_vpx_rate(g_vpx, kbps, f); });
+        else dispatch_async(g_queue, ^{ if (g_vt) vt_set_rate(g_vt, kbps, f); });
         if (fps_changed && g_stream && g_sc) {
             g_sc.minimumFrameInterval = CMTimeMake(1, f);
             [g_stream updateConfiguration:g_sc completionHandler:^(NSError *e) {
@@ -587,7 +698,7 @@ void rc_request_keyframe(void) {
     // A static screen produces no new frames, so re-encode the last one.
     dispatch_async(g_queue, ^{
         if (atomic_load(&g_running) && g_last && atomic_exchange(&g_force_key, false))
-            encode_pixbuf(g_last, true, 0);
+            encode_pixbuf(g_last, true, 0, 0);
     });
 }
 
@@ -597,7 +708,7 @@ int rc_encode_refine(int32_t max_qp) {
     int qp = MIN(51, MAX(1, max_qp));
     dispatch_async(g_queue, ^{
         if (atomic_load(&g_running) && g_last && rc_now_us() - g_last_content_us >= 100000)
-            encode_pixbuf(g_last, false, qp);
+            encode_pixbuf(g_last, false, qp, RC_FRAME_STATIC);
     });
     return RC_OK;
 }
@@ -611,8 +722,14 @@ int rc_wallpaper_hide(int hide) {
     return RC_OK;
 }
 
+int rc_codecs(void) { return 1 << RC_CODEC_H264 | 1 << RC_CODEC_VP9; }
+
 const char *rc_encoder_name(void) {
     pthread_mutex_lock(&g_ctl);
+    if (atomic_load(&g_running) && g_codec == RC_CODEC_VP9) {
+        pthread_mutex_unlock(&g_ctl);
+        return "libvpx-vp9";
+    }
     if (g_encoder[0] == 0) {
         bool refine_ok = false;
         VTCompressionSessionRef s = vt_create(1280, 720, 60, 4000, 2000, 66, g_encoder, sizeof(g_encoder), &refine_ok);

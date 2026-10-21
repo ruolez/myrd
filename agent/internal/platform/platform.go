@@ -36,14 +36,30 @@ type CaptureConfig struct {
 	// ProfileIDC is the negotiated H.264 profile (66 constrained baseline,
 	// 77 main, 100 constrained high); the encoder uses at most that.
 	ProfileIDC int
+	Codec      int // CodecH264 or CodecVP9
 }
+
+// Codecs a capture can encode (rc_native.h RC_CODEC_*).
+const (
+	CodecH264 = 0
+	CodecVP9  = 1 // VP9 profile 1, 4:4:4: full color
+)
+
+// FrameFlags describe an encoded frame (rc_native.h RC_FRAME_*).
+type FrameFlags uint8
+
+const (
+	FrameKey    FrameFlags = 0x1 // IDR / VP9 keyframe
+	FrameStatic FrameFlags = 0x2 // no new screen content: a refinement pass, an idle repeat
+	FrameMinor  FrameFlags = 0x4 // new content in a small area only (a caret, a clock)
+)
 
 // CaptureSink receives native callbacks. Implementations must be fast and
 // must not block (they run on native threads).
 type CaptureSink interface {
-	// Frame is one H.264 access unit, Annex-B. data is only valid during the
-	// call. static: no new screen content (a refinement pass, an idle repeat).
-	Frame(data []byte, ptsMicros int64, keyframe, static bool)
+	// Frame is one H.264 access unit, Annex-B (one VP9 frame with CodecVP9).
+	// data is only valid during the call.
+	Frame(data []byte, ptsMicros int64, flags FrameFlags)
 	// CursorShape: RGBA8, w*h*4 bytes. data is only valid during the call.
 	CursorShape(id uint32, w, h, hotX, hotY uint16, rgba []byte)
 	// CursorPos: normalized 0..65535 within the captured monitor.
@@ -107,6 +123,8 @@ type Backend interface {
 	// cannot bound it.
 	RefineEncoder(maxQP int) error
 	EncoderName() string
+	// SupportsCodec reports whether captures can use codec (Codec*).
+	SupportsCodec(codec int) bool
 
 	Inject(ev InputEvent) error
 	InjectText(s string) error

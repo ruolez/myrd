@@ -1,5 +1,5 @@
 // Package fake is an in-memory platform.Backend for tests: it emits a tiny
-// fixed H.264 access unit at the configured fps (or, with SetStatic, only the
+// fixed H.264 access unit (VP9 frame with CodecVP9) at the configured fps (or, with SetStatic, only the
 // first frame, keyframes and refinement passes) and records injected input.
 package fake
 
@@ -18,6 +18,12 @@ var keyframeAU = []byte{
 	0, 0, 0, 1, 0x65, 0x88, 0x84, 0x00, 0x33, 0xff,
 }
 var deltaAU = []byte{0, 0, 0, 1, 0x41, 0x9a, 0x02, 0x04, 0x07}
+
+// The uncompressed headers of a real VP9 profile 1 (4:4:4) 16x16 key and
+// delta frame (libvpx); enough for pion's VP9 payloader.
+var vp9Key = []byte{0xa2, 0x49, 0x83, 0x42, 0x40, 0x00, 0x1e, 0x00, 0x1e, 0xc0, 0x47, 0x04, 0x83, 0x83, 0x02, 0x00,
+	0x00, 0x04, 0x40, 0x00, 0x69, 0x43, 0xff, 0xff}
+var vp9Delta = []byte{0xa6, 0x00, 0x40, 0x92, 0x9c, 0x58, 0x51, 0xe3, 0x30, 0x10, 0x1c, 0x06, 0x03, 0x00, 0x82, 0x77}
 
 type Backend struct {
 	Perms       platform.Permissions
@@ -42,6 +48,8 @@ type Backend struct {
 	refineQP   int // pending pass
 	refines    []int
 	noRefine   bool
+	vp9        bool // SupportsCodec(CodecVP9)
+	vp9Fails   bool // StartCapture refuses CodecVP9
 
 	canHideWallpaper bool
 	wallpaperHidden  bool
@@ -63,11 +71,35 @@ func (b *Backend) Permissions() platform.Permissions     { return b.Perms }
 func (b *Backend) RequestPermission(bool)                {}
 func (b *Backend) EncoderName() string                   { return "fake" }
 
+func (b *Backend) SupportsCodec(codec int) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return codec == platform.CodecH264 || (codec == platform.CodecVP9 && b.vp9)
+}
+
+// SetFullColor lets captures use CodecVP9.
+func (b *Backend) SetFullColor(on bool) {
+	b.mu.Lock()
+	b.vp9 = on
+	b.mu.Unlock()
+}
+
+// SetFullColorFails makes a CodecVP9 StartCapture fail (not recorded in Starts).
+func (b *Backend) SetFullColorFails(on bool) {
+	b.mu.Lock()
+	b.vp9Fails = on
+	b.mu.Unlock()
+}
+
 func (b *Backend) StartCapture(cfg platform.CaptureConfig, sink platform.CaptureSink) error {
 	b.mu.Lock()
 	if b.capturing {
 		b.mu.Unlock()
 		return platform.ErrBusy
+	}
+	if cfg.Codec == platform.CodecVP9 && b.vp9Fails {
+		b.mu.Unlock()
+		return platform.ErrUnsupported
 	}
 	b.capturing, b.sink, b.stop, b.forceKey = true, sink, make(chan struct{}), true
 	b.starts = append(b.starts, cfg)
@@ -94,11 +126,22 @@ func (b *Backend) StartCapture(cfg platform.CaptureConfig, sink platform.Capture
 				b.forceKey, b.refineQP = false, 0
 				b.mu.Unlock()
 				au := deltaAU
-				if key {
+				switch {
+				case cfg.Codec == platform.CodecVP9 && key:
+					au = vp9Key
+				case cfg.Codec == platform.CodecVP9:
+					au = vp9Delta
+				case key:
 					au = keyframeAU
 				}
 				if emit {
-					sink.Frame(au, time.Since(start).Microseconds(), key, refine && !key)
+					var fl platform.FrameFlags
+					if key {
+						fl |= platform.FrameKey
+					} else if refine {
+						fl |= platform.FrameStatic
+					}
+					sink.Frame(au, time.Since(start).Microseconds(), fl)
 				}
 				sink.CursorPos(uint16(n*100), 1000, true)
 				n++

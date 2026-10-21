@@ -2,26 +2,30 @@ package session
 
 import (
 	"math/rand/v2"
+	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/pion/interceptor"
 	"github.com/pion/rtp"
+	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v4"
+
+	"github.com/ruolez/remotectl/agent/internal/platform"
 )
 
 // trackContext binds a videoTrack without a PeerConnection and records
 // what it writes.
 type trackContext struct {
-	codec webrtc.RTPCodecParameters
-	mu    sync.Mutex
-	sent  []rtp.Header
+	codecs   []webrtc.RTPCodecParameters
+	mu       sync.Mutex
+	sent     []rtp.Header
+	payloads [][]byte
 }
 
-func (c *trackContext) CodecParameters() []webrtc.RTPCodecParameters {
-	return []webrtc.RTPCodecParameters{c.codec}
-}
+func (c *trackContext) CodecParameters() []webrtc.RTPCodecParameters           { return c.codecs }
 func (c *trackContext) HeaderExtensions() []webrtc.RTPHeaderExtensionParameter { return nil }
 func (c *trackContext) SSRC() webrtc.SSRC                                      { return 1234 }
 func (c *trackContext) SSRCRetransmission() webrtc.SSRC                        { return 0 }
@@ -34,8 +38,14 @@ func (c *trackContext) Write(b []byte) (int, error)                            {
 func (c *trackContext) WriteRTP(h *rtp.Header, payload []byte) (int, error) {
 	c.mu.Lock()
 	c.sent = append(c.sent, h.Clone())
+	c.payloads = append(c.payloads, slices.Clone(payload))
 	c.mu.Unlock()
 	return len(payload), nil
+}
+
+func vp9Codec(pt webrtc.PayloadType, profile string) webrtc.RTPCodecParameters {
+	return webrtc.RTPCodecParameters{PayloadType: pt, RTPCodecCapability: webrtc.RTPCodecCapability{
+		MimeType: webrtc.MimeTypeVP9, ClockRate: 90000, SDPFmtpLine: "profile-id=" + profile}}
 }
 
 func h264Codec(profileLevelID string) webrtc.RTPCodecParameters {
@@ -54,7 +64,7 @@ func TestVideoTrackStampsEachFrameWithItsCaptureTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := &trackContext{codec: h264Codec("640c1f")}
+	ctx := &trackContext{codecs: []webrtc.RTPCodecParameters{h264Codec("640c1f")}}
 	if _, err := tr.Bind(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +75,7 @@ func TestVideoTrackStampsEachFrameWithItsCaptureTime(t *testing.T) {
 		if i == 0 {
 			au = idrAU
 		}
-		if err := tr.WriteFrame(au, pts, 16*time.Millisecond); err != nil {
+		if err := tr.WriteFrame(au, pts, 16*time.Millisecond, platform.CodecH264); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -98,6 +108,76 @@ func TestVideoTrackStampsEachFrameWithItsCaptureTime(t *testing.T) {
 	}
 	if got := tr.profile(0); got != ProfileHigh {
 		t.Errorf("profile = %d, want %d from the negotiated 640c1f", got, ProfileHigh)
+	}
+}
+
+func TestVideoTrackSendsFullColorOnTheVP9Profile1PayloadType(t *testing.T) {
+	key, err := os.ReadFile("testdata/vp9-444-16x16-key.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	delta, err := os.ReadFile("testdata/vp9-444-16x16-delta.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr, err := newVideoTrack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const h264PT, vp9PT = 106, 98
+	ctx := &trackContext{codecs: []webrtc.RTPCodecParameters{vp9Codec(96, "0"), h264Codec("640c1f"), vp9Codec(vp9PT, "1")}}
+	if _, err := tr.Bind(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !tr.fullColor() {
+		t.Fatal("VP9 profile 1 was negotiated but fullColor() is false")
+	}
+	frames := []struct {
+		data  []byte
+		codec int
+	}{{idrAU, platform.CodecH264}, {key, platform.CodecVP9}, {delta, platform.CodecVP9}}
+	for i, f := range frames {
+		if err := tr.WriteFrame(f.data, int64(i)*33_000, 33*time.Millisecond, f.codec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var pts []uint8
+	for i, h := range ctx.sent {
+		pts = append(pts, h.PayloadType)
+		if h.SSRC != 1234 || (i > 0 && h.SequenceNumber != ctx.sent[i-1].SequenceNumber+1) {
+			t.Fatalf("packet %d: ssrc %d seq %d; one SSRC and sequence for both codecs", i, h.SSRC, h.SequenceNumber)
+		}
+	}
+	firstVP9 := slices.Index(pts, vp9PT)
+	if firstVP9 < 1 || slices.Contains(pts[firstVP9:], h264PT) || slices.Contains(pts[:firstVP9], vp9PT) {
+		t.Fatalf("payload types %v: want H.264 (%d) then only VP9 profile 1 (%d)", pts, h264PT, vp9PT)
+	}
+	var d codecs.VP9Packet
+	if _, err := d.Unmarshal(ctx.payloads[firstVP9]); err != nil {
+		t.Fatal(err)
+	}
+	if !d.B || d.P || !d.V || d.Width[0] != 16 || d.Height[0] != 16 {
+		t.Fatalf("keyframe descriptor B=%v P=%v V=%v size %vx%v, want a 16x16 keyframe with scalability data",
+			d.B, d.P, d.V, d.Width, d.Height)
+	}
+}
+
+func TestFullColorPTNeedsVP9Profile1(t *testing.T) {
+	cases := []struct {
+		name   string
+		codecs []webrtc.RTPCodecParameters
+		want   uint8
+	}{
+		{"profile 1", []webrtc.RTPCodecParameters{h264Codec("640c1f"), vp9Codec(35, "1")}, 35},
+		{"only profile 0 and 2", []webrtc.RTPCodecParameters{vp9Codec(98, "0"), vp9Codec(100, "2")}, 0},
+		{"no profile-id means 0", []webrtc.RTPCodecParameters{{PayloadType: 98,
+			RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP9}}}, 0},
+		{"none", nil, 0},
+	}
+	for _, c := range cases {
+		if got := FullColorPT(c.codecs); got != c.want {
+			t.Errorf("%s: FullColorPT = %d, want %d", c.name, got, c.want)
+		}
 	}
 }
 

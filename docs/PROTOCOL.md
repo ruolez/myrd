@@ -224,9 +224,13 @@ Rules:
 
 ## 5. Data channels
 
-The browser creates the offer with one `recvonly` video transceiver (H.264, packetization-mode=1, preferring high 640c1f/64001f, then main 4d001f, then constrained baseline 42e01f) and five data channels (exact labels).
+The browser creates the offer with one `recvonly` video transceiver (H.264, packetization-mode=1, preferring high 640c1f/64001f, then main 4d001f, then constrained baseline 42e01f; then VP9 `profile-id=1` for full color; then the repair formats rtx, red, ulpfec, `flexfec-03`) and five data channels (exact labels).
 
-Video: the agent encodes at most the negotiated profile (high without B-frames, i.e. constrained high), stamps each frame's RTP timestamp with its capture time (90 kHz), sends a keyframe only when the browser asks (PLI/FIR, at most every 100 ms), and paces packets at 2.5× the bandwidth estimate (no packet waits more than 50 ms). The estimate is GCC (forked in `agent/internal/gcc`): it holds instead of climbing while the screen sends less than it allows, and every large frame doubles as a bandwidth probe. Once the screen has not changed for 200 ms the agent re-encodes the last frame in passes of falling quantizer (36 → 18, each paced to half the target bitrate) until text is sharp; a small change (a caret, a clock) redoes only the last two passes, larger ones start over. When the browser negotiates `http://www.webrtc.org/experiments/rtp-hdrext/playout-delay` (Chrome does), every packet carries min = max = 0: render each frame as soon as it is decoded.
+Video: the agent encodes at most the negotiated profile (high without B-frames, i.e. constrained high), stamps each frame's RTP timestamp with its capture time (90 kHz), sends a keyframe only when the browser asks (PLI/FIR, at most every 100 ms), and paces packets at 2.5× the bandwidth estimate (no packet waits more than 50 ms). The estimate is GCC (forked in `agent/internal/gcc`): it holds instead of climbing while the screen sends less than it allows, every large frame doubles as a bandwidth probe, and loss is judged over windows of at least 20 packets (up to 1 s or 100 packets), each packet counted once even when the browser reports it again. Once the screen has not changed for 200 ms the agent re-encodes the last frame in passes of falling quantizer (36 → 18, each paced to half the target bitrate) until text is sharp. A change to a small area (about 2% of the screen or less: a caret, a clock) does not restart the passes still to come, which cover it; after the last pass it sends the finest one again. Larger changes start over. A capture whose pixels did not change (an OS damage report without new content) is not new content.
+
+Full color: when the browser offered VP9 `profile-id=1` (Chrome, Edge) and the agent can encode it (all three platforms, software libvpx), `"color":"full"` switches the stream to VP9 4:4:4 (BT.709 limited range) on that payload type, same SSRC, sequence and clock, starting with a keyframe; `standard` switches back to H.264 4:2:0. 4:4:4 keeps 1-pixel colored text and edges sharp (4:2:0 halves the color resolution); it is software encoded, so at most 30 fps, and its automatic ceiling is 1.25× H.264's. If the full-color encoder fails to start, the agent stays on H.264 for the session and withdraws the option.
+
+Repair (forward error correction): when the browser offered `flexfec-03`, the agent's answer carries `a=ssrc-group:FEC-FR <media> <repair>` and, once the median loss of the last 5 s reaches 1%, sends FlexFEC-03 repair packets on the repair SSRC: per frame (at most 48 media packets per group, interleaved masks), 3 repair packets per expected lost packet, 10% to 50% of the media packets. It stops after 5 s below 0.5% loss. Repair packets carry transport-wide sequence numbers (paced and counted by the estimate), and the encoder target leaves room for them (estimate / (1 + rate)). A lost packet is rebuilt in the browser without waiting a round trip for a retransmission; NACK still covers what repair cannot. When the browser negotiates `http://www.webrtc.org/experiments/rtp-hdrext/playout-delay` (Chrome does), every packet carries min = max = 0: render each frame as soon as it is decoded.
 
 | label | options | direction |
 |---|---|---|
@@ -280,7 +284,7 @@ JSON text messages, `{"t": "...", ...}`:
 | `stream` | A→B | stream state, see below |
 | `ping` | B→A | `id`, `ts` (ms, browser clock) |
 | `pong` | A→B | `id`, `ts` (echo) |
-| `stats` | A→B every 2 s | `bitrate_kbps`, `fps`, `encoder`, `width`, `height` (encoded size), `keyframes`, `target_fps`, `target_kbps`, `bwe_kbps`, `loss` (0..1), `refine_qp` (quantizer of the latest static-screen refinement pass, 0 while the screen changes), `rtt_ms` (transport feedback round trip) |
+| `stats` | A→B every 2 s | `bitrate_kbps`, `fps`, `encoder` (`libvpx-vp9` while full color runs), `width`, `height` (encoded size), `keyframes`, `target_fps`, `target_kbps`, `bwe_kbps`, `loss` (0..1), `refine_qp` (quantizer of the latest static-screen refinement pass, 0 while the screen changes), `rtt_ms` (transport feedback round trip), `fec_pct` (repair overhead in use, % of media packets; 0 = off), `fec_packets` (repair packets sent this session) |
 | `error` | A→B | `code` (`permission_missing`, `capture_failed`, `encoder_failed`), `detail` |
 | `bye` | A→B | `reason` (just before closing) |
 
@@ -293,7 +297,7 @@ Monitor sizes in `hello.monitors` and `monitor` are always native pixels (physic
 B→A, the full desired state each time (idempotent; the latest wins). The browser sends it when `hello` arrives, on every change (debounced), and when the tab is hidden or shown. It never sends `0x20 op 3` to an agent with the `stream` feature.
 
 ```json
-{"t":"stream","id":7,"preset":"auto","fps":null,"res":null,"max_kbps":null,"background":false,"wallpaper":false,"view":{"w":2880,"h":1600}}
+{"t":"stream","id":7,"preset":"auto","fps":null,"res":null,"max_kbps":null,"background":false,"wallpaper":false,"color":"full","view":{"w":2880,"h":1600}}
 ```
 
 | field | type | meaning |
@@ -305,6 +309,7 @@ B→A, the full desired state each time (idempotent; the latest wins). The brows
 | `max_kbps` | null \| 1000..50000 | null = automatic ceiling; otherwise a cap (sent bitrate = min(estimate, cap)); relay paths are capped at 6000 |
 | `background` | bool | hidden tab: 5 fps / 1 Mbps at the current size, Auto frozen |
 | `wallpaper` | bool, optional | show the device's wallpaper; false or absent hides it while the session runs (feature `"wallpaper"`, see below) |
+| `color` | `standard` \| `full`, optional | `full` asks for 4:4:4 (see Full color above) where the agent and browser can; absent = `standard`. The browser leaves it out when standard |
 | `view` | `{w, h}`, optional | the browser's video area in device pixels (2..16384, sent even). Present: presets that would encode at native size use `window` instead. Absent: the browser shows the stream 1:1 ("actual size", scrolled) or predates the field. A change of only `view` keeps Auto's place on its ladder; the browser debounces it (400 ms), since a new size restarts capture |
 
 Presets (`max` = the encoder cap, 60 on hardware, 30 on software encoders):
@@ -322,15 +327,15 @@ An invalid message (unknown enum, wrong type, out of range) is ignored and answe
 A→B state, sent after `hello`, after every request, and when the monitor, Auto step, path or `max_fps` changes:
 
 ```json
-{"t":"stream","id":7,"ok":true,"preset":"auto","fps":null,"res":null,"max_kbps":null,"background":false,"wallpaper":false,
- "resolved":{"fps":60,"res":"native","max_kbps":null},
+{"t":"stream","id":7,"ok":true,"preset":"auto","fps":null,"res":null,"max_kbps":null,"background":false,"wallpaper":false,"color":null,
+ "resolved":{"fps":60,"res":"native","max_kbps":null,"color":"standard"},
  "target_fps":30,"max_fps":60,"width":2560,"height":1440,"native_width":5120,"native_height":2880,
  "ceil_kbps":8000,"relay":false,
  "auto":{"rung":2,"rungs":6,"reason":"congestion"},
- "options":{"fps":[5,10,15,24,30,60],"res":[{"id":"native","width":5120,"height":2880},{"id":"1440p","width":2560,"height":1440},{"id":"1080p","width":1920,"height":1080},{"id":"720p","width":1280,"height":720},{"id":"half","width":2560,"height":1440}]}}
+ "options":{"fps":[5,10,15,24,30,60],"res":[{"id":"native","width":5120,"height":2880},{"id":"1440p","width":2560,"height":1440},{"id":"1080p","width":1920,"height":1080},{"id":"720p","width":1280,"height":720},{"id":"half","width":2560,"height":1440}],"color":["standard","full"]}}
 ```
 
-`resolved` is what the preset and overrides came to (so the browser can switch to `custom` without its own preset table); `width`/`height` are the encoded size; `auto` is null unless `preset` is `auto` (`reason`: `steady`, `warmup`, `congestion`, `loss`, `starved`, `latency`, `probe`); `options.fps` lists only values ≤ `max_fps`; `options.res` starts with `window` only when the request carried a `view`.
+`resolved` is what the preset and overrides came to (so the browser can switch to `custom` without its own preset table); `width`/`height` are the encoded size; `auto` is null unless `preset` is `auto` (`reason`: `steady`, `warmup`, `congestion`, `loss`, `starved`, `latency`, `probe`); `options.fps` lists only values ≤ `max_fps`; `options.res` starts with `window` only when the request carried a `view`. `color` echoes the request (null = standard); `resolved.color` is what the device sends; `options.color` lists `full` only when this session can switch to it (older agents omit all three).
 
 Wallpaper (feature `"wallpaper"`, advertised when the agent's platform can hide it: macOS and Windows, not the Linux demo device): a solid background costs almost nothing to encode, so the bits go to what changes. The agent hides the wallpaper from capture start until the session ends and restores it then; toggling never restarts capture. macOS leaves the wallpaper windows out of the capture only, so the device's own screen is unchanged; Windows turns it off for the user's logon session without touching the registry (logoff, or the next agent start after a crash, brings it back), so the person at the device sees a plain background during the session. The browser shows the switch only with the feature and keeps the choice per device.
 

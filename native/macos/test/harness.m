@@ -8,12 +8,17 @@
 #include <string.h>
 #include <unistd.h>
 #include "rc_native.h"
+#include <vpx/vp8dx.h>
+#include <vpx/vpx_decoder.h>
 
 static atomic_int frames, keyframes, bad_annexb, key_without_ps, shapes, positions;
 static atomic_long bytes, last_key_len;
 static FILE *dump; // RC_HARNESS_DUMP=<file.h264> writes the elementary stream
 
-static void on_frame(void *u, const uint8_t *d, int32_t len, int64_t pts, int32_t key) {
+static atomic_int minor_frames;
+static void on_frame(void *u, const uint8_t *d, int32_t len, int64_t pts, int32_t flags) {
+    int key = (flags & RC_FRAME_KEY) != 0;
+    if (flags & RC_FRAME_MINOR) atomic_fetch_add(&minor_frames, 1);
     atomic_fetch_add(&frames, 1);
     atomic_fetch_add(&bytes, len);
     if (dump) fwrite(d, 1, (size_t)len, dump);
@@ -33,6 +38,21 @@ static void on_frame(void *u, const uint8_t *d, int32_t len, int64_t pts, int32_
         if (!(has_sps && has_pps && has_idr)) atomic_fetch_add(&key_without_ps, 1);
     }
 }
+// Full color: every frame must decode as 4:4:4 at the capture size.
+static vpx_codec_ctx_t vp9dec;
+static atomic_int vp9_frames, vp9_keys, vp9_static, vp9_bad;
+static int vp9_w, vp9_h;
+static void on_vp9_frame(void *u, const uint8_t *d, int32_t len, int64_t pts, int32_t flags) {
+    atomic_fetch_add(&vp9_frames, 1);
+    if (flags & RC_FRAME_KEY) atomic_fetch_add(&vp9_keys, 1);
+    if (flags & RC_FRAME_STATIC) atomic_fetch_add(&vp9_static, 1);
+    vpx_codec_iter_t it = NULL;
+    vpx_image_t *im = NULL;
+    if (vpx_codec_decode(&vp9dec, d, (unsigned)len, NULL, 0) == VPX_CODEC_OK) im = vpx_codec_get_frame(&vp9dec, &it);
+    if (!im || im->fmt != VPX_IMG_FMT_I444) { atomic_fetch_add(&vp9_bad, 1); return; }
+    vp9_w = (int)im->d_w; vp9_h = (int)im->d_h;
+}
+
 static void on_shape(void *u, uint32_t id, uint16_t w, uint16_t h, uint16_t hx, uint16_t hy, const uint8_t *p, int32_t n) {
     atomic_fetch_add(&shapes, 1);
     if (n != w * h * 4) fprintf(stderr, "FAIL cursor shape len %d != %d\n", n, w * h * 4);
@@ -99,7 +119,11 @@ int main(void) {
 
         CHECK(rc_wallpaper_hide(0) == RC_OK, "rc_wallpaper_hide(0) probe before capture");
 
-        rc_capture_config cfg = {.monitor_id = mons[0].id, .fps = 60, .bitrate_kbps = 6000,
+        // RC_HARNESS_MONITOR=<index> captures another monitor (a static one tests refinement).
+        const char *mi = getenv("RC_HARNESS_MONITOR");
+        int mon = mi ? atoi(mi) : 0;
+        if (mon < 0 || mon >= n) mon = 0;
+        rc_capture_config cfg = {.monitor_id = mons[mon].id, .fps = 60, .bitrate_kbps = 6000,
                                  .keyframe_interval_ms = 2000, .max_width = 1920, .max_height = 1080};
         int crc = rc_capture_start(&cfg, on_frame, on_shape, on_pos, NULL);
         if (!screen) {
@@ -127,11 +151,46 @@ int main(void) {
             int f = atomic_load(&frames);
             usleep(200 * 1000);
             CHECK(atomic_load(&frames) == f, "no frame callbacks after rc_capture_stop");
-            CHECK(f >= 1, "frames=%d keyframes=%d bytes=%ld", f, atomic_load(&keyframes), atomic_load(&bytes));
+            CHECK(f >= 1, "frames=%d keyframes=%d minor=%d bytes=%ld", f, atomic_load(&keyframes),
+                  atomic_load(&minor_frames), atomic_load(&bytes));
             CHECK(atomic_load(&bad_annexb) == 0, "every AU starts with an Annex-B start code");
             CHECK(atomic_load(&key_without_ps) == 0, "every keyframe carries SPS+PPS+IDR");
             CHECK(atomic_load(&positions) >= 1, "cursor positions=%d shapes=%d", atomic_load(&positions),
                   atomic_load(&shapes));
+
+            CHECK((rc_codecs() & (1 << RC_CODEC_VP9)) != 0, "rc_codecs includes VP9 (full color)");
+            vpx_codec_dec_init(&vp9dec, vpx_codec_vp9_dx(), NULL, 0);
+            rc_capture_config fc = cfg;
+            fc.codec = RC_CODEC_VP9;
+            fc.fps = 30;
+            fc.max_width = 1280;
+            fc.max_height = 1280;
+            CHECK(rc_capture_start(&fc, on_vp9_frame, on_shape, on_pos, NULL) == RC_OK, "full-color capture starts");
+            CHECK(strcmp(rc_encoder_name(), "libvpx-vp9") == 0, "encoder while full color: %s", rc_encoder_name());
+            usleep(1000 * 1000);
+            int k = atomic_load(&vp9_keys);
+            rc_request_keyframe();
+            usleep(400 * 1000);
+            CHECK(atomic_load(&vp9_keys) > k, "full-color keyframe on request");
+            usleep(300 * 1000);
+            int st = atomic_load(&vp9_static), all = atomic_load(&vp9_frames);
+            CHECK(rc_encode_refine(24) == RC_OK, "full color accepts refinement");
+            usleep(400 * 1000);
+            int content = (atomic_load(&vp9_frames) - all) - (atomic_load(&vp9_static) - st);
+            if (content > 0) // a pass is dropped while the screen changes (by design)
+                printf("skip refinement pass: the screen changed (%d new frames)\n", content);
+            else
+                CHECK(atomic_load(&vp9_static) > st, "refinement pass delivered as static (%d → %d)", st,
+                      atomic_load(&vp9_static));
+            rc_capture_stop();
+            int vf = atomic_load(&vp9_frames);
+            usleep(200 * 1000);
+            CHECK(atomic_load(&vp9_frames) == vf, "no full-color frames after rc_capture_stop");
+            CHECK(vf >= 2 && atomic_load(&vp9_bad) == 0, "%d full-color frames, all decoded as 4:4:4 %dx%d", vf, vp9_w,
+                  vp9_h);
+            CHECK(vp9_w > 0 && vp9_w <= 1280 && vp9_h <= 1280 && vp9_w % 2 == 0, "full-color size fits the box");
+            CHECK(strncmp(rc_encoder_name(), "videotoolbox", 12) == 0, "encoder name back to %s", rc_encoder_name());
+            vpx_codec_destroy(&vp9dec);
         }
         rc_shutdown();
         if (dump) fclose(dump);

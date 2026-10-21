@@ -9,6 +9,8 @@ export type AutoReason =
   "steady" | "warmup" | "congestion" | "loss" | "starved" | "latency" | "probe";
 /** fit: the stream follows the window, shown pixel for pixel; actual: native size 1:1, scrolled. */
 export type StreamScale = "fit" | "actual";
+/** standard: 4:2:0 H.264; full: 4:4:4 (VP9 profile 1) for sharp colored text. */
+export type StreamColor = "standard" | "full";
 /** The viewer's video area in device pixels (even), sent so the agent encodes exactly that. */
 export type StreamView = { w: number; h: number };
 export type StreamRequestId = Brand<number, "StreamRequestId">;
@@ -22,6 +24,7 @@ export type StreamPrefs = {
   /** Show the device's wallpaper; hidden by default (cheaper to encode). */
   wallpaper: boolean;
   scale: StreamScale;
+  color: StreamColor;
 };
 
 export type ResolutionOption = { id: ResolutionId; width: number; height: number };
@@ -35,7 +38,9 @@ export type StreamState = {
   max_kbps: number | null;
   background: boolean;
   wallpaper: boolean;
-  resolved: { fps: number; res: ResolutionId; max_kbps: number | null };
+  /** The color the browser asked for; resolved.color is what the device sends. */
+  color: StreamColor | null;
+  resolved: { fps: number; res: ResolutionId; max_kbps: number | null; color: StreamColor };
   target_fps: number;
   max_fps: number;
   width: number;
@@ -45,7 +50,7 @@ export type StreamState = {
   ceil_kbps: number | null;
   relay: boolean;
   auto: { rung: number; rungs: number; reason: AutoReason } | null;
-  options: { fps: number[]; res: ResolutionOption[] };
+  options: { fps: number[]; res: ResolutionOption[]; color: StreamColor[] };
 };
 
 export const NAMED_PRESETS: readonly NamedPreset[] = ["auto", "speed", "balanced", "quality"];
@@ -61,6 +66,7 @@ export const DEFAULT_STREAM_PREFS: StreamPrefs = {
   max_kbps: null,
   wallpaper: false,
   scale: "fit",
+  color: "standard",
 };
 
 const PRESETS: readonly StreamPreset[] = [...NAMED_PRESETS, "custom"];
@@ -97,6 +103,7 @@ const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFin
 const isPreset = (v: unknown): v is StreamPreset => PRESETS.includes(v as StreamPreset);
 const isRes = (v: unknown): v is ResolutionId => RESOLUTIONS.includes(v as ResolutionId);
 const isReason = (v: unknown): v is AutoReason => typeof v === "string" && v in REASONS;
+const isColor = (v: unknown): v is StreamColor => v === "standard" || v === "full";
 const intIn = (v: unknown, lo: number, hi: number): number | null =>
   Number.isInteger(v) && (v as number) >= lo && (v as number) <= hi ? (v as number) : null;
 const fpsOrNull = (v: unknown) => intIn(v, 1, 60);
@@ -104,8 +111,9 @@ const kbpsOrNull = (v: unknown) => intIn(v, MIN_KBPS, MAX_KBPS);
 const resOrNull = (v: unknown) => (isRes(v) ? v : null);
 
 /**
- * The B→A `stream` message; key order matches the shared vectors. `view` is
- * left out when null: at actual size, or before the stage was measured.
+ * The B→A `stream` message; key order matches the shared vectors. `color` is
+ * left out when standard, `view` when null: at actual size, or before the
+ * stage was measured.
  */
 export function encodeStreamRequest(
   prefs: StreamPrefs,
@@ -122,6 +130,7 @@ export function encodeStreamRequest(
     max_kbps: prefs.max_kbps,
     background: hidden,
     wallpaper: prefs.wallpaper,
+    color: prefs.color === "full" ? "full" : undefined,
     view: view ?? undefined,
   });
 }
@@ -155,6 +164,7 @@ export function parseStreamState(m: unknown): StreamState | null {
       : null;
   const opts = isObj(m.options) ? m.options : {};
   const fpsOpts = Array.isArray(opts.fps) ? opts.fps.filter(isNum) : [];
+  const colorOpts = Array.isArray(opts.color) ? opts.color.filter(isColor) : [];
   const resOpts = Array.isArray(opts.res)
     ? opts.res
         .filter((o): o is Obj => isObj(o) && isRes(o.id) && isNum(o.width) && isNum(o.height))
@@ -173,7 +183,13 @@ export function parseStreamState(m: unknown): StreamState | null {
     max_kbps: kbpsOrNull(m.max_kbps),
     background: m.background === true,
     wallpaper: m.wallpaper === true,
-    resolved: { fps: r.fps, res: r.res, max_kbps: isNum(r.max_kbps) ? r.max_kbps : null },
+    color: isColor(m.color) ? m.color : null,
+    resolved: {
+      fps: r.fps,
+      res: r.res,
+      max_kbps: isNum(r.max_kbps) ? r.max_kbps : null,
+      color: isColor(r.color) ? r.color : "standard",
+    },
     target_fps: m.target_fps as number,
     max_fps: m.max_fps as number,
     width: m.width as number,
@@ -183,21 +199,22 @@ export function parseStreamState(m: unknown): StreamState | null {
     ceil_kbps: isNum(m.ceil_kbps) ? m.ceil_kbps : null,
     relay: m.relay === true,
     auto,
-    options: { fps: fpsOpts, res: resOpts },
+    options: { fps: fpsOpts, res: resOpts, color: colorOpts },
   };
 }
 
 /**
  * Picking a named preset drops every override; picking Custom starts from what
- * the agent resolved for the current settings. The wallpaper and scale choices stay.
+ * the agent resolved for the current settings. The wallpaper, scale and color
+ * choices stay.
  */
 export function selectPreset(
   prefs: StreamPrefs,
   preset: StreamPreset,
   state: StreamState | null,
 ): StreamPrefs {
-  const { wallpaper, scale } = prefs;
-  if (preset !== "custom") return { ...DEFAULT_STREAM_PREFS, preset, wallpaper, scale };
+  const { wallpaper, scale, color } = prefs;
+  if (preset !== "custom") return { ...DEFAULT_STREAM_PREFS, preset, wallpaper, scale, color };
   if (prefs.preset === "custom") return prefs;
   const base = state?.resolved ?? prefs;
   return {
@@ -207,6 +224,7 @@ export function selectPreset(
     max_kbps: base.max_kbps,
     wallpaper,
     scale,
+    color,
   };
 }
 
@@ -245,8 +263,13 @@ export function parseStreamPrefs(raw: string | null): StreamPrefs {
     max_kbps: kbpsOrNull(v.max_kbps),
     wallpaper: v.wallpaper === true,
     scale: v.scale === "actual" ? "actual" : "fit",
+    color: v.color === "full" ? "full" : "standard",
   };
 }
+
+/** The device and this browser can both do full color (4:4:4). */
+export const fullColorAvailable = (state: StreamState | null) =>
+  state?.options.color.includes("full") ?? false;
 
 export function fpsChoices(maxFps: number | null): { fps: number; disabled: boolean }[] {
   return FPS_STEPS.map((fps) => ({ fps, disabled: maxFps !== null && fps > maxFps }));

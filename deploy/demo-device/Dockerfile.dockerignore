@@ -2,6 +2,8 @@
 !proto/**
 !agent/**
 !native/include/**
+!native/common/**
 !native/linux/**
 !deploy/demo-device/**
 native/linux/build/
+native/common/build/

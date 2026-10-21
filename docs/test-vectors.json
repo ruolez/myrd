@@ -56,7 +56,8 @@
     { "name": "quality hidden tab", "prefs": { "preset": "quality", "fps": null, "res": null, "max_kbps": null, "wallpaper": false }, "hidden": true, "id": 4, "json": "{\"t\":\"stream\",\"id\":4,\"preset\":\"quality\",\"fps\":null,\"res\":null,\"max_kbps\":null,\"background\":true,\"wallpaper\":false}" },
     { "name": "half resolution with wallpaper", "prefs": { "preset": "custom", "fps": 60, "res": "half", "max_kbps": 20000, "wallpaper": true }, "hidden": false, "id": 5, "json": "{\"t\":\"stream\",\"id\":5,\"preset\":\"custom\",\"fps\":60,\"res\":\"half\",\"max_kbps\":20000,\"background\":false,\"wallpaper\":true}" },
     { "name": "auto sized to the window", "prefs": { "preset": "auto", "fps": null, "res": null, "max_kbps": null, "wallpaper": false }, "hidden": false, "id": 6, "view": { "w": 2880, "h": 1600 }, "json": "{\"t\":\"stream\",\"id\":6,\"preset\":\"auto\",\"fps\":null,\"res\":null,\"max_kbps\":null,\"background\":false,\"wallpaper\":false,\"view\":{\"w\":2880,\"h\":1600}}" },
-    { "name": "custom match window 40 Mbps", "prefs": { "preset": "custom", "fps": 60, "res": "window", "max_kbps": 40000, "wallpaper": false }, "hidden": false, "id": 7, "view": { "w": 1600, "h": 900 }, "json": "{\"t\":\"stream\",\"id\":7,\"preset\":\"custom\",\"fps\":60,\"res\":\"window\",\"max_kbps\":40000,\"background\":false,\"wallpaper\":false,\"view\":{\"w\":1600,\"h\":900}}" }
+    { "name": "custom match window 40 Mbps", "prefs": { "preset": "custom", "fps": 60, "res": "window", "max_kbps": 40000, "wallpaper": false }, "hidden": false, "id": 7, "view": { "w": 1600, "h": 900 }, "json": "{\"t\":\"stream\",\"id\":7,\"preset\":\"custom\",\"fps\":60,\"res\":\"window\",\"max_kbps\":40000,\"background\":false,\"wallpaper\":false,\"view\":{\"w\":1600,\"h\":900}}" },
+    { "name": "auto full color in the window", "prefs": { "preset": "auto", "fps": null, "res": null, "max_kbps": null, "wallpaper": false, "color": "full" }, "hidden": false, "id": 8, "view": { "w": 1920, "h": 1080 }, "json": "{\"t\":\"stream\",\"id\":8,\"preset\":\"auto\",\"fps\":null,\"res\":null,\"max_kbps\":null,\"background\":false,\"wallpaper\":false,\"color\":\"full\",\"view\":{\"w\":1920,\"h\":1080}}" }
   ],
   "stream_request_invalid": [
     { "name": "fps 0", "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"custom\",\"fps\":0,\"res\":null,\"max_kbps\":null,\"background\":false}" },
@@ -68,7 +69,9 @@
     { "name": "fps as string", "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"custom\",\"fps\":\"30\",\"res\":null,\"max_kbps\":null,\"background\":false}" },
     { "name": "view too small", "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"auto\",\"fps\":null,\"res\":null,\"max_kbps\":null,\"background\":false,\"view\":{\"w\":0,\"h\":900}}" },
     { "name": "view too large", "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"auto\",\"fps\":null,\"res\":null,\"max_kbps\":null,\"background\":false,\"view\":{\"w\":20000,\"h\":900}}" },
-    { "name": "view as array", "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"auto\",\"fps\":null,\"res\":null,\"max_kbps\":null,\"background\":false,\"view\":[1600,900]}" }
+    { "name": "view as array", "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"auto\",\"fps\":null,\"res\":null,\"max_kbps\":null,\"background\":false,\"view\":[1600,900]}" },
+    { "name": "unknown color", "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"auto\",\"fps\":null,\"res\":null,\"max_kbps\":null,\"background\":false,\"color\":\"hdr\"}" },
+    { "name": "color as bool", "json": "{\"t\":\"stream\",\"id\":1,\"preset\":\"auto\",\"fps\":null,\"res\":null,\"max_kbps\":null,\"background\":false,\"color\":true}" }
   ],
   "legacy_tier": [
     { "name": "hidden tab is background", "prefs": { "preset": "quality", "fps": null, "res": null, "max_kbps": null }, "hidden": true, "tier": 0 },

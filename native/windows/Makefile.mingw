@@ -1,5 +1,6 @@
-# Cross build of librcnative.a with mingw-w64 (used by xbuild.sh / CI smoke).
-# The release build uses CMakeLists.txt with MSVC (adds the WGC path).
+# Cross build of librcnative.a with mingw-w64 (xbuild.sh, CI and the release
+# MSI), plus build/libvpx.a for full color (native/common/build-libvpx.sh).
+# CMakeLists.txt is the MSVC variant (adds the WGC path).
 # make's built-in CXX/AR defaults (g++/ar) are the host tools; replace them
 # unless set on the command line or in the environment.
 ifneq ($(filter default undefined,$(origin CXX)),)
@@ -8,18 +9,35 @@ endif
 ifneq ($(filter default undefined,$(origin AR)),)
 AR := x86_64-w64-mingw32-ar
 endif
+ifneq ($(filter default undefined,$(origin CC)),)
+CC := x86_64-w64-mingw32-gcc
+endif
+VPX ?= ../common/build/libvpx-win64-mingw
 CXXFLAGS ?= -O2 -g0
 CXXFLAGS += -std=c++17 -Wall -Wno-unknown-pragmas -Wno-missing-braces -DUNICODE -D_UNICODE \
-            -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -fno-exceptions
+            -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -fno-exceptions -DRC_HAVE_VPX -I../include -I../common -I$(VPX)/include
+CFLAGS ?= -O2 -g0
+CFLAGS += -std=gnu11 -Wall -Wextra -Wno-unused-parameter -I../include -I$(VPX)/include
 SRC  := $(wildcard src/*.cpp)
-OBJ  := $(patsubst src/%.cpp,build/obj/%.o,$(SRC))
+OBJ  := $(patsubst src/%.cpp,build/obj/%.o,$(SRC)) build/obj/rc_vpx.o
 LIB  := build/librcnative.a
 
-all: $(LIB)
+all: $(LIB) build/libvpx.a
 
-build/obj/%.o: src/%.cpp src/rc_win.h ../include/rc_native.h
+$(VPX)/lib/libvpx.a:
+	../common/build-libvpx.sh win64-mingw
+
+build/obj/%.o: src/%.cpp src/rc_win.h ../include/rc_native.h $(VPX)/lib/libvpx.a
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+build/obj/rc_vpx.o: ../common/rc_vpx.c ../common/rc_vpx.h ../include/rc_native.h $(VPX)/lib/libvpx.a
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+build/libvpx.a: $(VPX)/lib/libvpx.a
+	@mkdir -p build
+	cp $< $@
 
 $(LIB): $(OBJ)
 	@mkdir -p build

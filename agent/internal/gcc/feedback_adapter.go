@@ -90,62 +90,48 @@ func (f *FeedbackAdapter) OnSent(ts time.Time, header *rtp.Header, size int, att
 	return f.onSentRFC8888(ts, header, size)
 }
 
+// unpackSymbols turns the statuses of n packets from start into
+// acknowledgments. Each sent packet is reported once: libwebrtc reports a
+// range again when a packet arrives late (one FlexFEC rebuilt, say), and
+// counting those again read 5% loss as 20-40%. Packets not in the history
+// (reported already, or never sent through it) are left out instead of
+// passing as lost, but their arrival deltas are still consumed.
+func (f *FeedbackAdapter) unpackSymbols(
+	start uint16, n int, symbol func(i int) uint16, refTime time.Time, deltas []*rtcp.RecvDelta,
+) (consumedDeltas int, nextRef time.Time, acks []Acknowledgment, err error) {
+	deltaIndex := 0
+	acks = []Acknowledgment{}
+	for i := 0; i < n; i++ {
+		var arrival time.Time
+		if symbol(i) != rtcp.TypeTCCPacketNotReceived {
+			if deltaIndex >= len(deltas) {
+				return deltaIndex, refTime, acks, errInvalidFeedback
+			}
+			refTime = refTime.Add(time.Duration(deltas[deltaIndex].Delta) * time.Microsecond)
+			arrival = refTime
+			deltaIndex++
+		}
+		key := feedbackHistoryKey{ssrc: 0, sequenceNumber: start + uint16(i)}
+		if ack, ok := f.history.get(key); ok {
+			f.history.remove(key)
+			ack.Arrival = arrival
+			acks = append(acks, ack)
+		}
+	}
+
+	return deltaIndex, refTime, acks, nil
+}
+
 func (f *FeedbackAdapter) unpackRunLengthChunk(
 	start uint16, refTime time.Time, chunk *rtcp.RunLengthChunk, deltas []*rtcp.RecvDelta,
 ) (consumedDeltas int, nextRef time.Time, acks []Acknowledgment, err error) {
-	result := make([]Acknowledgment, chunk.RunLength)
-	deltaIndex := 0
-
-	end := start + chunk.RunLength
-	resultIndex := 0
-	for i := start; i != end; i++ {
-		key := feedbackHistoryKey{
-			ssrc:           0,
-			sequenceNumber: i,
-		}
-		if ack, ok := f.history.get(key); ok {
-			if chunk.PacketStatusSymbol != rtcp.TypeTCCPacketNotReceived {
-				if len(deltas)-1 < deltaIndex {
-					return deltaIndex, refTime, result, errInvalidFeedback
-				}
-				refTime = refTime.Add(time.Duration(deltas[deltaIndex].Delta) * time.Microsecond)
-				ack.Arrival = refTime
-				deltaIndex++
-			}
-			result[resultIndex] = ack
-		}
-		resultIndex++
-	}
-
-	return deltaIndex, refTime, result, nil
+	return f.unpackSymbols(start, int(chunk.RunLength), func(int) uint16 { return chunk.PacketStatusSymbol }, refTime, deltas)
 }
 
 func (f *FeedbackAdapter) unpackStatusVectorChunk(
 	start uint16, refTime time.Time, chunk *rtcp.StatusVectorChunk, deltas []*rtcp.RecvDelta,
 ) (consumedDeltas int, nextRef time.Time, acks []Acknowledgment, err error) {
-	result := make([]Acknowledgment, len(chunk.SymbolList))
-	deltaIndex := 0
-	resultIndex := 0
-	for i, symbol := range chunk.SymbolList {
-		key := feedbackHistoryKey{
-			ssrc:           0,
-			sequenceNumber: start + uint16(i),
-		}
-		if ack, ok := f.history.get(key); ok {
-			if symbol != rtcp.TypeTCCPacketNotReceived {
-				if len(deltas)-1 < deltaIndex {
-					return deltaIndex, refTime, result, errInvalidFeedback
-				}
-				refTime = refTime.Add(time.Duration(deltas[deltaIndex].Delta) * time.Microsecond)
-				ack.Arrival = refTime
-				deltaIndex++
-			}
-			result[resultIndex] = ack
-		}
-		resultIndex++
-	}
-
-	return deltaIndex, refTime, result, nil
+	return f.unpackSymbols(start, len(chunk.SymbolList), func(i int) uint16 { return chunk.SymbolList[i] }, refTime, deltas)
 }
 
 // OnTransportCCFeedback converts incoming TWCC RTCP packet feedback to
@@ -171,7 +157,7 @@ func (f *FeedbackAdapter) OnTransportCCFeedback(
 			refTime = nextRefTime
 			result = append(result, acks...)
 			recvDeltas = recvDeltas[n:]
-			index = uint16(int(index) + len(acks))
+			index += chunk.RunLength
 		case *rtcp.StatusVectorChunk:
 			n, nextRefTime, acks, err := f.unpackStatusVectorChunk(index, refTime, chunk, recvDeltas)
 			if err != nil {
@@ -180,7 +166,7 @@ func (f *FeedbackAdapter) OnTransportCCFeedback(
 			refTime = nextRefTime
 			result = append(result, acks...)
 			recvDeltas = recvDeltas[n:]
-			index = uint16(int(index) + len(acks))
+			index += uint16(len(chunk.SymbolList))
 		default:
 			return nil, errInvalidFeedback
 		}
@@ -266,6 +252,13 @@ func (f *feedbackHistory) add(ack Acknowledgment) {
 	// Evict if necessary
 	if f.evictList.Len() > f.size {
 		f.removeOldest()
+	}
+}
+
+func (f *feedbackHistory) remove(key feedbackHistoryKey) {
+	if ent, ok := f.items[key]; ok {
+		f.evictList.Remove(ent)
+		delete(f.items, key)
 	}
 }
 

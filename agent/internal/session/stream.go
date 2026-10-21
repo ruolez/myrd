@@ -1,6 +1,9 @@
 package session
 
-import "github.com/ruolez/remotectl/proto"
+import (
+	"github.com/ruolez/remotectl/agent/internal/platform"
+	"github.com/ruolez/remotectl/proto"
+)
 
 // Stream settings (docs/PROTOCOL.md §5, "Stream settings"): what the browser
 // asked for, what that resolves to on this encoder and monitor, and the
@@ -21,6 +24,7 @@ type StreamSettings struct {
 	Res     string
 	MaxKbps int
 	View    View
+	Color   string // "" (standard) or proto.ColorFull
 }
 
 // View is the viewer's video area in device pixels, even; zero when the
@@ -47,8 +51,21 @@ func SettingsFromRequest(r proto.StreamRequest) StreamSettings {
 	if r.View != nil {
 		s.View = View{r.View.W &^ 1, r.View.H &^ 1}
 	}
+	if r.Color == proto.ColorFull {
+		s.Color = proto.ColorFull
+	}
 	return s
 }
+
+// fullColorCost scales the automatic ceiling for 4:4:4: twice the chroma
+// samples cost about a quarter more bits on desktop content.
+const fullColorCost = 1.25
+
+// fullColorFPS caps the software VP9 encoder, named fullColorEncoder.
+const (
+	fullColorFPS     = 30
+	fullColorEncoder = "libvpx-vp9"
+)
 
 // fullRes is the size of presets that do not cap it: the viewer's window,
 // so the browser shows the stream pixel for pixel, else native.
@@ -76,7 +93,7 @@ func LegacyTierSettings(tier int, cur StreamSettings) (StreamSettings, bool) {
 // cannot keep up with 60 fps at desktop sizes.
 func EncoderMaxFPS(encoder string) int {
 	switch encoder {
-	case "x264", "openh264", "mf-sw", "videotoolbox-sw", "none":
+	case "x264", "openh264", "mf-sw", "videotoolbox-sw", "libvpx-vp9", "none":
 		return 30
 	}
 	return 60
@@ -204,6 +221,17 @@ type StreamInput struct {
 	Relay            bool
 	BweKbps          int
 	Rung             *Rung
+	// FullColor: this agent can encode 4:4:4 and the browser negotiated it.
+	FullColor bool
+}
+
+// Codec is what the encoder runs for these settings: full color only when
+// asked for and available.
+func (in StreamInput) Codec() int {
+	if in.Settings.Color == proto.ColorFull && in.FullColor {
+		return platform.CodecVP9
+	}
+	return platform.CodecH264
 }
 
 // StreamPlan is what the encoder runs: BoxW/BoxH go to CaptureConfig and give
@@ -213,11 +241,12 @@ type StreamPlan struct {
 	FPS, Kbps, CeilKbps int
 	W, H                uint32
 	BoxW, BoxH          int
+	Codec               int // platform.Codec*; a change restarts capture
 }
 
 func PlanStream(in StreamInput) StreamPlan {
 	r := ResolveSettings(in.Settings, in.MaxFPS)
-	p := StreamPlan{Resolved: r, FPS: r.FPS}
+	p := StreamPlan{Resolved: r, FPS: r.FPS, Codec: in.Codec()}
 	res := r.Res
 	if in.Rung != nil && in.Settings.Preset == proto.PresetAuto {
 		p.FPS, res = in.Rung.FPS, in.Rung.Res
@@ -231,6 +260,9 @@ func PlanStream(in StreamInput) StreamPlan {
 		}
 	} else {
 		p.CeilKbps = CeilingKbps(p.W, p.H, p.FPS, in.Relay)
+		if p.Codec == platform.CodecVP9 && !in.Relay {
+			p.CeilKbps = min(int(float64(p.CeilKbps)*fullColorCost), autoCeilKbps)
+		}
 	}
 	p.Kbps = EncoderTarget(in.BweKbps, p.CeilKbps)
 	if in.Background {
@@ -250,11 +282,28 @@ type streamResolved struct {
 	FPS     int    `json:"fps"`
 	Res     string `json:"res"`
 	MaxKbps *int   `json:"max_kbps"`
+	Color   string `json:"color"`
 }
 
 type streamOptions struct {
-	FPS []int       `json:"fps"`
-	Res []ResOption `json:"res"`
+	FPS   []int       `json:"fps"`
+	Res   []ResOption `json:"res"`
+	Color []string    `json:"color"`
+}
+
+func colorName(codec int) string {
+	if codec == platform.CodecVP9 {
+		return proto.ColorFull
+	}
+	return proto.ColorStandard
+}
+
+// ColorOptions lists the color modes this session can switch to.
+func ColorOptions(fullColor bool) []string {
+	if fullColor {
+		return []string{proto.ColorStandard, proto.ColorFull}
+	}
+	return []string{proto.ColorStandard}
 }
 
 // StreamState is the A→B `stream` message.
@@ -268,6 +317,7 @@ type StreamState struct {
 	MaxKbps      *int           `json:"max_kbps"`
 	Background   bool           `json:"background"`
 	Wallpaper    bool           `json:"wallpaper"`
+	Color        *string        `json:"color"`
 	Resolved     streamResolved `json:"resolved"`
 	TargetFPS    int            `json:"target_fps"`
 	MaxFPS       int            `json:"max_fps"`
@@ -293,9 +343,11 @@ func nonZero[T comparable](v T) *T {
 func BuildStreamState(in StreamInput, plan StreamPlan, auto *AutoInfo) StreamState {
 	s := in.Settings
 	return StreamState{T: "stream", Preset: s.Preset, FPS: nonZero(s.FPS), Res: nonZero(s.Res), MaxKbps: nonZero(s.MaxKbps),
-		Background: in.Background, Wallpaper: in.Wallpaper,
-		Resolved:  streamResolved{plan.Resolved.FPS, plan.Resolved.Res, nonZero(plan.Resolved.MaxKbps)},
+		Background: in.Background, Wallpaper: in.Wallpaper, Color: nonZero(s.Color),
+		Resolved: streamResolved{plan.Resolved.FPS, plan.Resolved.Res, nonZero(plan.Resolved.MaxKbps),
+			colorName(plan.Codec)},
 		TargetFPS: plan.FPS, MaxFPS: in.MaxFPS, Width: plan.W, Height: plan.H, NativeWidth: in.NativeW, NativeHeight: in.NativeH,
 		CeilKbps: plan.CeilKbps, Relay: in.Relay, Auto: auto,
-		Options: streamOptions{FPSOptions(in.MaxFPS), ResolutionOptions(in.NativeW, in.NativeH, in.MaxW, in.MaxH, s.View)}}
+		Options: streamOptions{FPSOptions(in.MaxFPS), ResolutionOptions(in.NativeW, in.NativeH, in.MaxW, in.MaxH, s.View),
+			ColorOptions(in.FullColor)}}
 }

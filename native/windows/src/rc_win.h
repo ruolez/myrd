@@ -139,8 +139,10 @@ void encoder_destroy(Encoder *e);
 // until a later call reuses it). Returns false when the frame was dropped
 // (encoder busy) and true when it was accepted. *fatal is set on errors that
 // require recreating the encoder. max_qp > 0 makes it a refinement pass: no
-// macroblock above that quantizer, delivered with RC_FRAME_STATIC.
-bool encoder_encode(Encoder *e, ID3D11Texture2D *nv12, int64_t pts_us, bool force_key, bool *fatal, int max_qp);
+// macroblock above that quantizer. flags (RC_FRAME_STATIC, RC_FRAME_MINOR)
+// are delivered with the encoded frame.
+bool encoder_encode(Encoder *e, ID3D11Texture2D *nv12, int64_t pts_us, bool force_key, bool *fatal, int max_qp,
+                    int32_t flags);
 // True when the encoder can bound its quantizer per frame (refinement).
 bool encoder_can_refine(Encoder *e);
 void encoder_set_bitrate(Encoder *e, int kbps);

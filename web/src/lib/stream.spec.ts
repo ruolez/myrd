@@ -10,6 +10,7 @@ import {
   legacyTier,
   parseStreamPrefs,
   parseStreamState,
+  fullColorAvailable,
   relayCapped,
   resolutionLabel,
   selectPreset,
@@ -30,7 +31,8 @@ const wireState = {
   max_kbps: null,
   background: false,
   wallpaper: false,
-  resolved: { fps: 60, res: "native", max_kbps: null },
+  color: null,
+  resolved: { fps: 60, res: "native", max_kbps: null, color: "standard" },
   target_fps: 30,
   max_fps: 60,
   width: 2560,
@@ -41,6 +43,7 @@ const wireState = {
   relay: false,
   auto: { rung: 2, rungs: 6, reason: "congestion" },
   options: {
+    color: ["standard", "full"],
     fps: [5, 10, 15, 24, 30, 60],
     res: [
       { id: "native", width: 5120, height: 2880 },
@@ -61,7 +64,8 @@ const parsedState: StreamState = {
   max_kbps: null,
   background: false,
   wallpaper: false,
-  resolved: { fps: 60, res: "native", max_kbps: null },
+  color: null,
+  resolved: { fps: 60, res: "native", max_kbps: null, color: "standard" },
   target_fps: 30,
   max_fps: 60,
   width: 2560,
@@ -164,7 +168,8 @@ describe("parseStreamState", () => {
       max_kbps: null,
       background: false,
       wallpaper: false,
-      resolved: { fps: 30, res: "720p", max_kbps: 4000 },
+      color: null,
+      resolved: { fps: 30, res: "720p", max_kbps: 4000, color: "standard" },
       target_fps: 30,
       max_fps: 30,
       width: 1280,
@@ -174,8 +179,23 @@ describe("parseStreamState", () => {
       ceil_kbps: null,
       relay: false,
       auto: null,
-      options: { fps: [], res: [] },
+      options: { fps: [], res: [], color: [] },
     });
+  });
+
+  test("reads the color asked for, sent and offered", () => {
+    const full = {
+      ...wireState,
+      color: "full",
+      resolved: { ...wireState.resolved, color: "full" },
+      options: { ...wireState.options, color: ["standard", "full", "hdr"] },
+    };
+    const got = parseStreamState(full);
+    expect([got?.color, got?.resolved.color, got?.options.color]).toEqual([
+      "full",
+      "full",
+      ["standard", "full"],
+    ]);
   });
 
   test("reads the window size and the latency reason", () => {
@@ -211,6 +231,7 @@ describe("parseStreamState", () => {
     expect(parseStreamState(withJunk)?.options).toEqual({
       fps: [5, 60],
       res: wireState.options.res,
+      color: [],
     });
   });
 
@@ -236,6 +257,14 @@ describe("selectPreset", () => {
     ).toEqual(prefs({ preset: "quality" }));
   });
 
+  test("presets keep full color", () => {
+    const full = prefs({ preset: "custom", fps: 15, color: "full" });
+    expect([
+      selectPreset(full, "speed", null).color,
+      selectPreset(prefs({ color: "full" }), "custom", state()).color,
+    ]).toEqual(["full", "full"]);
+  });
+
   test("auto clears ceilings when picked again", () => {
     expect(selectPreset(prefs({ fps: 30, res: "1080p" }), "auto", null)).toEqual(
       DEFAULT_STREAM_PREFS,
@@ -243,7 +272,10 @@ describe("selectPreset", () => {
   });
 
   test("custom starts from what the agent resolved", () => {
-    const s = state({ preset: "balanced", resolved: { fps: 30, res: "1080p", max_kbps: 8000 } });
+    const s = state({
+      preset: "balanced",
+      resolved: { fps: 30, res: "1080p", max_kbps: 8000, color: "standard" },
+    });
     expect(selectPreset(prefs({ preset: "balanced" }), "custom", s)).toEqual({
       preset: "custom",
       fps: 30,
@@ -251,6 +283,7 @@ describe("selectPreset", () => {
       max_kbps: 8000,
       wallpaper: false,
       scale: "fit",
+      color: "standard",
     });
   });
 
@@ -276,7 +309,10 @@ describe("editStreamField", () => {
   });
 
   test("a named preset switches to custom filled from resolved", () => {
-    const s = state({ preset: "speed", resolved: { fps: 60, res: "720p", max_kbps: 4000 } });
+    const s = state({
+      preset: "speed",
+      resolved: { fps: 60, res: "720p", max_kbps: 4000, color: "standard" },
+    });
     expect(editStreamField(prefs({ preset: "speed" }), s, "res", "1080p")).toEqual({
       preset: "custom",
       fps: 60,
@@ -284,6 +320,7 @@ describe("editStreamField", () => {
       max_kbps: 4000,
       wallpaper: false,
       scale: "fit",
+      color: "standard",
     });
   });
 
@@ -314,6 +351,7 @@ describe("parseStreamPrefs / serializeStreamPrefs", () => {
       max_kbps: null,
       wallpaper: false,
       scale: "fit",
+      color: "standard",
     });
   });
 
@@ -325,6 +363,16 @@ describe("parseStreamPrefs / serializeStreamPrefs", () => {
   test("prefs saved before the wallpaper switch keep it hidden", () => {
     const raw = JSON.stringify({ v: 1, preset: "speed", fps: null, res: null, max_kbps: null });
     expect(parseStreamPrefs(raw)).toEqual(prefs({ preset: "speed" }));
+  });
+
+  test("round-trips full color", () => {
+    const p = prefs({ color: "full" });
+    expect(parseStreamPrefs(serializeStreamPrefs(p))).toEqual(p);
+  });
+
+  test("prefs saved before the color switch are standard color", () => {
+    const raw = JSON.stringify({ v: 1, preset: "auto", fps: null, res: null, max_kbps: null });
+    expect(parseStreamPrefs(raw).color).toEqual("standard");
   });
 
   test("round-trips a shown wallpaper", () => {
@@ -419,8 +467,29 @@ describe("resolutionLabel", () => {
   });
 });
 
+describe("fullColorAvailable", () => {
+  test.each([
+    ["offered", ["standard", "full"], true],
+    ["standard only", ["standard"], false],
+    ["older agent", [], false],
+  ] as const)("%s", (_name, color, want) => {
+    expect(
+      fullColorAvailable(state({ options: { ...parsedState.options, color: [...color] } })),
+    ).toEqual(want);
+  });
+
+  test("no state yet", () => {
+    expect(fullColorAvailable(null)).toEqual(false);
+  });
+});
+
 describe("relayCapped", () => {
-  const resolved = (max_kbps: number | null) => ({ fps: 30, res: "native" as const, max_kbps });
+  const resolved = (max_kbps: number | null) => ({
+    fps: 30,
+    res: "native" as const,
+    max_kbps,
+    color: "standard" as const,
+  });
   test.each([
     ["relay ceiling below the requested cap", true, 6000, resolved(8000), true],
     ["same cap on a direct path", false, 8000, resolved(8000), false],

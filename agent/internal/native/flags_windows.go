@@ -10,7 +10,7 @@ package native
 // editions lack it). native/windows/check-imports.sh enforces this.
 
 /*
-#cgo windows LDFLAGS: -L${SRCDIR}/../../../native/windows/build -lrcnative
+#cgo windows LDFLAGS: -L${SRCDIR}/../../../native/windows/build -lrcnative -lvpx
 #cgo windows LDFLAGS: -ld3d11 -ldxgi -lmfuuid -lole32 -loleaut32 -luser32 -lgdi32 -lwinmm -lwtsapi32 -ladvapi32
 #cgo windows LDFLAGS: -Wl,-Bstatic -lstdc++ -lwinpthread -Wl,-Bdynamic
 */

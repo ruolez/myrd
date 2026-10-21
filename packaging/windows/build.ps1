@@ -12,6 +12,8 @@
     - Go (version from agent/go.mod)
     - mingw-w64 gcc/g++ on PATH (MSYS2 UCRT64: pacman -S mingw-w64-ucrt-x86_64-gcc make).
       cgo always needs gcc on Windows, even for -Native msvc.
+    - nasm, diffutils, curl: the mingw build compiles libvpx for full color
+      (native/common/build-libvpx.sh; pacman -S mingw-w64-ucrt-x86_64-nasm diffutils).
     - -Native msvc: Visual Studio 2022 Build Tools + Windows SDK (C++/WinRT), CMake ≥ 3.24
     - WiX v5: dotnet tool install --global wix --version 5.0.2
               wix extension add --global WixToolset.Util.wixext/5.0.2
@@ -56,7 +58,7 @@ function Invoke-Sign([string[]]$Files) {
 
 function Build-Native {
   if ($Native -eq 'mingw') {
-    Invoke-Checked 'make' @('-C', $NativeDir, '-f', 'Makefile.mingw', 'CXX=g++', 'AR=ar')
+    Invoke-Checked 'make' @('-C', $NativeDir, '-f', 'Makefile.mingw', 'CXX=g++', 'CC=gcc', 'AR=ar')
   } else {
     $b = Join-Path $NativeDir 'build\cmake'
     Invoke-Checked 'cmake' @('-S', $NativeDir, '-B', $b, '-A', 'x64', '-DRC_WGC=ON')

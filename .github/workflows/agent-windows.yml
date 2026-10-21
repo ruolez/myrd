@@ -30,7 +30,7 @@ jobs:
         with:
           go-version-file: agent/go.mod
           cache-dependency-path: agent/go.sum
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mingw-w64
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mingw-w64 nasm
       - run: make -C native/windows -f Makefile.mingw
       - name: go build (windows/amd64, cgo)
         working-directory: agent
@@ -72,7 +72,7 @@ jobs:
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
-          install: mingw-w64-ucrt-x86_64-gcc make
+          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-nasm make diffutils
           path-type: inherit
       - name: Put mingw on PATH
         shell: pwsh

@@ -4,7 +4,6 @@
 package gcc
 
 import (
-	"math"
 	"sync"
 	"time"
 
@@ -21,6 +20,16 @@ const (
 
 	decreaseLossThreshold = 0.1
 	decreaseTimeThreshold = 200 * time.Millisecond
+
+	// A loss decision rests on at least lossWindowPackets packets and, at low
+	// packet rates, up to lossWindow of feedback (lossWindowFull packets end
+	// it early). One feedback report covers a few dozen packets, so a single
+	// lost packet there read as 5-40% loss: random 5% loss kept tripping the
+	// 10% decrease and never allowed an increase, and the estimate sank to
+	// the floor. libwebrtc decides on similar windows.
+	lossWindowPackets = 20
+	lossWindowFull    = 100
+	lossWindow        = time.Second
 )
 
 // LossStats contains internal statistics of the loss based controller.
@@ -31,27 +40,28 @@ type LossStats struct {
 
 type lossBasedBandwidthEstimator struct {
 	lock           sync.Mutex
+	now            func() time.Time
 	maxBitrate     int
 	minBitrate     int
 	bitrate        int
-	averageLoss    float64
+	averageLoss    float64 // loss of the last complete window
 	lastLossUpdate time.Time
 	lastIncrease   time.Time
 	lastDecrease   time.Time
+	winStart       time.Time
+	winLost        int
+	winTotal       int
 	log            logging.LeveledLogger
 }
 
-func newLossBasedBWE(initialBitrate int, loggerFactory logging.LoggerFactory) *lossBasedBandwidthEstimator {
+func newLossBasedBWE(initialBitrate, minBitrate, maxBitrate int, loggerFactory logging.LoggerFactory) *lossBasedBandwidthEstimator {
 	return &lossBasedBandwidthEstimator{
-		lock:           sync.Mutex{},
-		maxBitrate:     100_000_000, // 100 mbit
-		minBitrate:     100_000,     // 100 kbit
-		bitrate:        initialBitrate,
-		averageLoss:    0,
-		lastLossUpdate: time.Time{},
-		lastIncrease:   time.Time{},
-		lastDecrease:   time.Time{},
-		log:            loggerFactory.NewLogger("gcc_loss_controller"),
+		lock:       sync.Mutex{},
+		now:        time.Now,
+		maxBitrate: maxBitrate,
+		minBitrate: minBitrate,
+		bitrate:    initialBitrate,
+		log:        loggerFactory.NewLogger("gcc_loss_controller"),
 	}
 }
 
@@ -95,30 +105,27 @@ func (e *lossBasedBandwidthEstimator) updateLossEstimate(results []Acknowledgmen
 	e.lock.Lock()
 	defer e.lock.Unlock()
 
-	lossRatio := float64(packetsLost) / float64(len(results))
-	e.averageLoss = e.average(time.Since(e.lastLossUpdate), e.averageLoss, lossRatio)
-	e.lastLossUpdate = time.Now()
-
-	increaseLoss := math.Max(e.averageLoss, lossRatio)
-	decreaseLoss := math.Min(e.averageLoss, lossRatio)
-
-	if increaseLoss < increaseLossThreshold && time.Since(e.lastIncrease) > increaseTimeThreshold {
-		e.log.Infof(
-			"loss controller increasing; averageLoss: %v, decreaseLoss: %v, increaseLoss: %v",
-			e.averageLoss, decreaseLoss, increaseLoss,
-		)
-		e.lastIncrease = time.Now()
-		e.bitrate = clampInt(int(increaseFactor*float64(e.bitrate)), e.minBitrate, e.maxBitrate)
-	} else if decreaseLoss > decreaseLossThreshold && time.Since(e.lastDecrease) > decreaseTimeThreshold {
-		e.log.Infof(
-			"loss controller decreasing; averageLoss: %v, decreaseLoss: %v, increaseLoss: %v",
-			e.averageLoss, decreaseLoss, increaseLoss,
-		)
-		e.lastDecrease = time.Now()
-		e.bitrate = clampInt(int(float64(e.bitrate)*(1-0.5*decreaseLoss)), e.minBitrate, e.maxBitrate)
+	now := e.now()
+	if e.winTotal == 0 {
+		e.winStart = now
 	}
-}
+	e.winLost += packetsLost
+	e.winTotal += len(results)
+	if e.winTotal < lossWindowPackets || (e.winTotal < lossWindowFull && now.Sub(e.winStart) < lossWindow) {
+		return
+	}
+	loss := float64(e.winLost) / float64(e.winTotal)
+	e.winLost, e.winTotal = 0, 0
+	e.averageLoss = loss
+	e.lastLossUpdate = now
 
-func (e *lossBasedBandwidthEstimator) average(delta time.Duration, prev, sample float64) float64 {
-	return sample + math.Exp(-float64(delta.Milliseconds())/200.0)*(prev-sample)
+	if loss < increaseLossThreshold && now.Sub(e.lastIncrease) > increaseTimeThreshold {
+		e.log.Infof("loss controller increasing; loss: %v", loss)
+		e.lastIncrease = now
+		e.bitrate = clampInt(int(increaseFactor*float64(e.bitrate)), e.minBitrate, e.maxBitrate)
+	} else if loss > decreaseLossThreshold && now.Sub(e.lastDecrease) > decreaseTimeThreshold {
+		e.log.Infof("loss controller decreasing; loss: %v", loss)
+		e.lastDecrease = now
+		e.bitrate = clampInt(int(float64(e.bitrate)*(1-0.5*loss)), e.minBitrate, e.maxBitrate)
+	}
 }

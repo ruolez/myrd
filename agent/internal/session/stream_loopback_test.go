@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -241,5 +242,145 @@ func TestLoopbackStreamFollowsTheViewersWindow(t *testing.T) {
 	expectFields(t, "native", st, map[string]any{"width": 1920, "height": 1080})
 	if r := st["resolved"].(map[string]any); r["res"] != proto.ResNative {
 		t.Fatalf("resolved = %v, want native without a view", r)
+	}
+}
+
+// chromeCodecs is what Chrome offers for full color: pion's defaults plus
+// VP9 profile 1.
+func chromeCodecs(me *webrtc.MediaEngine) {
+	if err := me.RegisterDefaultCodecs(); err != nil {
+		panic(err)
+	}
+	if err := me.RegisterCodec(webrtc.RTPCodecParameters{PayloadType: 35, RTPCodecCapability: webrtc.RTPCodecCapability{
+		MimeType: webrtc.MimeTypeVP9, ClockRate: 90000, SDPFmtpLine: "profile-id=1"}}, webrtc.RTPCodecTypeVideo); err != nil {
+		panic(err)
+	}
+}
+
+func (h *harness) sendColor(t *testing.T, id int, color string) {
+	t.Helper()
+	msg := fmt.Sprintf(`{"t":"stream","id":%d,"preset":"auto","fps":null,"res":null,"max_kbps":null,"background":false,"color":"%s"}`,
+		id, color)
+	if err := h.control.SendText(msg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoopbackFullColorSwitchesCodecLive(t *testing.T) {
+	h := newHarness(t, platform.ConsentOnce)
+	h.backend.SetFullColor(true)
+	h.browserCodecs = chromeCodecs
+	h.offer(false)
+	if err := <-h.answerOK; err != nil {
+		t.Fatal(err)
+	}
+	h.waitControl(t, "hello")
+	waitFor(t, "H.264 on the wire", func() bool { return len(h.payloadTypes()) > 0 })
+	h264PT := h.payloadTypes()[0]
+	if c := h.backend.Starts()[0].Codec; c != platform.CodecH264 || h264PT == 35 {
+		t.Fatalf("first capture codec %d on payload type %d, want H.264", c, h264PT)
+	}
+
+	h.sendColor(t, 2, "full")
+	st := h.waitStreamReply(t, 2)
+	expectFields(t, "full", st, map[string]any{"ok": true, "color": "full", "target_fps": 30,
+		"resolved": map[string]any{"fps": 30, "res": "native", "max_kbps": nil, "color": "full"}})
+	if c := st["options"].(map[string]any)["color"]; fmt.Sprint(c) != "[standard full]" {
+		t.Fatalf("options.color = %v", c)
+	}
+	waitFor(t, "VP9 capture", func() bool { s := h.backend.Starts(); return len(s) == 2 && s[1].Codec == platform.CodecVP9 })
+	if s := h.backend.Starts()[1]; s.FPS > 30 {
+		t.Fatalf("full color captured at %d fps, want at most 30 (software encoder)", s.FPS)
+	}
+	waitFor(t, "VP9 profile 1 on the wire", func() bool { pts := h.payloadTypes(); return pts[len(pts)-1] == 35 })
+
+	h.sendColor(t, 3, "standard")
+	st = h.waitStreamReply(t, 3)
+	if r := st["resolved"].(map[string]any); r["color"] != "standard" {
+		t.Fatalf("resolved = %v", r)
+	}
+	waitFor(t, "H.264 capture again", func() bool { s := h.backend.Starts(); return len(s) == 3 && s[2].Codec == platform.CodecH264 })
+	waitFor(t, "H.264 on the wire again", func() bool { pts := h.payloadTypes(); return pts[len(pts)-1] == h264PT })
+	if pts := h.payloadTypes(); !slices.Equal(pts, []uint8{h264PT, 35, h264PT}) {
+		t.Fatalf("payload types %v, want H.264, VP9, H.264", pts)
+	}
+}
+
+func TestLoopbackFullColorNeedsTheBrowser(t *testing.T) {
+	h := newHarness(t, platform.ConsentOnce) // pion's codecs: no VP9 profile 1
+	h.backend.SetFullColor(true)
+	h.offer(false)
+	if err := <-h.answerOK; err != nil {
+		t.Fatal(err)
+	}
+	h.waitControl(t, "hello")
+	waitFor(t, "capture", func() bool { return len(h.backend.Starts()) == 1 })
+	h.sendColor(t, 2, "full")
+	st := h.waitStreamReply(t, 2)
+	opts := st["options"].(map[string]any)
+	if r := st["resolved"].(map[string]any); r["color"] != "standard" || fmt.Sprint(opts["color"]) != "[standard]" || st["color"] != "full" {
+		t.Fatalf("color %v resolved %v options %v: want the request kept and standard color applied", st["color"], r, opts["color"])
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := len(h.backend.Starts()); n != 1 {
+		t.Fatalf("%d captures: a full-color request the browser cannot decode must not restart capture", n)
+	}
+}
+
+func TestLoopbackFullColorFallsBackWhenTheEncoderFails(t *testing.T) {
+	h := newHarness(t, platform.ConsentOnce)
+	h.backend.SetFullColor(true)
+	h.backend.SetFullColorFails(true)
+	h.browserCodecs = chromeCodecs
+	h.offer(false)
+	if err := <-h.answerOK; err != nil {
+		t.Fatal(err)
+	}
+	h.waitControl(t, "hello")
+	waitFor(t, "capture", func() bool { return len(h.backend.Starts()) == 1 })
+	h.sendColor(t, 2, "full")
+	h.waitStreamReply(t, 2)
+	waitFor(t, "H.264 capture after the failed full-color start", func() bool {
+		s := h.backend.Starts()
+		return len(s) == 2 && s[1].Codec == platform.CodecH264 && h.backend.Capturing()
+	})
+	h.sendColor(t, 3, "full")
+	st := h.waitStreamReply(t, 3)
+	opts := st["options"].(map[string]any)
+	if r := st["resolved"].(map[string]any); r["color"] != "standard" || fmt.Sprint(opts["color"]) != "[standard]" {
+		t.Fatalf("resolved %v options %v: full color must be withdrawn after its encoder failed", r, opts["color"])
+	}
+	if n := len(h.backend.Starts()); n != 2 {
+		t.Fatalf("%d captures, want no retry of the failed codec", n)
+	}
+}
+
+func TestLoopbackAnswerAnnouncesTheRepairStream(t *testing.T) {
+	cases := []struct {
+		name   string
+		codecs func(*webrtc.MediaEngine)
+		want   bool
+	}{
+		{"browser offers flexfec-03", func(me *webrtc.MediaEngine) {
+			chromeCodecs(me)
+			if err := me.RegisterCodec(webrtc.RTPCodecParameters{PayloadType: 49, RTPCodecCapability: webrtc.RTPCodecCapability{
+				MimeType: webrtc.MimeTypeFlexFEC03, ClockRate: 90000, SDPFmtpLine: "repair-window=10000000"}}, webrtc.RTPCodecTypeVideo); err != nil {
+				panic(err)
+			}
+		}, true},
+		{"browser without FlexFEC", chromeCodecs, false},
+	}
+	for _, c := range cases {
+		h := newHarness(t, platform.ConsentOnce)
+		h.browserCodecs = c.codecs
+		h.offer(false)
+		if err := <-h.answerOK; err != nil {
+			t.Fatal(err)
+		}
+		sdp := h.browser.RemoteDescription().SDP
+		got := strings.Contains(sdp, "a=ssrc-group:FEC-FR ") && strings.Contains(sdp, "flexfec-03/90000")
+		if got != c.want {
+			t.Errorf("%s: answer announces FlexFEC = %v, want %v", c.name, got, c.want)
+		}
 	}
 }

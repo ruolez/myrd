@@ -82,6 +82,7 @@ func ScaledSize(w, h uint32, maxW, maxH int) (uint32, uint32) {
 type encoderState struct {
 	kbps, fps int
 	w, h      uint32
+	codec     int
 }
 
 type mediaPipe struct {
@@ -103,6 +104,8 @@ type mediaPipe struct {
 	background bool
 	wallpaper  bool // the browser asked to see the wallpaper
 	canHideWP  bool // the backend can hide it
+	fullColor  bool // VP9 4:4:4 negotiated and encodable; known once capture starts
+	colorFail  bool // a full-color capture failed to start: H.264 only from then on
 	auto       AutoState
 	ladder     []Rung
 	est        cc.BandwidthEstimator
@@ -123,6 +126,9 @@ type mediaPipe struct {
 	clipXfer   uint16
 
 	wpHidden bool // hidden on the device right now; guarded by capMu
+
+	fec     fecPolicy
+	fecRate float64 // repair overhead in use; the encoder gets bwe/(1+fecRate)
 
 	refine    refiner
 	refineOff bool // the encoder cannot refine
@@ -175,10 +181,20 @@ func (p *mediaPipe) nativeLocked() (uint32, uint32) {
 	return m.Width, m.Height
 }
 
+// fpsLimitLocked is the frame-rate cap for the current settings: full color
+// is a software encoder.
+func (p *mediaPipe) fpsLimitLocked() int {
+	if (StreamInput{Settings: p.settings, FullColor: p.fullColor}).Codec() == platform.CodecVP9 {
+		return min(p.maxFPS, fullColorFPS)
+	}
+	return p.maxFPS
+}
+
 func (p *mediaPipe) inputLocked() StreamInput {
 	nw, nh := p.nativeLocked()
-	in := StreamInput{Settings: p.settings, Background: p.background, Wallpaper: p.wallpaper, MaxFPS: p.maxFPS, NativeW: nw, NativeH: nh,
-		MaxW: p.s.m.o.MaxWidth, MaxH: p.s.m.o.MaxHeight, Relay: p.relay, BweKbps: p.bweKbps}
+	in := StreamInput{Settings: p.settings, Background: p.background, Wallpaper: p.wallpaper, MaxFPS: p.fpsLimitLocked(),
+		NativeW: nw, NativeH: nh, MaxW: p.s.m.o.MaxWidth, MaxH: p.s.m.o.MaxHeight, Relay: p.relay,
+		BweKbps: int(float64(p.bweKbps) / (1 + p.fecRate)), FullColor: p.fullColor}
 	if p.settings.Preset == proto.PresetAuto && len(p.ladder) > 0 {
 		r := p.ladder[max(0, min(p.auto.Rung, len(p.ladder)-1))]
 		in.Rung = &r
@@ -191,7 +207,7 @@ func (p *mediaPipe) planLocked() StreamPlan { return PlanStream(p.inputLocked())
 // resetAutoLocked rebuilds Auto's ladder from the current ceilings and starts
 // over at the top (settings, monitor or encoder cap changed).
 func (p *mediaPipe) resetAutoLocked() {
-	r := ResolveSettings(p.settings, p.maxFPS)
+	r := ResolveSettings(p.settings, p.fpsLimitLocked())
 	nw, nh := p.nativeLocked()
 	p.ladder = AutoLadder(r.FPS, r.Res, nw, nh, p.s.m.o.MaxWidth, p.s.m.o.MaxHeight, p.settings.View)
 	p.auto = NewAutoState(p.now())
@@ -201,7 +217,7 @@ func (p *mediaPipe) resetAutoLocked() {
 // its place on the ladder.
 func (p *mediaPipe) resizeAutoLocked() {
 	rung := p.auto.Rung
-	r := ResolveSettings(p.settings, p.maxFPS)
+	r := ResolveSettings(p.settings, p.fpsLimitLocked())
 	nw, nh := p.nativeLocked()
 	p.ladder = AutoLadder(r.FPS, r.Res, nw, nh, p.s.m.o.MaxWidth, p.s.m.o.MaxHeight, p.settings.View)
 	p.auto.Rung = min(rung, len(p.ladder)-1)
@@ -274,14 +290,14 @@ func (p *mediaPipe) reconcileLoop() {
 	}
 }
 
-// reconcile brings the encoder in line with the current plan: a new size
-// restarts capture, anything else is a reconfigure. Then it reports the
+// reconcile brings the encoder in line with the current plan: a new size or
+// codec restarts capture, anything else is a reconfigure. Then it reports the
 // stream state if it changed (or a request awaits its reply).
 func (p *mediaPipe) reconcile() {
 	p.capMu.Lock()
 	p.mu.Lock()
 	plan := p.planLocked()
-	restart := p.running && (plan.W != p.applied.w || plan.H != p.applied.h)
+	restart := p.running && (plan.W != p.applied.w || plan.H != p.applied.h || plan.Codec != p.applied.codec)
 	p.mu.Unlock()
 	var err error
 	if restart {
@@ -375,6 +391,8 @@ func (p *mediaPipe) rejectStream(id *uint32) {
 }
 
 // refreshEncoder follows the encoder name (and so max_fps) during the session.
+// The full-color encoder's cap is fpsLimitLocked's; max_fps stays the H.264
+// encoder's.
 func (p *mediaPipe) refreshEncoder() {
 	name := p.b.EncoderName()
 	p.mu.Lock()
@@ -384,7 +402,7 @@ func (p *mediaPipe) refreshEncoder() {
 	}
 	p.encoder = name
 	fps := p.fpsCap(name)
-	changed := fps != p.maxFPS
+	changed := fps != p.maxFPS && name != fullColorEncoder
 	if changed {
 		p.maxFPS = fps
 		p.resetAutoLocked()
@@ -405,6 +423,28 @@ func estimatorStats(e cc.BandwidthEstimator) (loss float64, overuse bool, rtt ti
 	loss, _ = st["averageLoss"].(float64)
 	ms, _ := st["rtt"].(float64)
 	return loss, st["usage"] == "overuse", time.Duration(ms * float64(time.Millisecond))
+}
+
+// updateFEC follows GCC's loss with the repair rate; the encoder target
+// leaves room for the repair packets.
+func (p *mediaPipe) updateFEC() {
+	p.mu.Lock()
+	est := p.est
+	p.mu.Unlock()
+	loss, _, _ := estimatorStats(est)
+	p.mu.Lock()
+	prev := p.fecRate
+	p.fecRate = p.fec.next(p.now(), loss)
+	if !p.s.fec.negotiated.Load() {
+		p.fecRate = 0 // no repair stream: nothing to make room for
+	}
+	rate := p.fecRate
+	p.mu.Unlock()
+	if rate != prev {
+		p.s.log.Info("forward error correction", "rate", rate, "loss", loss)
+		p.s.fec.setRate(rate)
+		p.applyEncoder(false)
+	}
 }
 
 func (p *mediaPipe) sampleAuto(sendKbps int) {
@@ -467,21 +507,34 @@ func (p *mediaPipe) start() {
 // startCaptureLocked starts capture with the current plan; caller holds capMu.
 func (p *mediaPipe) startCaptureLocked() error {
 	profile := p.track.profile(time.Second)
+	fullColor := p.track.fullColor() && p.b.SupportsCodec(platform.CodecVP9)
 	p.mu.Lock()
 	if p.stopped {
 		p.mu.Unlock()
 		return errors.New("session ended")
 	}
+	fullColor = fullColor && !p.colorFail
+	if fullColor != p.fullColor {
+		p.fullColor = fullColor
+		p.resetAutoLocked()
+	}
 	plan := p.planLocked()
 	cfg := platform.CaptureConfig{FPS: plan.FPS, BitrateKbps: plan.Kbps, KeyframeIntervalMS: keyframeGOPms,
-		MaxWidth: plan.BoxW, MaxHeight: plan.BoxH, ProfileIDC: profile}
+		MaxWidth: plan.BoxW, MaxHeight: plan.BoxH, ProfileIDC: profile, Codec: plan.Codec}
 	if len(p.monitors) > 0 {
 		cfg.MonitorID = p.monitors[p.active].ID
 	}
-	p.applied = encoderState{plan.Kbps, plan.FPS, plan.W, plan.H}
+	p.applied = encoderState{plan.Kbps, plan.FPS, plan.W, plan.H, plan.Codec}
 	p.mu.Unlock()
 	if err := p.b.StartCapture(cfg, p); err != nil {
-		return err
+		if cfg.Codec != platform.CodecVP9 {
+			return err
+		}
+		p.s.log.Warn("full-color capture failed, staying on H.264", "err", err)
+		p.mu.Lock()
+		p.colorFail = true
+		p.mu.Unlock()
+		return p.startCaptureLocked()
 	}
 	p.mu.Lock()
 	p.running = true
@@ -587,6 +640,7 @@ func (p *mediaPipe) loop() {
 			}
 		case <-auto.C:
 			p.refreshEncoder()
+			p.updateFEC()
 			b := p.bytes.Load()
 			p.sampleAuto(int(float64(b-autoBytes) * 8 / 1000 / autoInterval.Seconds()))
 			autoBytes = b
@@ -594,13 +648,14 @@ func (p *mediaPipe) loop() {
 			b, f := p.bytes.Load(), p.frames.Load()
 			secs := statsInterval.Seconds()
 			p.mu.Lock()
-			a, bwe, enc, est, rqp := p.applied, p.bweKbps, p.encoder, p.est, p.refineQP
+			a, bwe, enc, est, rqp, fec := p.applied, p.bweKbps, p.encoder, p.est, p.refineQP, p.fecRate
 			p.mu.Unlock()
 			loss, _, rtt := estimatorStats(est)
 			p.sendControl(map[string]any{"t": "stats", "bitrate_kbps": int(float64(b-lastBytes) * 8 / 1000 / secs),
 				"fps": float64(f-lastFrames) / secs, "encoder": enc, "width": a.w, "height": a.h,
 				"keyframes": p.keyframes.Load(), "target_fps": a.fps, "target_kbps": a.kbps, "bwe_kbps": bwe, "loss": loss,
-				"refine_qp": rqp, "rtt_ms": rtt.Milliseconds()})
+				"refine_qp": rqp, "rtt_ms": rtt.Milliseconds(), "fec_pct": int(math.Round(fec * 100)),
+				"fec_packets": p.s.fec.repair.Load()})
 			lastBytes, lastFrames = b, f
 		case <-shape.C:
 			p.mu.Lock()
@@ -752,20 +807,20 @@ func (p *mediaPipe) onControlText(b []byte) {
 
 // ---- platform.CaptureSink (native threads) ----
 
-func (p *mediaPipe) Frame(data []byte, pts int64, keyframe, static bool) {
+func (p *mediaPipe) Frame(data []byte, pts int64, flags platform.FrameFlags) {
 	p.mu.Lock()
 	frame := time.Second / time.Duration(max(p.applied.fps, 1))
-	p.refine.onFrame(p.now(), len(data), keyframe, static, p.applied.kbps)
-	if keyframe || (!static && len(data) >= refineSmall) {
+	codec := p.applied.codec
+	if p.refine.onFrame(p.now(), len(data), flags, p.applied.kbps) {
 		p.refineQP = 0
 	}
 	p.mu.Unlock()
 	p.frames.Add(1)
 	p.bytes.Add(int64(len(data)))
-	if keyframe {
+	if flags&platform.FrameKey != 0 {
 		p.keyframes.Add(1)
 	}
-	_ = p.track.WriteFrame(data, pts, frame)
+	_ = p.track.WriteFrame(data, pts, frame, codec)
 }
 
 func (p *mediaPipe) CursorShape(id uint32, w, h, hotX, hotY uint16, rgba []byte) {
