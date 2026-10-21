@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -146,7 +147,7 @@ func (a *Agent) Enroll(ctx context.Context, serverURL, token string) error {
 		Hostname: a.cfg.Settings.Hostname, OS: runtime.GOOS, Arch: runtime.GOARCH, Version: a.cfg.Version,
 	})
 	if err != nil {
-		return err
+		return unreachable(serverURL, err)
 	}
 	st := config.State{ServerURL: strings.TrimRight(serverURL, "/"), DeviceID: res.DeviceID, Name: res.Name}
 	if err := config.Save(a.cfg.Settings.DataDir, st); err != nil {
@@ -163,6 +164,18 @@ func (a *Agent) Enroll(ctx context.Context, serverURL, token string) error {
 	a.log.Info("enrolled", "device_id", res.DeviceID, "name", res.Name)
 	a.pushTray()
 	return nil
+}
+
+// unreachable explains a request that never got an answer from the server:
+// a firewall such as Little Snitch that blocks the agent but not the
+// browser looks like a plain timeout.
+func unreachable(serverURL string, err error) error {
+	var ue *url.Error
+	if !errors.As(err, &ue) {
+		return err
+	}
+	return fmt.Errorf("could not reach %s (%w). Check this computer's internet connection, "+
+		"and that no firewall (such as Little Snitch) blocks RemoteAgent", serverURL, ue.Err)
 }
 
 // Uninstall deletes the device server-side (best effort) and wipes local state.
