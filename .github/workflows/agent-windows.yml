@@ -152,3 +152,135 @@ jobs:
             dist/*.msi.sig
             dist/*.sha256
             agent/dist/windows/remote-agent.exe
+
+  # The Windows 7 build: patched Go (packaging/windows/win7), cross-compiled
+  # with Ubuntu's mingw-w64, which links msvcrt.dll (no Universal CRT update
+  # needed on Windows 7). The MSI is built and signed on Windows below.
+  win7-exe:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version
+        id: version
+        run: |
+          base="$(tr -d '[:space:]' < VERSION)"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF#refs/tags/v}"
+          elif [[ "${{ inputs.release }}" == "true" ]]; then v="$base"
+          else v="$base-dev.${{ github.run_number }}"; fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mingw-w64 nasm patch
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/go-win7
+          key: go-win7-${{ runner.os }}-${{ hashFiles('packaging/windows/win7/*') }}
+      - name: Patched Go for Windows 7
+        run: echo "GOWIN7=$(packaging/windows/win7/build-go.sh "$RUNNER_TEMP/go-win7")" >> "$GITHUB_ENV"
+      - run: make -C native/windows -f Makefile.mingw
+      - name: go build (windows/amd64, win7)
+        working-directory: agent
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: "1"
+          CC: x86_64-w64-mingw32-gcc
+          CXX: x86_64-w64-mingw32-g++
+        run: |
+          "$GOWIN7/bin/go" build -tags win7 -trimpath -ldflags "-s -w -X main.version=$VERSION" \
+            -o dist/windows7/remote-agent.exe ./cmd/remote-agent
+      - name: exe imports only what Windows 7 ships
+        run: RC_TARGET=win7 native/windows/check-imports.sh agent/dist/windows7/remote-agent.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: remote-agent-win7-exe
+          path: agent/dist/windows7/remote-agent.exe
+
+  win7-msi:
+    needs: win7-exe
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.win7-exe.outputs.version }}
+      SERVER_URL: ${{ inputs.server_url || vars.SERVER_URL }}
+      HAS_AZURE_SIGNING: ${{ secrets.AZURE_CLIENT_ID != '' }}
+      HAS_RELEASE_KEY: ${{ secrets.RELEASE_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: remote-agent-win7-exe
+          path: agent/dist/windows7
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Install WiX v5
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add --global WixToolset.Util.wixext/5.0.2
+          wix extension add --global WixToolset.UI.wixext/5.0.2
+      - name: Sign exe (Azure Artifact Signing)
+        if: env.HAS_AZURE_SIGNING == 'true'
+        uses: azure/trusted-signing-action@v0.5.1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files-folder: agent/dist/windows7
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Build MSI
+        shell: pwsh
+        run: ./packaging/windows/build.ps1 -Version $env:VERSION -Stage msi -Flavor win7
+      - name: Sign MSI (Azure Artifact Signing)
+        if: env.HAS_AZURE_SIGNING == 'true'
+        uses: azure/trusted-signing-action@v0.5.1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files-folder: dist
+          files-folder-filter: msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Re-hash signed MSI
+        shell: pwsh
+        run: |
+          Get-ChildItem dist/*.msi | ForEach-Object {
+            $h = (Get-FileHash -Algorithm SHA256 $_).Hash.ToLower()
+            Set-Content "$($_.FullName).sha256" "$h  $($_.Name)" -NoNewline
+          }
+      - name: Sign MSI for auto-update (release key)
+        if: env.HAS_RELEASE_KEY == 'true'
+        shell: bash
+        working-directory: server
+        env:
+          RELEASE_PRIVATE_KEY: ${{ secrets.RELEASE_PRIVATE_KEY }}
+        run: |
+          for m in ../dist/*.msi; do
+            go run ./cmd/remotectl-release sign --version "$VERSION" --os windows --arch amd64-win7 "$m"
+            go run ./cmd/remotectl-release verify "$m"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: remote-agent-windows7-${{ env.VERSION }}
+          path: |
+            dist/*.msi
+            dist/*.msi.sig
+            dist/*.sha256
+            agent/dist/windows7/remote-agent.exe

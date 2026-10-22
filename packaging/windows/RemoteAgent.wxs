@@ -13,6 +13,13 @@
   Scripted install (no UI):
     msiexec /i RemoteAgent.msi ENROLL_TOKEN=XXXX-XXXX SERVER_URL=https://remote.example.com /qn
 
+  -d Win7=yes builds the Windows 7 installer around the Windows 7 exe
+  (packaging/windows/win7): it needs only Windows Installer 5.0, so the
+  service restart policy uses the built-in MsiServiceConfigFailureActions
+  instead of WiX's custom-action DLL, and it does not remove the data dir on
+  uninstall (`remote-agent uninstall` still clears the device's identity).
+  The normal installer refuses Windows 7.
+
   The product name is still an open decision (docs plan); everything that
   depends on it is a define below. UpgradeCode must never change once shipped.
 -->
@@ -25,6 +32,7 @@
   <?ifndef Version ?><?define Version = "0.0.1" ?><?endif?>
   <?ifndef BinDir ?><?define BinDir = "..\..\agent\dist\windows" ?><?endif?>
   <?ifndef IncludeNativeDll ?><?define IncludeNativeDll = "no" ?><?endif?>
+  <?ifndef Win7 ?><?define Win7 = "no" ?><?endif?>
   <?define ServiceName = "RemoteAgent" ?>
   <?define RegKey = "SOFTWARE\RemoteAgent" ?>
 
@@ -45,6 +53,13 @@
          never removes the data dir (config, device key): packages up to 0.3.1 delete it on any
          uninstall, upgrades included. REINSTALLMODE "a" overwrites the unversioned exe. -->
     <MajorUpgrade Schedule="afterInstallExecute" AllowDowngrades="yes" />
+    <?if $(Win7) = "yes" ?>
+    <Launch Condition="Installed OR VersionNT &gt; 601 OR (VersionNT = 601 AND ServicePackLevel &gt;= 1)"
+            Message="$(ProductName) needs Windows 7 Service Pack 1 or later." />
+    <?else?>
+    <Launch Condition="Installed OR VersionNT &gt;= 602"
+            Message="This installer needs Windows 8 or later. On Windows 7, download the Windows 7 installer from the Add device page." />
+    <?endif?>
     <Property Id="REINSTALLMODE" Value="amus" />
     <MediaTemplate EmbedCab="yes" />
 
@@ -75,11 +90,19 @@
                           ErrorControl="normal"
                           Arguments="service"
                           Vital="yes">
+            <?if $(Win7) = "yes" ?>
+            <ServiceConfigFailureActions OnInstall="yes" OnReinstall="yes" ResetPeriod="86400">
+              <Failure Action="restart" Delay="5000" />
+              <Failure Action="restart" Delay="5000" />
+              <Failure Action="restart" Delay="5000" />
+            </ServiceConfigFailureActions>
+            <?else?>
             <util:ServiceConfig FirstFailureActionType="restart"
                                 SecondFailureActionType="restart"
                                 ThirdFailureActionType="restart"
                                 RestartServiceDelayInSeconds="5"
                                 ResetPeriodInDays="1" />
+            <?endif?>
           </ServiceInstall>
           <ServiceControl Id="AgentServiceControl"
                           Name="$(ServiceName)"
@@ -99,7 +122,9 @@
         <!-- Data dir (%ProgramData%\RemoteAgent: config, DPAPI key blob, pins, logs) is removed on uninstall. -->
         <Component Id="DataDirCleanup" Guid="3E7A51C4-8B2D-4F6A-9C15-7D0E2B4A6F91" Bitness="always64">
           <RegistryValue Root="HKLM" Key="$(RegKey)" Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+          <?if $(Win7) != "yes" ?>
           <util:RemoveFolderEx On="uninstall" Property="DATADIR" />
+          <?endif?>
         </Component>
       </Directory>
     </StandardDirectory>

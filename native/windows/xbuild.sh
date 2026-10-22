@@ -2,6 +2,7 @@
 # Cross-compiles the Windows agent from macOS/Linux with mingw-w64 in Docker:
 #   native/windows/xbuild.sh            # native lib + agent/dist/windows/remote-agent.exe
 #   native/windows/xbuild.sh lib        # native lib only
+#   native/windows/xbuild.sh win7       # the Windows 7 build: agent/dist/windows7/remote-agent.exe
 #   native/windows/xbuild.sh shell      # interactive shell in the toolchain
 # The MSVC build (CMakeLists.txt, build.ps1) is the release path; this one
 # exists so the code compiles and links on every commit without a Windows box.
@@ -19,5 +20,14 @@ case "${1:-all}" in
       GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ \
       GOFLAGS=-mod=mod go build -trimpath -ldflags "-s -w" -o dist/windows/remote-agent.exe ./cmd/remote-agent && \
       ../native/windows/check-imports.sh dist/windows/remote-agent.exe' ;;
-  *) echo "usage: $0 [all|lib|shell]" >&2; exit 2 ;;
+  win7)
+    # Patched Go (packaging/windows/win7/build-go.sh), cached in .tools; Debian's
+    # mingw-w64 links msvcrt.dll, which Windows 7 has (no Universal CRT needed).
+    "${RUN[@]}" sh -c 'GOWIN7="$(packaging/windows/win7/build-go.sh /src/.tools/go-win7-linux)" && \
+      make -C native/windows -f Makefile.mingw && cd agent && \
+      GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ \
+      GOFLAGS=-mod=mod "$GOWIN7/bin/go" build -tags win7 -trimpath -ldflags "-s -w" \
+        -o dist/windows7/remote-agent.exe ./cmd/remote-agent && \
+      RC_TARGET=win7 ../native/windows/check-imports.sh dist/windows7/remote-agent.exe' ;;
+  *) echo "usage: $0 [all|lib|win7|shell]" >&2; exit 2 ;;
 esac

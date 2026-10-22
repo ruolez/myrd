@@ -6,6 +6,9 @@
   ./packaging/windows/build.ps1 -Version 1.2.3                  # mingw native, unsigned
   ./packaging/windows/build.ps1 -Version 1.2.3 -Native msvc     # MSVC DLL with the WGC path
   ./packaging/windows/build.ps1 -Version 1.2.3 -Stage exe       # stop after the exe (CI signs it, then -Stage msi)
+  ./packaging/windows/build.ps1 -Version 1.2.3 -Stage msi -Flavor win7
+                                         # Windows 7 MSI around agent\dist\windows7\remote-agent.exe
+                                         # (built on Linux: native/windows/xbuild.sh win7, or CI)
 
 .NOTES
   Requirements on the build machine:
@@ -31,6 +34,8 @@ param(
   [ValidateSet('mingw', 'msvc')][string]$Native = 'mingw',
   [ValidateSet('all', 'native', 'exe', 'msi')][string]$Stage = 'all',
   [string]$ProductName = 'RemoteAgent',
+  # win7: the Windows 7 installer (packaging/windows/win7); only -Stage msi.
+  [ValidateSet('default', 'win7')][string]$Flavor = 'default',
   # Pre-fills the server address on the installer's "Add this PC" page.
   [string]$ServerUrl = $env:SERVER_URL
 )
@@ -39,7 +44,8 @@ $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $NativeDir = Join-Path $Root 'native\windows'
 $AgentDir = Join-Path $Root 'agent'
-$BinDir = Join-Path $AgentDir 'dist\windows'
+$BinDir = Join-Path $AgentDir $(if ($Flavor -eq 'win7') { 'dist\windows7' } else { 'dist\windows' })
+if ($Flavor -eq 'win7' -and $Stage -ne 'msi') { throw 'the Windows 7 exe is built on Linux (native/windows/xbuild.sh win7); use -Stage msi' }
 $OutDir = Join-Path $Root 'dist'
 New-Item -ItemType Directory -Force -Path $BinDir, $OutDir | Out-Null
 
@@ -85,13 +91,15 @@ function Build-Exe {
 }
 
 function Build-Msi {
-  $msi = Join-Path $OutDir "$ProductName-$Version-x64.msi"
+  $suffix = if ($Flavor -eq 'win7') { '-win7' } else { '' }
+  $msi = Join-Path $OutDir "$ProductName-$Version-x64$suffix.msi"
   $dll = if ($Native -eq 'msvc') { 'yes' } else { 'no' }
   # MSI versions are numeric major.minor.build; strip any pre-release suffix.
   $msiVersion = ($Version -split '[-+]')[0]
   $wixArgs = @('build', (Join-Path $PSScriptRoot 'RemoteAgent.wxs'), '-arch', 'x64',
     '-ext', 'WixToolset.Util.wixext', '-ext', 'WixToolset.UI.wixext',
-    '-d', "Version=$msiVersion", '-d', "BinDir=$BinDir", '-d', "ProductName=$ProductName", '-d', "IncludeNativeDll=$dll")
+    '-d', "Version=$msiVersion", '-d', "BinDir=$BinDir", '-d', "ProductName=$ProductName", '-d', "IncludeNativeDll=$dll",
+    '-d', "Win7=$(if ($Flavor -eq 'win7') { 'yes' } else { 'no' })")
   if ($ServerUrl) { $wixArgs += @('-d', "ServerUrl=$ServerUrl") }
   Invoke-Checked 'wix' ($wixArgs + @('-o', $msi))
   Invoke-Sign @($msi)
