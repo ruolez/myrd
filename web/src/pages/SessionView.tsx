@@ -12,6 +12,7 @@ import { Icon } from "../components/icons";
 import { Badge, Spinner } from "../components/ui";
 import { keyFingerprint } from "../lib/devicePins";
 import { displayRect } from "../lib/geometry";
+import { comboInput } from "../lib/combos";
 import { encodeText } from "../lib/input";
 import { streamView } from "../lib/stream";
 import { CursorLayer } from "../session/CursorLayer";
@@ -21,6 +22,7 @@ import { useTransfers } from "../session/files/TransferList";
 import { TransferPill } from "../session/files/TransferPill";
 import { isFinal } from "../session/FileChannel";
 import { Hud } from "../session/Hud";
+import { KeysMenu } from "../session/KeysMenu";
 import { END_REASONS, RemoteSession } from "../session/RemoteSession";
 import type { Snapshot } from "../session/RemoteSession";
 import { StreamButton, StreamMenu } from "../session/StreamMenu";
@@ -38,6 +40,8 @@ function readHudPref() {
     return false;
   }
 }
+
+type Panel = "stream" | "files" | "keys";
 
 const FOLDER_HINT = "Folders can't be uploaded. Drop files, or zip the folder first.";
 
@@ -140,6 +144,7 @@ export function SessionView() {
   const [deviceName, setDeviceName] = useState("");
   const [streamOpen, setStreamOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
+  const [keysOpen, setKeysOpen] = useState(false);
   const [filesFolder, setFilesFolder] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
@@ -214,16 +219,15 @@ export function SessionView() {
   const transfersActive = transfers.some((t) => !isFinal(t));
 
   // In-stage panels release pointer lock; it comes back on close if it was on.
-  const openPanel = useCallback((which: "stream" | "files") => {
+  const openPanel = useCallback((which: Panel) => {
     relockOnClose.current ||= document.pointerLockElement !== null;
     setRelative(false);
-    if (which === "stream") setStreamOpen(true);
-    else setFilesOpen(true);
+    ({ stream: setStreamOpen, files: setFilesOpen, keys: setKeysOpen })[which](true);
   }, []);
-  const closePanel = (which: "stream" | "files") => {
-    const other = which === "stream" ? filesOpen : streamOpen;
-    if (which === "stream") setStreamOpen(false);
-    else setFilesOpen(false);
+  const closePanel = (which: Panel) => {
+    const open = { stream: streamOpen, files: filesOpen, keys: keysOpen };
+    ({ stream: setStreamOpen, files: setFilesOpen, keys: setKeysOpen })[which](false);
+    const other = (Object.keys(open) as Panel[]).some((p) => p !== which && open[p]);
     if (!other) {
       if (relockOnClose.current) setRelative(true);
       relockOnClose.current = false;
@@ -243,6 +247,7 @@ export function SessionView() {
     if (!live) {
       setStreamOpen(false);
       setFilesOpen(false);
+      setKeysOpen(false);
     }
   }, [live]);
 
@@ -490,6 +495,14 @@ export function SessionView() {
             disabled={!live}
           />
           <ToolButton
+            label="Send keys (Ctrl+Alt+Del, Alt+Tab…)"
+            icon="keyboard"
+            active={keysOpen}
+            onClick={() => (keysOpen ? closePanel("keys") : openPanel("keys"))}
+            disabled={!live}
+            text="Keys"
+          />
+          <ToolButton
             label={relative ? "Absolute mouse" : "Relative mouse (pointer lock)"}
             icon="lock"
             active={relative}
@@ -611,6 +624,13 @@ export function SessionView() {
               disabled={!files}
             />
             <ToolButton
+              label="Send keys (Ctrl+Alt+Del, Alt+Tab…)"
+              icon="keyboard"
+              text="Keys"
+              active={keysOpen}
+              onClick={() => openPanel("keys")}
+            />
+            <ToolButton
               label={
                 relative
                   ? "Absolute mouse"
@@ -631,6 +651,17 @@ export function SessionView() {
 
         {filesOpen && files && (
           <FilesPanel files={files} onClose={() => closePanel("files")} onFolder={setFilesFolder} />
+        )}
+        {keysOpen && live && (
+          <KeysMenu
+            className="top-3 left-3"
+            os={snap?.agentOs ?? null}
+            onSend={(c) => {
+              for (const m of comboInput(c.keys)) session?.sendInput(m);
+              closePanel("keys");
+            }}
+            onClose={() => closePanel("keys")}
+          />
         )}
         {streamOpen && snap && live && (
           <StreamMenu

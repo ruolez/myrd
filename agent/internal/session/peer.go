@@ -268,6 +268,7 @@ func (s *sess) setupPeer() error {
 	}
 
 	s.in = newInputState(s.m.o.Backend, s.m.o.Keymap)
+	s.in.sas = s.m.o.SecureAttention
 	s.media = newMediaPipe(s, track)
 
 	s.mu.Lock()

@@ -56,7 +56,11 @@ func (h *handler) Execute(args []string, req <-chan svc.ChangeRequest, status ch
 
 	quit := make(chan struct{})
 	var quitOnce sync.Once
-	p := &Proxy{Log: h.log, OnQuit: func() { quitOnce.Do(func() { close(quit) }) }}
+	p := &Proxy{Log: h.log, OnQuit: func() { quitOnce.Do(func() { close(quit) }) }, OnSAS: func() {
+		if err := sendSAS(); err != nil {
+			h.log.Error("winsvc: Ctrl+Alt+Delete (SendSAS) failed", "err", err)
+		}
+	}}
 	kick := make(chan struct{}, 1)
 
 	var wg sync.WaitGroup

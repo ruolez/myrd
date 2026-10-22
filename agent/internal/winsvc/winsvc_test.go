@@ -323,3 +323,38 @@ func TestHoldHelperStopsItUntilReleased(t *testing.T) {
 		t.Fatal("still held after release")
 	}
 }
+
+func TestSoftwareSASGenerationAllowsServicesKeepingEaseOfAccess(t *testing.T) {
+	cases := []struct {
+		cur    uint64
+		exists bool
+		want   uint32
+		change bool
+	}{
+		{0, false, 1, true}, // unset: services only
+		{0, true, 1, true},  // disabled
+		{2, true, 3, true},  // Ease of Access apps only: add services
+		{1, true, 1, false},
+		{3, true, 3, false},
+	}
+	for _, c := range cases {
+		if got, change := softwareSASGeneration(c.cur, c.exists); got != c.want || change != c.change {
+			t.Errorf("softwareSASGeneration(%d, %v) = %d, %v; want %d, %v", c.cur, c.exists, got, change, c.want, c.change)
+		}
+	}
+}
+
+func TestHelperCtrlAltDeleteReachesTheService(t *testing.T) {
+	sas := make(chan struct{}, 1)
+	p := &Proxy{Send: (&recorder{}).Send, OnSAS: func() { sas <- struct{}{} }}
+	link, stop := pair(t, p, &fakeTarget{}, HelperEvents{})
+	defer stop()
+	if err := link.SAS(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-sas:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the service never got the Ctrl+Alt+Delete request")
+	}
+}

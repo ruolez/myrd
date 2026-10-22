@@ -21,6 +21,7 @@ type Proxy struct {
 	Log    *slog.Logger
 	OnCaps func(HelperCaps)
 	OnQuit func()
+	OnSAS  func() // Ctrl+Alt+Delete from the controller; runs on its own goroutine
 
 	mu      sync.Mutex
 	w       io.Writer
@@ -145,6 +146,10 @@ func (p *Proxy) readLoop(r io.Reader) error {
 		case KindQuit:
 			if p.OnQuit != nil {
 				p.OnQuit()
+			}
+		case KindSAS:
+			if p.OnSAS != nil {
+				go p.OnSAS()
 			}
 		default:
 			p.log().Debug("winsvc: unknown frame from helper", "kind", f.Kind)

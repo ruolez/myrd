@@ -393,6 +393,11 @@ func RunHelper(o Options) error {
 		OnPinsChanged: func() {
 			link.Send(proto.TypePinsSync, proto.PinsSync{PinnedClientKeys: ps.List()})
 		},
+		SecureAttention: func() {
+			if err := link.SAS(); err != nil {
+				o.Log.Warn("winsvc: Ctrl+Alt+Delete not passed to the service", "err", err)
+			}
+		},
 		OnSessionChange: func(i *session.Info) {
 			if mgr != nil {
 				link.Active(mgr.ActiveSessions())

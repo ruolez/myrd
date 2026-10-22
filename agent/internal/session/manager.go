@@ -36,6 +36,10 @@ type Options struct {
 
 	OnPinsChanged   func()      // send pins.sync
 	OnSessionChange func(*Info) // nil = no session; for tray + device console
+	// SecureAttention replaces Ctrl+Alt+Delete from the browser: Windows
+	// ignores that chord as injected keys (the helper asks the service, which
+	// may call SendSAS). nil = the keys are injected like any other.
+	SecureAttention func()
 
 	// Network: UDPPort > 0 multiplexes ICE on one UDP port; NAT1To1IPs adds
 	// extra host candidates with those IPs (Docker Desktop: 127.0.0.1).

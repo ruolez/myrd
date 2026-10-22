@@ -41,6 +41,7 @@ func (l *Link) Send(msgType string, msg any) error { return l.write(KindOut, msg
 func (l *Link) Caps(c HelperCaps) error   { return l.write(KindCaps, "", c) }
 func (l *Link) Active(ids []string) error { return l.write(KindActive, "", ids) }
 func (l *Link) Quit() error               { return l.write(KindQuit, "", nil) }
+func (l *Link) SAS() error                { return l.write(KindSAS, "", nil) }
 
 var _ session.Outbound = (*Link)(nil).Send
 

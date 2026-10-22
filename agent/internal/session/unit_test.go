@@ -214,6 +214,61 @@ func TestReleaseAllReleasesHeldKeysAndButtons(t *testing.T) {
 	}
 }
 
+func TestCtrlAltDeleteBecomesASecureAttentionRequest(t *testing.T) {
+	type key struct {
+		usage uint16
+		down  bool
+	}
+	press := func(us ...uint16) []key {
+		var ks []key
+		for _, u := range us {
+			ks = append(ks, key{u, true})
+		}
+		for i := len(us) - 1; i >= 0; i-- {
+			ks = append(ks, key{us[i], false})
+		}
+		return ks
+	}
+	cases := []struct {
+		name     string
+		hook     bool
+		keys     []key
+		wantSAS  int
+		injected []uint16 // usages injected, in order (downs and ups)
+	}{
+		{"left Ctrl+Alt+Del", true, press(0xE0, 0xE2, 0x4C), 1, []uint16{0xE0, 0xE2, 0xE2, 0xE0}},
+		{"right Ctrl+Alt with keypad Del", true, press(0xE4, 0xE6, 0x63), 1, []uint16{0xE4, 0xE6, 0xE6, 0xE4}},
+		{"Ctrl+Del without Alt stays keys", true, press(0xE0, 0x4C), 0, []uint16{0xE0, 0x4C, 0x4C, 0xE0}},
+		{"no hook: injected like any other keys", false, press(0xE0, 0xE2, 0x4C), 0,
+			[]uint16{0xE0, 0xE2, 0x4C, 0x4C, 0xE2, 0xE0}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			b := fake.New()
+			in := newInputState(b, keymap.X11)
+			sas := 0
+			if c.hook {
+				in.sas = func() { sas++ }
+			}
+			fm := &fakeMedia{monitors: []uint32{1}}
+			for _, k := range c.keys {
+				if err := in.handle(inputproto.Encode(inputproto.Event{Type: inputproto.TypeKey, Usage: k.usage, Down: k.down}), fm); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var want []platform.InputEvent
+			down := map[uint16]bool{}
+			for _, u := range c.injected {
+				down[u] = !down[u]
+				want = append(want, platform.InputEvent{Type: platform.EvKey, Keycode: keymap.X11[u].Code, Flags: keymap.X11[u].Flags, Down: down[u]})
+			}
+			if got := b.Injected(); sas != c.wantSAS || !slices.Equal(got, want) {
+				t.Fatalf("secure attention %d times (want %d), injected %+v, want %+v", sas, c.wantSAS, got, want)
+			}
+		})
+	}
+}
+
 func TestClipboardFromBrowserReachesBackend(t *testing.T) {
 	b := fake.New()
 	in := newInputState(b, keymap.X11)

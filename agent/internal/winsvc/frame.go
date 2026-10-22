@@ -39,6 +39,7 @@ const (
 	KindCaps   = "caps"   // Data = HelperCaps
 	KindActive = "active" // Data = []string session ids with a live peer connection
 	KindQuit   = "quit"   // owner chose Quit in the tray: stop the service
+	KindSAS    = "sas"    // the controller sent Ctrl+Alt+Delete: the service calls SendSAS
 )
 
 type Frame struct {

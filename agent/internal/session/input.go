@@ -38,8 +38,9 @@ func (p *mediaPipe) requestKeyframe() { p.b.RequestKeyframe() }
 // inputState decodes input-channel messages and injects them, tracking held
 // keys so nothing stays stuck when the session ends.
 type inputState struct {
-	b  platform.Backend
-	km keymap.Table
+	b   platform.Backend
+	km  keymap.Table
+	sas func() // Options.SecureAttention
 
 	mu      sync.Mutex
 	pressed map[uint16]keymap.Entry
@@ -47,7 +48,26 @@ type inputState struct {
 	nrej    int
 	clip    inputproto.ClipboardAssembler
 	moveSeq uint16
-	moved   bool // moveSeq is set
+	moved   bool   // moveSeq is set
+	sasKey  uint16 // the Delete that became a secure attention request: its key-up is dropped too
+}
+
+// HID usages of the Ctrl+Alt+Delete chord (either side, either Delete).
+const (
+	usageDelete        = 0x4C
+	usageNumpadDecimal = 0x63 // Del with Num Lock off; the chord counts either way
+	usageLCtrl         = 0xE0
+	usageLAlt          = 0xE2
+	usageRCtrl         = 0xE4
+	usageRAlt          = 0xE6
+)
+
+// isSecureAttention reports whether usage going down with pressed held is
+// Ctrl+Alt+Delete. Callers hold in.mu.
+func isSecureAttention(usage uint16, pressed map[uint16]keymap.Entry) bool {
+	held := func(a, b uint16) bool { _, l := pressed[a]; _, r := pressed[b]; return l || r }
+	return (usage == usageDelete || usage == usageNumpadDecimal) &&
+		held(usageLCtrl, usageRCtrl) && held(usageLAlt, usageRAlt)
 }
 
 func newInputState(b platform.Backend, km keymap.Table) *inputState {
@@ -99,6 +119,17 @@ func (in *inputState) handle(raw []byte, mc mediaControl) error {
 			return in.reject(inputproto.ErrRange)
 		}
 		in.mu.Lock()
+		if ev.Down && in.sas != nil && isSecureAttention(ev.Usage, in.pressed) {
+			in.sasKey = ev.Usage
+			in.mu.Unlock()
+			in.sas()
+			return nil
+		}
+		if !ev.Down && in.sasKey != 0 && ev.Usage == in.sasKey {
+			in.sasKey = 0
+			in.mu.Unlock()
+			return nil
+		}
 		if ev.Down {
 			in.pressed[ev.Usage] = e
 		} else {
