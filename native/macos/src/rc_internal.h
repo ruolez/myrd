@@ -27,4 +27,7 @@ BOOL rc_main_loop_alive(void);
 
 void rc_input_reset(void);
 
+// The capture takes its pictures from CGDisplayStream (the unlock-screen path).
+bool rc_mac_lock_path(void);
+
 #endif

@@ -10,6 +10,6 @@ package native
 #cgo darwin LDFLAGS: -L${SRCDIR}/../../../native/macos/build -lrcnative
 #cgo darwin LDFLAGS: -framework ScreenCaptureKit -framework VideoToolbox -framework CoreMedia -framework CoreVideo
 #cgo darwin LDFLAGS: -framework CoreGraphics -framework ApplicationServices -framework AppKit -framework Carbon
-#cgo darwin LDFLAGS: -framework Foundation -framework Security
+#cgo darwin LDFLAGS: -framework Foundation -framework Security -framework IOKit
 */
 import "C"

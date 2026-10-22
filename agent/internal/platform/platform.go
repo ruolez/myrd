@@ -138,6 +138,10 @@ type Backend interface {
 	// when the platform cannot hide it.
 	HideWallpaper(hide bool) error
 
+	// ScreenLocked reports whether the device shows its unlock screen (a
+	// logged-in session that is locked); false where the backend cannot tell.
+	ScreenLocked() bool
+
 	// Indicator shows/hides the native always-on-top session border.
 	Indicator(on bool)
 	// ConsentPrompt blocks until the owner answers on the device screen or the

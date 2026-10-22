@@ -178,6 +178,17 @@ void rc_free(void *p);
  * Returns RC_OK, RC_ERR_UNSUPPORTED or RC_ERR. */
 int  rc_wallpaper_hide(int hide);
 
+/* ---- lock screen ---- */
+/* 1 while the device's screen is locked (the session is logged in but shows
+ * the unlock screen), 0 otherwise.
+ *   macos  : CGSSessionScreenIsLocked. A capture keeps the display awake and,
+ *            while locked, takes its pictures from CGDisplayStream, which
+ *            ScreenCaptureKit blanks the unlock screen for.
+ *   windows, linux: RC_ERR_UNSUPPORTED (Windows' secure desktop is the
+ *            service's job).
+ * Returns 1, 0 or RC_ERR_UNSUPPORTED. */
+int  rc_screen_locked(void);
+
 /* ---- session UI (native so it cannot be hidden by the controller) ---- */
 /* Show/hide the always-on-top red border on every monitor. */
 void rc_indicator_show(int on);

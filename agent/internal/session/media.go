@@ -34,6 +34,7 @@ const (
 	autoInterval   = time.Second
 	cursorInterval = time.Second / 120
 	clipboardPoll  = time.Second
+	lockPoll       = time.Second
 	shapeResend    = 3 * time.Second
 )
 
@@ -121,6 +122,7 @@ type mediaPipe struct {
 	cursor     *webrtc.DataChannel
 	sentShape  map[uint32]bool
 	curShape   []byte // full CursorShape message for periodic resend
+	locked     bool   // last lock state the viewer heard (hello / `screen`)
 	clipSeen   string
 	clipSet    string // last value we wrote from the browser (avoid echo)
 	clipXfer   uint16
@@ -616,6 +618,7 @@ func (p *mediaPipe) loop() {
 	auto := time.NewTicker(autoInterval)
 	cursor := time.NewTicker(cursorInterval)
 	clip := time.NewTicker(clipboardPoll)
+	lock := time.NewTicker(lockPoll)
 	shape := time.NewTicker(shapeResend)
 	refine := time.NewTicker(refineTick)
 	defer refine.Stop()
@@ -623,6 +626,7 @@ func (p *mediaPipe) loop() {
 	defer auto.Stop()
 	defer cursor.Stop()
 	defer clip.Stop()
+	defer lock.Stop()
 	defer shape.Stop()
 	if t, err := p.b.ClipboardText(); err == nil {
 		p.mu.Lock()
@@ -667,6 +671,8 @@ func (p *mediaPipe) loop() {
 			}
 		case <-clip.C:
 			p.pollClipboard()
+		case <-lock.C:
+			p.pollLock()
 		case <-refine.C:
 			p.refineStep()
 		}
@@ -696,6 +702,21 @@ func (p *mediaPipe) refineStep() {
 	}
 	p.refineQP, p.refinePass = 0, 0
 	p.mu.Unlock()
+}
+
+// pollLock tells the viewer when the device's screen locks or unlocks: the
+// unlock screen may reach it black (macOS), so it says why and what to type.
+func (p *mediaPipe) pollLock() {
+	locked := p.b.ScreenLocked()
+	p.mu.Lock()
+	changed := locked != p.locked && p.control != nil
+	if changed {
+		p.locked = locked
+	}
+	p.mu.Unlock()
+	if changed {
+		p.sendControl(map[string]any{"t": "screen", "locked": locked})
+	}
 }
 
 func (p *mediaPipe) pollClipboard() {
@@ -745,12 +766,14 @@ func (p *mediaPipe) setControlChannel(dc *webrtc.DataChannel) {
 	}
 	plan := p.planLocked()
 	active, enc, maxFPS := p.active, p.encoder, p.maxFPS
+	locked := p.b.ScreenLocked()
+	p.locked = locked
 	p.mu.Unlock()
 	perm := p.b.Permissions()
 	p.sendControl(map[string]any{"t": "hello", "monitors": mons, "active": active, "encoder": enc,
 		"codec": "h264", "fps": plan.FPS, "max_fps": maxFPS, "features": helloFeatures(p.s.m.o, p.canHideWP),
 		"permissions":   proto.Permissions{Screen: perm.Screen, Input: perm.Input},
-		"agent_version": p.s.m.o.AgentVersion, "os": runtime.GOOS})
+		"agent_version": p.s.m.o.AgentVersion, "os": runtime.GOOS, "locked": locked})
 	p.sendStreamState(true)
 }
 

@@ -2,6 +2,7 @@
 // access units, or BGRA → VP9 4:4:4 (rc_vpx, full color), plus the
 // out-of-band cursor stream.
 #import <AppKit/AppKit.h>
+#import <IOKit/pwr_mgt/IOPMLib.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <VideoToolbox/VideoToolbox.h>
 #import <CoreMedia/CoreMedia.h>
@@ -62,6 +63,16 @@ static char g_encoder[32];
 
 static uint8_t *g_out;
 static size_t g_out_cap;
+
+// Unlock screen: ScreenCaptureKit delivers it black, so while the session is
+// locked the pictures come from CGDisplayStream (on g_queue) and SCK's are
+// dropped. Checked once a second by the g_wp_timer tick.
+static CGDisplayStreamRef g_lock_stream;
+static atomic_bool g_lock_active;
+
+// A capture wakes a sleeping display and keeps it on: the unlock screen turns
+// it off after a minute without local input.
+static IOPMAssertionID g_activity_id, g_awake_id;
 
 // ---------------- encoder ----------------
 
@@ -324,7 +335,7 @@ static int32_t minor_change(NSArray *dirty, CVPixelBufferRef pb) {
 
 @implementation RCStreamOutput
 - (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sb ofType:(SCStreamOutputType)type {
-    if (type != SCStreamOutputTypeScreen || !atomic_load(&g_running)) return;
+    if (type != SCStreamOutputTypeScreen || !atomic_load(&g_running) || atomic_load(&g_lock_active)) return;
     CFArrayRef atts = CMSampleBufferGetSampleAttachmentsArray(sb, false);
     if (!atts || CFArrayGetCount(atts) == 0) return;
     NSDictionary *a = (__bridge NSDictionary *)CFArrayGetValueAtIndex(atts, 0);
@@ -488,11 +499,109 @@ static void wp_refresh_locked(BOOL force) {
     }];
 }
 
+// ---------------- lock screen ----------------
+
+static bool session_locked(void) {
+    NSDictionary *d = CFBridgingRelease(CGSessionCopyCurrentDictionary());
+    id v = d[@"CGSSessionScreenIsLocked"];
+    return [v respondsToSelector:@selector(boolValue)] && [v boolValue];
+}
+
+int rc_screen_locked(void) {
+    @autoreleasepool { return session_locked() ? 1 : 0; }
+}
+
+bool rc_mac_lock_path(void) { return atomic_load(&g_lock_active); }
+
+static void display_keep_awake(bool on) {
+    if (on) {
+        IOPMAssertionDeclareUserActivity(CFSTR("Remote session"), kIOPMUserActiveLocal, &g_activity_id);
+        if (!g_awake_id)
+            IOPMAssertionCreateWithName(kIOPMAssertPreventUserIdleDisplaySleep, kIOPMAssertionLevelOn,
+                                        CFSTR("Remote session"), &g_awake_id);
+    } else if (g_awake_id) {
+        IOPMAssertionRelease(g_awake_id);
+        g_awake_id = 0;
+    }
+}
+
+// Caller holds g_ctl.
+static void lock_stream_start_locked(void) {
+    if (g_lock_stream) return;
+    bool bgra = g_codec == RC_CODEC_VP9;
+    CGColorSpaceRef srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    NSMutableDictionary *props = [@{
+        (__bridge NSString *)kCGDisplayStreamShowCursor: @NO,
+        (__bridge NSString *)kCGDisplayStreamMinimumFrameTime: @(1.0 / MAX(1, g_fps)),
+        (__bridge NSString *)kCGDisplayStreamQueueDepth: @4,
+    } mutableCopy];
+    if (bgra) props[(__bridge NSString *)kCGDisplayStreamColorSpace] = (__bridge id)srgb;
+    else props[(__bridge NSString *)kCGDisplayStreamYCbCrMatrix] = (__bridge id)kCGDisplayStreamYCbCrMatrix_ITU_R_709_2;
+    __block CGDisplayStreamRef s = NULL;
+    s = CGDisplayStreamCreateWithDispatchQueue(
+        g_display, (size_t)g_capw, (size_t)g_caph, bgra ? 'BGRA' : '420v', (__bridge CFDictionaryRef)props, g_queue,
+        ^(CGDisplayStreamFrameStatus status, uint64_t t, IOSurfaceRef surf, CGDisplayStreamUpdateRef upd) {
+            if (status == kCGDisplayStreamFrameStatusStopped) {
+                CFRelease(s);
+                return;
+            }
+            if (status != kCGDisplayStreamFrameStatusFrameComplete || !surf || !atomic_load(&g_running) ||
+                !atomic_load(&g_lock_active))
+                return;
+            CVPixelBufferRef pb = NULL;
+            if (CVPixelBufferCreateWithIOSurface(NULL, surf, NULL, &pb) != kCVReturnSuccess || !pb) return;
+            if (g_last) CVPixelBufferRelease(g_last);
+            g_last = pb;
+            g_last_content_us = rc_now_us();
+            encode_pixbuf(pb, atomic_exchange(&g_force_key, false), 0, 0);
+        });
+    CGColorSpaceRelease(srgb);
+    if (!s) {
+        RCLOG(@"lock screen: CGDisplayStream unavailable");
+        return;
+    }
+    atomic_store(&g_lock_active, true);
+    if (CGDisplayStreamStart(s) != kCGErrorSuccess) {
+        atomic_store(&g_lock_active, false);
+        CFRelease(s);
+        return;
+    }
+    g_lock_stream = s;
+}
+
+// Caller holds g_ctl. The stream releases itself when it reports stopped.
+static void lock_stream_stop_locked(void) {
+    if (!g_lock_stream) return;
+    atomic_store(&g_lock_active, false);
+    CGDisplayStreamStop(g_lock_stream);
+    g_lock_stream = NULL;
+    atomic_store(&g_force_key, true); // the desktop comes back as a fresh picture
+}
+
+// RC_CAPTURE=cgds takes the unlock-screen path while unlocked too (testing).
+static bool lock_path_forced(void) {
+    const char *c = getenv("RC_CAPTURE");
+    return c && strcmp(c, "cgds") == 0;
+}
+
+// Caller holds g_ctl.
+static void lock_poll_locked(void) {
+    if (!g_stream) return;
+    if (session_locked() || lock_path_forced()) {
+        display_keep_awake(true);
+        lock_stream_start_locked();
+    } else {
+        lock_stream_stop_locked();
+    }
+}
+
 // ---------------- public API ----------------
 
 static void teardown_locked(void) {
     atomic_store(&g_running, false);
     atomic_store(&g_refine_ok, false);
+    lock_stream_stop_locked();
+    display_keep_awake(false);
     if (g_cursor_timer) {
         dispatch_source_cancel(g_cursor_timer);
         g_cursor_timer = nil;
@@ -645,11 +754,16 @@ static int start_locked(const rc_capture_config *cfg, rc_frame_fn on_frame, rc_c
         dispatch_source_set_timer(g_wp_timer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), NSEC_PER_SEC,
                                   100 * NSEC_PER_MSEC);
         dispatch_source_set_event_handler(g_wp_timer, ^{
-            if (!atomic_load(&g_hide_wp) || pthread_mutex_trylock(&g_ctl) != 0) return;
-            @autoreleasepool { wp_refresh_locked(NO); }
+            if (pthread_mutex_trylock(&g_ctl) != 0) return;
+            @autoreleasepool {
+                lock_poll_locked();
+                if (atomic_load(&g_hide_wp)) wp_refresh_locked(NO);
+            }
             pthread_mutex_unlock(&g_ctl);
         });
         dispatch_resume(g_wp_timer);
+        display_keep_awake(true);
+        lock_poll_locked();
         return RC_OK;
     }
 }

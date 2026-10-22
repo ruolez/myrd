@@ -11,6 +11,8 @@
 #include <vpx/vp8dx.h>
 #include <vpx/vpx_decoder.h>
 
+bool rc_mac_lock_path(void); // rc_internal.h: the capture uses CGDisplayStream
+
 static atomic_int frames, keyframes, bad_annexb, key_without_ps, shapes, positions;
 static atomic_long bytes, last_key_len;
 static FILE *dump; // RC_HARNESS_DUMP=<file.h264> writes the elementary stream
@@ -118,6 +120,7 @@ int main(void) {
         }
 
         CHECK(rc_wallpaper_hide(0) == RC_OK, "rc_wallpaper_hide(0) probe before capture");
+        CHECK(rc_screen_locked() == 0, "rc_screen_locked() is 0 while the harness runs unlocked");
 
         // RC_HARNESS_MONITOR=<index> captures another monitor (a static one tests refinement).
         const char *mi = getenv("RC_HARNESS_MONITOR");
@@ -190,6 +193,37 @@ int main(void) {
                   vp9_h);
             CHECK(vp9_w > 0 && vp9_w <= 1280 && vp9_h <= 1280 && vp9_w % 2 == 0, "full-color size fits the box");
             CHECK(strncmp(rc_encoder_name(), "videotoolbox", 12) == 0, "encoder name back to %s", rc_encoder_name());
+
+            // The unlock-screen path (CGDisplayStream), forced while unlocked.
+            setenv("RC_CAPTURE", "cgds", 1);
+            atomic_store(&frames, 0);
+            atomic_store(&keyframes, 0);
+            atomic_store(&bad_annexb, 0);
+            atomic_store(&key_without_ps, 0);
+            CHECK(rc_capture_start(&cfg, on_frame, on_shape, on_pos, NULL) == RC_OK, "lock-path capture starts");
+            CHECK(rc_mac_lock_path(), "pictures come from CGDisplayStream");
+            usleep(800 * 1000);
+            int lk = atomic_load(&keyframes);
+            rc_request_keyframe();
+            usleep(400 * 1000);
+            CHECK(atomic_load(&keyframes) > lk, "lock-path keyframe on request");
+            rc_capture_stop();
+            int lf = atomic_load(&frames);
+            usleep(200 * 1000);
+            CHECK(atomic_load(&frames) == lf, "no lock-path frames after rc_capture_stop");
+            CHECK(lf >= 1 && atomic_load(&bad_annexb) == 0 && atomic_load(&key_without_ps) == 0,
+                  "%d lock-path H.264 frames, all well formed", lf);
+            atomic_store(&vp9_frames, 0);
+            atomic_store(&vp9_bad, 0);
+            CHECK(rc_capture_start(&fc, on_vp9_frame, on_shape, on_pos, NULL) == RC_OK, "lock-path full color starts");
+            usleep(500 * 1000);
+            rc_request_keyframe();
+            usleep(500 * 1000);
+            rc_capture_stop();
+            CHECK(atomic_load(&vp9_frames) >= 1 && atomic_load(&vp9_bad) == 0,
+                  "%d lock-path full-color frames, all decoded as 4:4:4", atomic_load(&vp9_frames));
+            unsetenv("RC_CAPTURE");
+            CHECK(!rc_mac_lock_path(), "the lock path ends with the capture");
             vpx_codec_destroy(&vp9dec);
         }
         rc_shutdown();

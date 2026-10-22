@@ -386,3 +386,23 @@ func TestLoopbackAnswerAnnouncesTheRepairStream(t *testing.T) {
 		}
 	}
 }
+
+func TestLoopbackViewerHearsWhenTheScreenLocks(t *testing.T) {
+	h := newHarness(t, platform.ConsentOnce)
+	h.backend.SetLocked(true)
+	h.offer(false)
+	if err := <-h.answerOK; err != nil {
+		t.Fatal(err)
+	}
+	if hello := h.waitControl(t, "hello"); hello["locked"] != true {
+		t.Fatalf("hello locked = %v, want true (the session started on the unlock screen)", hello["locked"])
+	}
+	h.backend.SetLocked(false)
+	if m := h.waitControl(t, "screen"); m["locked"] != false {
+		t.Fatalf("screen = %v, want unlocked", m)
+	}
+	h.backend.SetLocked(true)
+	if m := h.waitControl(t, "screen"); m["locked"] != true {
+		t.Fatalf("screen = %v, want locked", m)
+	}
+}

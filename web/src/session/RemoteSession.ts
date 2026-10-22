@@ -90,6 +90,8 @@ export type Snapshot = {
   agentOs: string | null;
   agentVersion: string | null;
   permissions: { screen: boolean; input: boolean } | null;
+  /** The device shows its unlock screen (hello `locked`, then `screen`). */
+  locked: boolean;
   streamPrefs: StreamPrefs;
   streamState: StreamState | null;
   /** null until `hello`; false for agents without the `stream` feature. */
@@ -235,6 +237,7 @@ export class RemoteSession {
       agentOs: null,
       agentVersion: null,
       permissions: null,
+      locked: false,
       streamPrefs: loadStreamPrefs(opts.deviceId),
       streamState: null,
       streamFeature: null,
@@ -591,6 +594,7 @@ export class RemoteSession {
           agentOs: (m.os as string) ?? null,
           agentVersion: (m.agent_version as string) ?? null,
           permissions: (m.permissions as Snapshot["permissions"]) ?? null,
+          locked: m.locked === true,
           features: features ?? [],
           streamFeature: features?.includes("stream") ?? false,
           maxFps: num(m.max_fps),
@@ -614,6 +618,9 @@ export class RemoteSession {
         });
         break;
       }
+      case "screen":
+        this.update({ locked: m.locked === true });
+        break;
       case "stream": {
         const state = parseStreamState(m);
         if (state) this.update({ streamState: state, maxFps: state.max_fps });

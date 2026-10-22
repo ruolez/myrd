@@ -599,6 +599,18 @@ export function SessionView() {
             </div>
           </div>
         </div>
+        {live && snap?.locked && (
+          <div
+            role="status"
+            className="pointer-events-none absolute bottom-4 left-1/2 z-20 flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-2 rounded-full bg-black/80 px-4 py-2 text-sm text-white shadow-lg"
+          >
+            <Icon name="lock" size={16} />
+            <span>
+              {snap.deviceName} is locked. Click the screen, type its password and press Enter, even
+              if the screen stays black.
+            </span>
+          </div>
+        )}
         {hud && live && snap && (
           <Hud
             stats={snap.stats}

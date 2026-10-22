@@ -31,6 +31,7 @@ func (Backend) InjectText(string) error          { return platform.ErrUnsupporte
 func (Backend) ClipboardText() (string, error)   { return "", platform.ErrUnsupported }
 func (Backend) SetClipboardText(string) error    { return platform.ErrUnsupported }
 func (Backend) HideWallpaper(bool) error         { return platform.ErrUnsupported }
+func (Backend) ScreenLocked() bool               { return false }
 func (Backend) Indicator(bool)                   {}
 func (Backend) ConsentPrompt(string, string, int) (platform.Consent, error) {
 	return platform.ConsentDeny, platform.ErrUnsupported

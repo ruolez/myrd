@@ -88,6 +88,8 @@ void rc_indicator_show(int on) { indicator_show(on != 0); }
 
 int rc_wallpaper_hide(int hide) { return wallpaper_hide(hide != 0); }
 
+int rc_screen_locked(void) { return RC_ERR_UNSUPPORTED; }
+
 int rc_consent_prompt(const char *title, const char *message, int32_t timeout_s) {
     return consent_prompt(title, message, timeout_s);
 }

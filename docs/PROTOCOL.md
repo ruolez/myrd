@@ -278,8 +278,9 @@ JSON text messages, `{"t": "...", ...}`:
 
 | t | dir | fields |
 |---|---|---|
-| `hello` | A→B on open | `monitors:[Monitor]`, `active:index`, `encoder`, `codec:"h264"`, `fps` (current target), `max_fps` (encoder cap), `features:[string]` (`"stream"`, `"move"`, `"files"`, `"wallpaper"`; absent on old agents), `permissions:{screen,input}`, `agent_version`, `os` |
+| `hello` | A→B on open | `monitors:[Monitor]`, `active:index`, `encoder`, `codec:"h264"`, `fps` (current target), `max_fps` (encoder cap), `features:[string]` (`"stream"`, `"move"`, `"files"`, `"wallpaper"`; absent on old agents), `permissions:{screen,input}`, `agent_version`, `os`, `locked` (the device shows its unlock screen; absent on old agents = false) |
 | `monitor` | A→B | `active:index`, `width`, `height` (native pixels, after a switch) |
+| `screen` | A→B on change | `locked:bool`. Polled once a second. The viewer says the device is locked and that typing the password unlocks it: macOS blanks the unlock screen for ScreenCaptureKit, so while locked the macOS backend captures with CGDisplayStream instead, and every macOS capture wakes the display and keeps it on. Only macOS reports a lock (Windows' secure desktop is the service's) |
 | `stream` | B→A | desired stream settings, see below |
 | `stream` | A→B | stream state, see below |
 | `ping` | B→A | `id`, `ts` (ms, browser clock) |

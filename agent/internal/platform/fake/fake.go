@@ -54,6 +54,7 @@ type Backend struct {
 	canHideWallpaper bool
 	wallpaperHidden  bool
 	wallpaperCalls   []bool
+	locked           bool
 }
 
 func New() *Backend {
@@ -261,6 +262,19 @@ func (b *Backend) Refines() []int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return append([]int(nil), b.refines...)
+}
+
+func (b *Backend) ScreenLocked() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.locked
+}
+
+// SetLocked puts the fake device on its unlock screen or takes it off.
+func (b *Backend) SetLocked(locked bool) {
+	b.mu.Lock()
+	b.locked = locked
+	b.mu.Unlock()
 }
 
 // SetCanHideWallpaper makes HideWallpaper work; by default it reports

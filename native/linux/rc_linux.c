@@ -840,6 +840,8 @@ int rc_wallpaper_hide(int hide) {
     return RC_ERR_UNSUPPORTED;
 }
 
+int rc_screen_locked(void) { return RC_ERR_UNSUPPORTED; }
+
 /* ---------------- indicator ---------------- */
 
 void rc_indicator_show(int on) {
