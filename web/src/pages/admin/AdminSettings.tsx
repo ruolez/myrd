@@ -145,6 +145,7 @@ function Row({
 const downloadTargets: { os: DownloadOS; label: string; accept: string; agentOs: string }[] = [
   { os: "macos", label: "macOS", accept: ".pkg,.dmg,.zip", agentOs: "darwin" },
   { os: "windows", label: "Windows", accept: ".msi,.exe,.zip", agentOs: "windows" },
+  { os: "windows7", label: "Windows 7", accept: ".msi,.exe,.zip", agentOs: "windows" },
 ];
 
 function ClientDownloads() {

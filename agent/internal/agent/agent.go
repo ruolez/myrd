@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/ruolez/remotectl/agent/internal/api"
+	"github.com/ruolez/remotectl/agent/internal/buildinfo"
 	"github.com/ruolez/remotectl/agent/internal/config"
 	"github.com/ruolez/remotectl/agent/internal/devconsole"
 	"github.com/ruolez/remotectl/agent/internal/files"
@@ -144,7 +145,7 @@ func (a *Agent) Enroll(ctx context.Context, serverURL, token string) error {
 	}
 	res, err := api.New(serverURL).Enroll(ctx, api.EnrollRequest{
 		Token: strings.ToUpper(strings.TrimSpace(token)), PublicKey: base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey)),
-		Hostname: a.cfg.Settings.Hostname, OS: runtime.GOOS, Arch: runtime.GOARCH, Version: a.cfg.Version,
+		Hostname: a.cfg.Settings.Hostname, OS: runtime.GOOS, Arch: buildinfo.Arch, Version: a.cfg.Version,
 	})
 	if err != nil {
 		return unreachable(serverURL, err)
@@ -316,7 +317,7 @@ func (a *Agent) consoleStatus() devconsole.Status {
 }
 
 func (a *Agent) hello() proto.Hello {
-	h := proto.Hello{AgentVersion: a.cfg.Version, OS: runtime.GOOS, Arch: runtime.GOARCH, Hostname: a.cfg.Settings.Hostname,
+	h := proto.Hello{AgentVersion: a.cfg.Version, OS: runtime.GOOS, Arch: buildinfo.Arch, Hostname: a.cfg.Settings.Hostname,
 		PinnedClientKeys: a.pins.List(), ActiveSessions: []string{}}
 	if a.cfg.Capabilities != nil {
 		h.Capabilities, h.Permissions = a.cfg.Capabilities()

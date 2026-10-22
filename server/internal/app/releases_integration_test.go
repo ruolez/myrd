@@ -284,8 +284,24 @@ func TestPublishingPromotesInstaller(t *testing.T) {
 	if got := installer("macos"); got != rel("0.4.0", "darwin", "universal") {
 		t.Fatalf("after full rollout: %q", got)
 	}
-	if n := e.eventCount("release.installer_set"); n != 3 {
-		t.Fatalf("release.installer_set audited %d times, want 3", n)
+
+	// The Windows 7 build has an installer slot of its own.
+	e.release(admin, "0.3.9", "windows", proto.ArchWin7, 100, true)
+	if got := [2]string{installer("windows"), installer("windows7")}; got != [2]string{rel("0.3.8", "windows", "amd64"),
+		rel("0.3.9", "windows", proto.ArchWin7)} {
+		t.Fatalf("windows installers after a Windows 7 release: %q", got)
+	}
+	var cfg struct {
+		Downloads map[string]*struct {
+			URL string `json:"url"`
+		} `json:"downloads"`
+	}
+	e.call(anon, "GET", "/v1/config", nil, &cfg)
+	if d := cfg.Downloads["windows7"]; d == nil || d.URL != "/v1/downloads/windows7" {
+		t.Fatalf("config downloads: %+v", cfg.Downloads)
+	}
+	if n := e.eventCount("release.installer_set"); n != 4 {
+		t.Fatalf("release.installer_set audited %d times, want 4", n)
 	}
 }
 

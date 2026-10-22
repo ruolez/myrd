@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/ruolez/remotectl/agent/internal/api"
+	"github.com/ruolez/remotectl/agent/internal/buildinfo"
 	"github.com/ruolez/remotectl/proto"
 )
 
@@ -60,7 +61,7 @@ type Options struct {
 	Version       string
 	ReleasePubKey string // default proto.ReleasePublicKey
 	DataDir       string
-	GOOS, GOARCH  string // default runtime.GOOS / runtime.GOARCH
+	GOOS, GOARCH  string // default runtime.GOOS / buildinfo.Arch
 	Log           *slog.Logger
 
 	Busy        func() bool              // a session is pending or active
@@ -103,7 +104,7 @@ func New(o Options) *Updater {
 		o.ReleasePubKey = proto.ReleasePublicKey
 	}
 	if o.GOOS == "" {
-		o.GOOS, o.GOARCH = runtime.GOOS, runtime.GOARCH
+		o.GOOS, o.GOARCH = runtime.GOOS, buildinfo.Arch
 	}
 	if o.Busy == nil {
 		o.Busy = func() bool { return false }

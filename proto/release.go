@@ -21,10 +21,15 @@ const (
 	MaxSidecarBytes = 4096
 )
 
+// ArchWin7 is the Windows 7 build of the windows/amd64 agent (patched Go
+// toolchain, GDI capture): agents of that build report it as their arch, so
+// they are offered only its releases and other agents never are.
+const ArchWin7 = "amd64-win7"
+
 // ReleaseOSes and ReleaseArches are the targets a release can be built for.
 var (
 	ReleaseOSes   = []string{"darwin", "windows"}
-	ReleaseArches = []string{"amd64", "arm64", "universal"}
+	ReleaseArches = []string{"amd64", "arm64", "universal", ArchWin7}
 )
 
 // ReleaseMessage is what the release key signs:
@@ -110,6 +115,8 @@ func ParseSidecar(b []byte) (ReleaseSidecar, error) {
 		return s, fmt.Errorf("os %q is not one of %s", s.OS, strings.Join(ReleaseOSes, ", "))
 	case !oneOf(s.Arch, ReleaseArches):
 		return s, fmt.Errorf("arch %q is not one of %s", s.Arch, strings.Join(ReleaseArches, ", "))
+	case s.Arch == ArchWin7 && s.OS != "windows":
+		return s, fmt.Errorf("arch %s is only for windows", ArchWin7)
 	case !isLowerHex(s.SHA256, 64):
 		return s, errors.New("sha256 must be 64 lowercase hex digits")
 	case s.Size <= 0:

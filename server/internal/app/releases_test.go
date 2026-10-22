@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ruolez/remotectl/proto"
 	"github.com/ruolez/remotectl/server/internal/store"
 )
 
@@ -28,6 +29,11 @@ func TestPickRelease(t *testing.T) {
 		rel("uni", "0.3.0", "darwin", "universal", 100, true),
 		rel("arm", "0.3.0", "darwin", "arm64", 100, true),
 		rel("amd", "0.3.0", "darwin", "amd64", 100, true),
+	}
+	// The Windows 7 build is newer here: neither kind of agent may cross over.
+	win := []store.Release{
+		rel("w038", "0.3.8", "windows", "amd64", 100, true),
+		rel("w7039", "0.3.9", "windows", proto.ArchWin7, 100, true),
 	}
 	pre := []store.Release{
 		rel("rc1", "0.3.0-rc.1", "windows", "amd64", 100, true),
@@ -53,6 +59,9 @@ func TestPickRelease(t *testing.T) {
 		{"fallback still has to be newer", mac, "darwin", "amd64", "0.3.1", 50, false, ""},
 		{"os mismatch", mac, "linux", "amd64", "0.1.0", 0, true, ""},
 		{"arch mismatch", mac, "windows", "arm64", "0.1.0", 0, true, ""},
+		{"windows 7 agent gets the windows 7 build", win, "windows", proto.ArchWin7, "0.3.0", 0, true, "w7039"},
+		{"windows agent never gets the windows 7 build", win, "windows", "amd64", "0.3.0", 0, true, "w038"},
+		{"windows 7 agent never gets the normal build", win[:1], "windows", proto.ArchWin7, "0.3.0", 0, true, ""},
 		{"exact arch preferred at equal version", equal, "darwin", "arm64", "0.2.0", 0, false, "arm"},
 		{"exact amd64 preferred", equal, "darwin", "amd64", "0.2.0", 0, false, "amd"},
 		{"universal when no exact build", equal, "darwin", "riscv64", "0.2.0", 0, false, "uni"},
@@ -106,9 +115,15 @@ func TestApplyLatest(t *testing.T) {
 }
 
 func TestDownloadOS(t *testing.T) {
-	for in, want := range map[string]string{"darwin": "macos", "windows": "windows", "linux": ""} {
-		if got := downloadOS(in); got != want {
-			t.Errorf("downloadOS(%q) = %q, want %q", in, got, want)
+	for in, want := range map[[2]string]string{
+		{"darwin", "universal"}:     "macos",
+		{"darwin", "arm64"}:         "macos",
+		{"windows", "amd64"}:        "windows",
+		{"windows", proto.ArchWin7}: "windows7",
+		{"linux", "amd64"}:          "",
+	} {
+		if got := downloadOS(in[0], in[1]); got != want {
+			t.Errorf("downloadOS(%q, %q) = %q, want %q", in[0], in[1], got, want)
 		}
 	}
 }

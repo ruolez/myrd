@@ -139,7 +139,8 @@ export type LoginSession = {
 };
 
 export type ReleaseOS = Exclude<OS, "linux">;
-export type ReleaseArch = "amd64" | "arm64" | "universal";
+/** "amd64-win7": the Windows 7 build of the windows/amd64 agent. */
+export type ReleaseArch = "amd64" | "arm64" | "universal" | "amd64-win7";
 
 export type Release = {
   id: ReleaseId;
@@ -163,7 +164,7 @@ export type Release = {
 
 export type Page<T> = { items: T[]; next_before: string | null };
 
-export type DownloadOS = "macos" | "windows";
+export type DownloadOS = "macos" | "windows" | "windows7";
 
 export type AgentDownload = {
   os: DownloadOS;

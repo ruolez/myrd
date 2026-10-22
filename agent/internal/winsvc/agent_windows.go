@@ -19,6 +19,7 @@ import (
 	"golang.org/x/sys/windows/registry"
 
 	"github.com/ruolez/remotectl/agent/internal/api"
+	"github.com/ruolez/remotectl/agent/internal/buildinfo"
 	"github.com/ruolez/remotectl/agent/internal/config"
 	"github.com/ruolez/remotectl/agent/internal/identity"
 	"github.com/ruolez/remotectl/agent/internal/pins"
@@ -139,7 +140,7 @@ func runConnected(ctx context.Context, o *Options, p *Proxy) error {
 				h := proto.Hello{
 					AgentVersion:   o.Version,
 					OS:             runtime.GOOS,
-					Arch:           runtime.GOARCH,
+					Arch:           buildinfo.Arch,
 					Hostname:       hostname,
 					ActiveSessions: p.ActiveSessions(),
 				}
@@ -260,7 +261,7 @@ func enroll(ctx context.Context, o *Options, ks identity.Keystore, url, token st
 		PublicKey: base64.StdEncoding.EncodeToString(pub),
 		Hostname:  hostname,
 		OS:        runtime.GOOS,
-		Arch:      runtime.GOARCH,
+		Arch:      buildinfo.Arch,
 		Version:   o.Version,
 	})
 	if err != nil {

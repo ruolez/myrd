@@ -9,11 +9,16 @@ import { installSnippet, macEnrollSnippet } from "../lib/install";
 import { signaling } from "../lib/signaling";
 import { useAsync, useNow } from "../lib/hooks";
 
-type Target = "darwin" | "windows" | "linux";
+type Target = "darwin" | "windows" | "windows7" | "linux";
 
 const targets: { id: Target; label: string; note: string }[] = [
   { id: "darwin", label: "macOS", note: "macOS 13 or later, Apple silicon or Intel" },
   { id: "windows", label: "Windows", note: "Windows 10 1903 or later, x64" },
+  {
+    id: "windows7",
+    label: "Windows 7",
+    note: "Windows 7 SP1, x64: a separate build with slower screen capture",
+  },
   { id: "linux", label: "Docker demo", note: "The Linux test device from docker compose" },
 ];
 
@@ -77,9 +82,11 @@ export function AddDevice() {
       ? config?.downloads.macos
       : target === "windows"
         ? config?.downloads.windows
-        : null;
+        : target === "windows7"
+          ? config?.downloads.windows7
+          : null;
   const downloadUrl = link ? new URL(link.url, window.location.origin).toString() : null;
-  const osLabel = target === "darwin" ? "macOS" : "Windows";
+  const osLabel = target === "darwin" ? "macOS" : target === "windows7" ? "Windows 7" : "Windows";
   const serverUrl = config?.webauthn.origin ?? window.location.origin;
   // The MSI asks for the token itself; a bare .exe or .zip needs the command.
   const windowsMsi = !link?.file || link.file.filename.toLowerCase().endsWith(".msi");
@@ -87,7 +94,7 @@ export function AddDevice() {
     target === "linux"
       ? ""
       : installSnippet({
-          target,
+          target: target === "windows7" ? "windows" : target,
           token: t,
           serverUrl,
           downloadUrl,
@@ -122,7 +129,7 @@ export function AddDevice() {
                     : "border-outline hover:bg-surface-2"
                 }`}
               >
-                <OsIcon os={o.id} size={24} />
+                <OsIcon os={o.id === "windows7" ? "windows" : o.id} size={24} />
                 <div>
                   <div className="text-sm font-medium">{o.label}</div>
                   <div className="text-xs text-muted">{o.note}</div>
@@ -248,6 +255,13 @@ export function AddDevice() {
                     and installs the service; the PC appears here within seconds.
                   </li>
                 </ol>
+              )}
+              {target === "windows7" && (
+                <p className="rounded-xl bg-warning-soft p-3 text-sm text-warning">
+                  Windows 7 has had no security updates since January 2023, so anyone who gets into
+                  that PC another way can use this connection too. Its build captures the screen
+                  through GDI: expect up to 1080p and a lower frame rate than on Windows 10.
+                </p>
               )}
               {link && downloadUrl ? (
                 <div className="space-y-2">

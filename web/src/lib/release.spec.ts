@@ -46,7 +46,8 @@ describe("parseSidecar", () => {
     ],
     ["version", { version: "dev" }, 'version "dev" is not semantic (x.y.z)'],
     ["os", { os: "linux" }, 'os "linux" is not one of darwin, windows'],
-    ["arch", { arch: "386" }, 'arch "386" is not one of amd64, arm64, universal'],
+    ["arch", { arch: "386" }, 'arch "386" is not one of amd64, arm64, universal, amd64-win7'],
+    ["windows 7 arch on darwin", { arch: "amd64-win7" }, "arch amd64-win7 is only for windows"],
     ["sha256 length", { sha256: valid.sha256.slice(1) }, "sha256 must be 64 lowercase hex digits"],
     [
       "sha256 upper",
@@ -69,6 +70,16 @@ describe("parseSidecar", () => {
     ],
   ])("rejects a bad %s", (_name, edit, error) => {
     expect(parseSidecar(text({ ...valid, ...edit }))).toEqual({ ok: false, error });
+  });
+
+  test("accepts the Windows 7 build of the windows agent", () => {
+    const s = {
+      ...valid,
+      os: "windows" as const,
+      arch: "amd64-win7" as const,
+      filename: "RemoteAgent-0.3.11-x64-win7.msi",
+    };
+    expect(parseSidecar(text(s))).toEqual({ ok: true, sidecar: s });
   });
 
   test("accepts an upper-case extension and a v-prefixed version", () => {

@@ -54,6 +54,12 @@ func TestEligible(t *testing.T) {
 			"release size 536870913 out of range"},
 		{"skip-listed", m, "0.3.0", "darwin", "arm64", skip, false, "0.3.1 failed on this device before; skipped"},
 		{"explicit ignores the skip-list", m, "0.3.0", "darwin", "arm64", skip, true, ""},
+		{"windows 7 build takes its own release", with(func(m *api.Manifest) { m.OS, m.Arch = "windows", proto.ArchWin7 }),
+			"0.3.0", "windows", proto.ArchWin7, nil, false, ""},
+		{"windows 7 build refuses the normal one", with(func(m *api.Manifest) { m.OS, m.Arch = "windows", "amd64" }),
+			"0.3.0", "windows", proto.ArchWin7, nil, false, "release is for windows/amd64, this device is windows/amd64-win7"},
+		{"normal build refuses the windows 7 one", with(func(m *api.Manifest) { m.OS, m.Arch = "windows", proto.ArchWin7 }),
+			"0.3.0", "windows", "amd64", nil, false, "release is for windows/amd64-win7, this device is windows/amd64"},
 	}
 	for _, c := range cases {
 		err := eligible(c.m, c.running, c.goos, c.goarch, c.skip, c.explicit)

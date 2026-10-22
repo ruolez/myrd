@@ -155,6 +155,7 @@ func TestParseSidecarRejects(t *testing.T) {
 		{"version", func(s *ReleaseSidecar) { s.Version = "dev" }},
 		{"os", func(s *ReleaseSidecar) { s.OS = "linux" }},
 		{"arch", func(s *ReleaseSidecar) { s.Arch = "386" }},
+		{"windows 7 arch on darwin", func(s *ReleaseSidecar) { s.Arch = ArchWin7 }},
 		{"sha256 length", func(s *ReleaseSidecar) { s.SHA256 = s.SHA256[:63] }},
 		{"sha256 upper", func(s *ReleaseSidecar) { s.SHA256 = strings.ToUpper(s.SHA256) }},
 		{"size", func(s *ReleaseSidecar) { s.Size = 0 }},
@@ -175,6 +176,15 @@ func TestParseSidecarRejects(t *testing.T) {
 	}
 	if _, err := ParseSidecar([]byte(`not json`)); err == nil {
 		t.Error("non-JSON sidecar accepted")
+	}
+}
+
+func TestParseSidecarAcceptsTheWindows7Build(t *testing.T) {
+	sc, _ := validSidecar(t)
+	sc.OS, sc.Arch, sc.Filename = "windows", ArchWin7, "RemoteAgent-0.3.11-x64-win7.msi"
+	b, _ := json.Marshal(sc)
+	if got, err := ParseSidecar(b); err != nil || got != sc {
+		t.Fatalf("ParseSidecar = %+v, %v; want %+v", got, err, sc)
 	}
 }
 

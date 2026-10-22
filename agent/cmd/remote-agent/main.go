@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/ruolez/remotectl/agent/internal/agent"
+	"github.com/ruolez/remotectl/agent/internal/buildinfo"
 	"github.com/ruolez/remotectl/agent/internal/config"
 	"github.com/ruolez/remotectl/agent/internal/identity"
 	"github.com/ruolez/remotectl/agent/internal/native"
@@ -59,7 +60,7 @@ func main() {
 	case "uninstall":
 		err = cmdUninstall(log, args)
 	case "version":
-		fmt.Printf("remote-agent %s (%s/%s)\n", version, runtime.GOOS, runtime.GOARCH)
+		fmt.Printf("remote-agent %s (%s/%s)\n", version, runtime.GOOS, buildinfo.Arch)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: remote-agent [run|enroll|status|selftest|uninstall|version]\n", cmd)
 		os.Exit(2)

@@ -9,7 +9,7 @@ import { validVersion } from "./version";
 export const SIDECAR_FORMAT = "remotectl-release-sig-v2";
 export const MAX_SIDECAR_BYTES = 4096;
 const RELEASE_OSES: readonly ReleaseOS[] = ["darwin", "windows"];
-const RELEASE_ARCHES: readonly ReleaseArch[] = ["amd64", "arm64", "universal"];
+const RELEASE_ARCHES: readonly ReleaseArch[] = ["amd64", "arm64", "universal", "amd64-win7"];
 const EXT: Record<ReleaseOS, string> = { darwin: ".pkg", windows: ".msi" };
 
 export type ReleaseSidecar = {
@@ -63,6 +63,7 @@ function validate(s: ReleaseSidecar): string | null {
   if (!RELEASE_OSES.includes(s.os)) return `os "${s.os}" is not one of ${RELEASE_OSES.join(", ")}`;
   if (!RELEASE_ARCHES.includes(s.arch))
     return `arch "${s.arch}" is not one of ${RELEASE_ARCHES.join(", ")}`;
+  if (s.arch === "amd64-win7" && s.os !== "windows") return "arch amd64-win7 is only for windows";
   if (!isLowerHex(s.sha256, 64)) return "sha256 must be 64 lowercase hex digits";
   if (s.size <= 0) return "size must be positive";
   if (!name || /[\\/]/.test(name) || !name.toLowerCase().endsWith(ext))

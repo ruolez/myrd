@@ -71,12 +71,14 @@ func (a *App) withLatest(ctx context.Context, d *store.Device) error {
 	return nil
 }
 
-// downloadOS is the Add-device download slot of a release os.
-func downloadOS(goos string) string {
-	switch goos {
-	case "darwin":
+// downloadOS is the Add-device download slot of a release.
+func downloadOS(goos, arch string) string {
+	switch {
+	case goos == "darwin":
 		return "macos"
-	case "windows":
+	case goos == "windows" && arch == proto.ArchWin7:
+		return "windows7"
+	case goos == "windows":
 		return "windows"
 	}
 	return ""
@@ -313,7 +315,7 @@ func (a *App) adminSetReleaseInstaller(w http.ResponseWriter, r *http.Request) e
 }
 
 func (a *App) setInstaller(r *http.Request, rel *store.Release, auto bool) error {
-	osName := downloadOS(rel.OS)
+	osName := downloadOS(rel.OS, rel.Arch)
 	if err := linkOrCopy(a.releasePath(rel), a.downloadPath(osName)); errors.Is(err, os.ErrNotExist) {
 		return errf(http.StatusNotFound, "not_found", "the release file is missing")
 	} else if err != nil {
@@ -332,10 +334,10 @@ func (a *App) setInstaller(r *http.Request, rel *store.Release, auto bool) error
 // Add-device download, unless that download is already a release at least as
 // new. Only installers that run on every machine of the OS qualify.
 func (a *App) promoteInstaller(r *http.Request, rel *store.Release) error {
-	if (rel.OS != "darwin" || rel.Arch != "universal") && (rel.OS != "windows" || rel.Arch != "amd64") {
+	if (rel.OS != "darwin" || rel.Arch != "universal") && (rel.OS != "windows" || (rel.Arch != "amd64" && rel.Arch != proto.ArchWin7)) {
 		return nil
 	}
-	cur, err := store.AgentDownloadByOS(r.Context(), a.pool, downloadOS(rel.OS))
+	cur, err := store.AgentDownloadByOS(r.Context(), a.pool, downloadOS(rel.OS, rel.Arch))
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 	case err != nil:

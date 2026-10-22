@@ -63,7 +63,7 @@ func run(args []string) error {
 		keyFile := fs.String("key-file", defaultKeyFile(), "private key file (ignored when RELEASE_PRIVATE_KEY is set)")
 		version := fs.String("version", "", "release version (x.y.z)")
 		goos := fs.String("os", "", "darwin | windows")
-		arch := fs.String("arch", "", "amd64 | arm64 | universal")
+		arch := fs.String("arch", "", "amd64 | arm64 | universal | amd64-win7 (the Windows 7 build)")
 		otherKey := fs.Bool("allow-other-key", false, "sign with a key other than the one compiled into agents (tests)")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err

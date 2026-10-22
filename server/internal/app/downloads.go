@@ -22,8 +22,9 @@ const maxDownloadBytes = 512 << 20
 
 // downloadExts are the installer formats accepted per OS.
 var downloadExts = map[string][]string{
-	"macos":   {".pkg", ".dmg", ".zip"},
-	"windows": {".msi", ".exe", ".zip"},
+	"macos":    {".pkg", ".dmg", ".zip"},
+	"windows":  {".msi", ".exe", ".zip"},
+	"windows7": {".msi", ".exe", ".zip"}, // the Windows 7 build (proto.ArchWin7)
 }
 
 var downloadNameChars = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$`)
@@ -160,7 +161,7 @@ func (a *App) downloadLinks(r *http.Request, s store.Settings) (map[string]any, 
 		return nil, err
 	}
 	out := map[string]any{}
-	for osName, external := range map[string]string{"macos": s.DownloadMacOSURL, "windows": s.DownloadWindowsURL} {
+	for osName, external := range map[string]string{"macos": s.DownloadMacOSURL, "windows": s.DownloadWindowsURL, "windows7": ""} {
 		switch d, ok := files[osName]; {
 		case ok:
 			out[osName] = map[string]any{"url": "/v1/downloads/" + osName, "file": d}
