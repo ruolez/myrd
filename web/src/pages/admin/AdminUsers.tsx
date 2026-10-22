@@ -109,9 +109,6 @@ export function AdminUsers() {
                       </td>
                       <td className="space-x-1">
                         {u.has_password && <Badge>password</Badge>}
-                        {u.passkey_count > 0 && (
-                          <Badge tone="primary">{u.passkey_count} passkey</Badge>
-                        )}
                         {u.totp_enabled && <Badge tone="success">TOTP</Badge>}
                       </td>
                       <td>{u.device_count ?? "—"}</td>
@@ -171,7 +168,7 @@ export function AdminUsers() {
                             if (
                               await ask(
                                 `Reset MFA for ${u.email}?`,
-                                "Their authenticator app is removed; they sign in with password or passkey only.",
+                                "Their authenticator app is removed; they sign in with their password only.",
                                 "Reset MFA",
                               )
                             )
@@ -279,10 +276,7 @@ function CreateUser({ onClose, onCreated }: { onClose: () => void; onCreated: ()
             onChange={(e) => setEmail(e.target.value)}
           />
         </Field>
-        <Field
-          label="Initial password"
-          hint="Share it securely; they can add a passkey after signing in."
-        >
+        <Field label="Initial password" hint="Share it securely.">
           <input
             className="input"
             type="text"

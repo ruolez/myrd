@@ -9,7 +9,7 @@ import { installSnippet, macEnrollSnippet } from "../lib/install";
 import { signaling } from "../lib/signaling";
 import { useAsync, useNow } from "../lib/hooks";
 
-type Target = "darwin" | "windows" | "windows7" | "linux";
+type Target = "darwin" | "windows" | "windows7";
 
 const targets: { id: Target; label: string; note: string }[] = [
   { id: "darwin", label: "macOS", note: "macOS 13 or later, Apple silicon or Intel" },
@@ -19,7 +19,6 @@ const targets: { id: Target; label: string; note: string }[] = [
     label: "Windows 7",
     note: "Windows 7 SP1, x64: a separate build with slower screen capture",
   },
-  { id: "linux", label: "Docker demo", note: "The Linux test device from docker compose" },
 ];
 
 function Snippet({ code }: { code: string }) {
@@ -82,24 +81,19 @@ export function AddDevice() {
       ? config?.downloads.macos
       : target === "windows"
         ? config?.downloads.windows
-        : target === "windows7"
-          ? config?.downloads.windows7
-          : null;
+        : config?.downloads.windows7;
   const downloadUrl = link ? new URL(link.url, window.location.origin).toString() : null;
   const osLabel = target === "darwin" ? "macOS" : target === "windows7" ? "Windows 7" : "Windows";
   const serverUrl = config?.webauthn.origin ?? window.location.origin;
   // The MSI asks for the token itself; a bare .exe or .zip needs the command.
   const windowsMsi = !link?.file || link.file.filename.toLowerCase().endsWith(".msi");
-  const snippet =
-    target === "linux"
-      ? ""
-      : installSnippet({
-          target: target === "windows7" ? "windows" : target,
-          token: t,
-          serverUrl,
-          downloadUrl,
-          filename: link?.file?.filename ?? null,
-        });
+  const snippet = installSnippet({
+    target: target === "windows7" ? "windows" : target,
+    token: t,
+    serverUrl,
+    downloadUrl,
+    filename: link?.file?.filename ?? null,
+  });
 
   return (
     <>
@@ -181,147 +175,110 @@ export function AddDevice() {
 
         <section className="card space-y-5 p-6">
           <h2 className="font-medium">3. Install and enroll</h2>
-          {target === "linux" ? (
-            <>
-              <ol className="list-decimal space-y-2 pl-5 text-sm">
-                <li>
-                  Start the demo device:{" "}
-                  <code className="font-mono">docker compose --profile demo up -d demo-device</code>
-                </li>
-                <li>
-                  Open the device console at{" "}
-                  <a
-                    className="text-primary underline"
-                    href="http://localhost:5562"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    http://localhost:5562
-                  </a>{" "}
-                  — it stands in for the device's physical screen.
-                </li>
-                <li>
-                  Paste the token above and press Enroll. The device appears online here within
-                  seconds.
-                </li>
-                <li>
-                  Session prompts appear in that console too, such as for new browsers when “Ask
-                  before new browsers connect” is on.
-                </li>
-              </ol>
-              <Snippet
-                code={`DEMO_ENROLL_TOKEN=${t} docker compose --profile demo up -d demo-device`}
-              />
-            </>
+          {target === "darwin" ? (
+            <ol className="list-decimal space-y-2 pl-5 text-sm">
+              <li>
+                On the Mac you are adding, download and run the macOS installer
+                {link?.file ? ` (${link.file.filename})` : ""}.
+              </li>
+              <li>
+                On first launch, enter the token above when the agent asks for it. Missed the
+                dialog? Choose <strong>Enroll this device…</strong> from the agent's menu bar icon,
+                or run the command at the bottom of this page.
+              </li>
+              <li>
+                Grant Screen Recording and Accessibility when prompted; the agent opens the exact
+                System Settings pane.
+              </li>
+            </ol>
+          ) : windowsMsi ? (
+            <ol className="list-decimal space-y-2 pl-5 text-sm">
+              <li>
+                On the PC you are adding, download and run the Windows installer
+                {link?.file ? ` (${link.file.filename})` : ""}.
+              </li>
+              <li>
+                On the <strong>Add this PC</strong> page, check the server address (
+                <span className="font-mono">{serverUrl}</span>) and enter the token above, then
+                click Install.
+              </li>
+              <li>
+                The PC appears here a few seconds after setup finishes. No extra permissions are
+                needed.
+              </li>
+            </ol>
           ) : (
-            <>
-              {target === "darwin" ? (
-                <ol className="list-decimal space-y-2 pl-5 text-sm">
-                  <li>
-                    On the Mac you are adding, download and run the macOS installer
-                    {link?.file ? ` (${link.file.filename})` : ""}.
-                  </li>
-                  <li>
-                    On first launch, enter the token above when the agent asks for it. Missed the
-                    dialog? Choose <strong>Enroll this device…</strong> from the agent's menu bar
-                    icon, or run the command at the bottom of this page.
-                  </li>
-                  <li>
-                    Grant Screen Recording and Accessibility when prompted; the agent opens the
-                    exact System Settings pane.
-                  </li>
-                </ol>
-              ) : windowsMsi ? (
-                <ol className="list-decimal space-y-2 pl-5 text-sm">
-                  <li>
-                    On the PC you are adding, download and run the Windows installer
-                    {link?.file ? ` (${link.file.filename})` : ""}.
-                  </li>
-                  <li>
-                    On the <strong>Add this PC</strong> page, check the server address (
-                    <span className="font-mono">{serverUrl}</span>) and enter the token above, then
-                    click Install.
-                  </li>
-                  <li>
-                    The PC appears here a few seconds after setup finishes. No extra permissions are
-                    needed.
-                  </li>
-                </ol>
-              ) : (
-                <ol className="list-decimal space-y-2 pl-5 text-sm">
-                  <li>
-                    On the PC you are adding, open <strong>PowerShell as Administrator</strong>{" "}
-                    (Start → type PowerShell → Run as administrator).
-                  </li>
-                  <li>
-                    Paste the command below. It downloads the agent, enrolls with the token above
-                    and installs the service; the PC appears here within seconds.
-                  </li>
-                </ol>
-              )}
-              {target === "windows7" && (
-                <p className="rounded-xl bg-warning-soft p-3 text-sm text-warning">
-                  Windows 7 has had no security updates since January 2023, so anyone who gets into
-                  that PC another way can use this connection too. Its build captures the screen
-                  through GDI: expect up to 1080p and a lower frame rate than on Windows 10.
-                </p>
-              )}
-              {link && downloadUrl ? (
-                <div className="space-y-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <a className="btn-primary" href={link.url} download={link.file?.filename}>
-                      <Icon name="release" size={18} />
-                      Download for {osLabel}
-                    </a>
-                    <CopyButton text={downloadUrl} label="Copy link" />
-                  </div>
-                  {link.file && (
-                    <p className="text-xs text-muted">
-                      {link.file.filename} · {bytes(link.file.size)} · SHA-256{" "}
-                      <span className="font-mono" title={link.file.sha256}>
-                        {link.file.sha256.slice(0, 12)}…
-                      </span>
-                      <br />
-                      The link works without signing in, so you can open it directly on that
-                      computer.
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <p className="text-sm text-muted">
-                  No {osLabel} installer has been uploaded yet.{" "}
-                  {user?.is_admin ? (
-                    <Link to="/admin/settings" className="text-primary underline">
-                      Upload one under Admin → System
-                    </Link>
-                  ) : (
-                    "Ask an administrator to upload one under Admin → System."
-                  )}
-                </p>
-              )}
-              <div>
-                <div className="mb-2 text-sm font-medium">
-                  {target === "darwin"
-                    ? "Scripted install"
-                    : windowsMsi
-                      ? "Or install from PowerShell as Administrator, without clicks"
-                      : "Install command"}
-                </div>
-                <Snippet code={snippet} />
+            <ol className="list-decimal space-y-2 pl-5 text-sm">
+              <li>
+                On the PC you are adding, open <strong>PowerShell as Administrator</strong> (Start →
+                type PowerShell → Run as administrator).
+              </li>
+              <li>
+                Paste the command below. It downloads the agent, enrolls with the token above and
+                installs the service; the PC appears here within seconds.
+              </li>
+            </ol>
+          )}
+          {target === "windows7" && (
+            <p className="rounded-xl bg-warning-soft p-3 text-sm text-warning">
+              Windows 7 has had no security updates since January 2023, so anyone who gets into that
+              PC another way can use this connection too. Its build captures the screen through GDI:
+              expect up to 1080p and a lower frame rate than on Windows 10.
+            </p>
+          )}
+          {link && downloadUrl ? (
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <a className="btn-primary" href={link.url} download={link.file?.filename}>
+                  <Icon name="release" size={18} />
+                  Download for {osLabel}
+                </a>
+                <CopyButton text={downloadUrl} label="Copy link" />
               </div>
-              {target === "darwin" && (
-                <div>
-                  <div className="mb-2 text-sm font-medium">
-                    Already installed but not in your devices
-                  </div>
-                  <p className="mb-2 text-xs text-muted">
-                    In Terminal on that Mac, as the signed-in user (not sudo). The agent connects
-                    within seconds.
-                  </p>
-                  <Snippet code={macEnrollSnippet(t, serverUrl)} />
-                </div>
+              {link.file && (
+                <p className="text-xs text-muted">
+                  {link.file.filename} · {bytes(link.file.size)} · SHA-256{" "}
+                  <span className="font-mono" title={link.file.sha256}>
+                    {link.file.sha256.slice(0, 12)}…
+                  </span>
+                  <br />
+                  The link works without signing in, so you can open it directly on that computer.
+                </p>
               )}
-            </>
+            </div>
+          ) : (
+            <p className="text-sm text-muted">
+              No {osLabel} installer has been uploaded yet.{" "}
+              {user?.is_admin ? (
+                <Link to="/admin/settings" className="text-primary underline">
+                  Upload one under Admin → System
+                </Link>
+              ) : (
+                "Ask an administrator to upload one under Admin → System."
+              )}
+            </p>
+          )}
+          <div>
+            <div className="mb-2 text-sm font-medium">
+              {target === "darwin"
+                ? "Scripted install"
+                : windowsMsi
+                  ? "Or install from PowerShell as Administrator, without clicks"
+                  : "Install command"}
+            </div>
+            <Snippet code={snippet} />
+          </div>
+          {target === "darwin" && (
+            <div>
+              <div className="mb-2 text-sm font-medium">
+                Already installed but not in your devices
+              </div>
+              <p className="mb-2 text-xs text-muted">
+                In Terminal on that Mac, as the signed-in user (not sudo). The agent connects within
+                seconds.
+              </p>
+              <Snippet code={macEnrollSnippet(t, serverUrl)} />
+            </div>
           )}
         </section>
       </div>

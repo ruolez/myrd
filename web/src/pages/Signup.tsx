@@ -63,10 +63,7 @@ export function Signup() {
             onChange={(e) => setEmail(e.target.value)}
           />
         </Field>
-        <Field
-          label="Password"
-          hint={`At least ${MIN_PASSWORD} characters. You can add a passkey after signing in.`}
-        >
+        <Field label="Password" hint={`At least ${MIN_PASSWORD} characters.`}>
           <input
             className="input"
             type="password"

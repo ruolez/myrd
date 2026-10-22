@@ -187,14 +187,6 @@ export type ClientKey = {
   preview_key?: string | null;
 };
 
-export type Passkey = {
-  id: string;
-  name: string;
-  created_at: string;
-  last_used_at: string | null;
-  transports: string[] | null;
-};
-
 export type LoginSession = {
   id: string;
   ip: string | null;

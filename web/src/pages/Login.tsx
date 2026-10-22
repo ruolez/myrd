@@ -3,9 +3,7 @@ import type { FormEvent, ReactNode } from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router";
 import { api, errorMessage } from "../api/client";
 import { useAuth } from "../app/auth";
-import { Icon } from "../components/icons";
 import { Brand, ErrorBox, Field, Loading, Spinner } from "../components/ui";
-import { getAssertion, passkeysSupported } from "../lib/webauthn";
 
 export function AuthCard({
   title,
@@ -86,22 +84,6 @@ export function Login() {
     });
   };
 
-  const onPasskey = () =>
-    run(async () => {
-      const { ticket: t, publicKey } = await api.auth.passkeyBegin();
-      let credential;
-      try {
-        credential = await getAssertion(publicKey);
-      } catch (e) {
-        if (e instanceof DOMException && e.name === "NotAllowedError") {
-          throw new Error("Passkey sign-in was cancelled.", { cause: e });
-        }
-        throw e;
-      }
-      const r = await api.auth.passkeyFinish(t, credential);
-      done(r.user);
-    });
-
   if (ticket) {
     return (
       <AuthCard
@@ -146,19 +128,6 @@ export function Login() {
     <AuthCard title="Sign in" subtitle="Control your computers from anywhere.">
       <div className="space-y-4">
         {error && <ErrorBox error={error} />}
-        {passkeysSupported() && (
-          <>
-            <button className="btn-primary w-full" onClick={() => void onPasskey()} disabled={busy}>
-              <Icon name="key" size={18} />
-              Sign in with a passkey
-            </button>
-            <div className="flex items-center gap-3 text-xs text-muted">
-              <span className="h-px flex-1 bg-outline" />
-              or use your password
-              <span className="h-px flex-1 bg-outline" />
-            </div>
-          </>
-        )}
         <form className="space-y-4" onSubmit={onPassword}>
           <Field label="Email or username">
             <input
@@ -166,7 +135,7 @@ export function Login() {
               type="text"
               autoCapitalize="none"
               spellCheck={false}
-              autoComplete="username webauthn"
+              autoComplete="username"
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -182,10 +151,7 @@ export function Login() {
               onChange={(e) => setPassword(e.target.value)}
             />
           </Field>
-          <button
-            className={passkeysSupported() ? "btn-outline w-full" : "btn-primary w-full"}
-            disabled={busy}
-          >
+          <button className="btn-primary w-full" disabled={busy}>
             {busy && <Spinner size={16} />}Sign in
           </button>
         </form>

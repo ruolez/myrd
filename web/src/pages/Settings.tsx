@@ -4,7 +4,6 @@ import { api, errorMessage } from "../api/client";
 import { useAuth, useUser } from "../app/auth";
 import { useTheme } from "../app/theme";
 import type { ThemePref } from "../app/theme";
-import { Icon } from "../components/icons";
 import {
   Badge,
   EmptyState,
@@ -19,7 +18,6 @@ import {
 import { currentClientKeyId, forgetClientKeyCache } from "../lib/clientKey";
 import { dateTime, timeAgo } from "../lib/format";
 import { useAsync } from "../lib/hooks";
-import { createCredential, passkeysSupported } from "../lib/webauthn";
 import { MIN_PASSWORD } from "./Signup";
 
 function Section({
@@ -46,7 +44,6 @@ export function Settings() {
     <>
       <PageHeader title="Settings" subtitle="Sign-in methods, browser keys and appearance." />
       <div className="space-y-6">
-        <PasskeysSection />
         <TotpSection />
         <PasswordSection />
         <ClientKeysSection />
@@ -92,8 +89,8 @@ function PasswordSection() {
       title="Password"
       description={
         user.has_password
-          ? "Fallback sign-in when no passkey is available."
-          : "No password set — you sign in with passkeys only."
+          ? "Used to sign in, together with two-step verification when it is on."
+          : "No password set. Set one to sign in."
       }
     >
       <form className="grid max-w-xl gap-4 sm:grid-cols-2" onSubmit={(e) => void submit(e)}>
@@ -143,127 +140,6 @@ function PasswordSection() {
           </button>
         </div>
       </form>
-    </Section>
-  );
-}
-
-function PasskeysSection() {
-  const user = useUser();
-  const { refresh } = useAuth();
-  const toast = useToast();
-  const confirm = useConfirm();
-  const { data, error, loading, reload } = useAsync(() => api.account.passkeys(), []);
-  const [naming, setNaming] = useState(false);
-  const [name, setName] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const register = async () => {
-    setBusy(true);
-    try {
-      const { ticket, publicKey } = await api.account.passkeyBegin();
-      const credential = await createCredential(publicKey);
-      await api.account.passkeyFinish(ticket, name.trim() || "Passkey", credential);
-      toast("Passkey added", "success");
-      setNaming(false);
-      setName("");
-      await reload();
-      await refresh();
-    } catch (e) {
-      const msg =
-        e instanceof DOMException && e.name === "NotAllowedError"
-          ? "Passkey creation was cancelled."
-          : errorMessage(e);
-      toast(msg, "error");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const remove = async (id: string, label: string) => {
-    if (
-      !(await confirm({
-        title: `Remove passkey “${label}”?`,
-        message: "You will no longer be able to sign in with it.",
-        confirm: "Remove",
-        danger: true,
-      }))
-    )
-      return;
-    try {
-      await api.account.deletePasskey(id);
-      await reload();
-      await refresh();
-    } catch (e) {
-      toast(errorMessage(e), "error");
-    }
-  };
-
-  return (
-    <Section
-      title="Passkeys"
-      description="Phishing-resistant sign-in with Touch ID, Windows Hello or a security key. Recommended."
-    >
-      {!passkeysSupported() && <ErrorBox error="This browser does not support passkeys." />}
-      {error && <ErrorBox error={error} onRetry={() => void reload()} />}
-      {loading && !data ? (
-        <Loading />
-      ) : data && data.items.length > 0 ? (
-        <ul className="mb-4 divide-y divide-outline rounded-xl border border-outline">
-          {data.items.map((p) => (
-            <li key={p.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
-              <Icon name="key" className="text-primary" />
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium">{p.name}</div>
-                <div className="text-xs text-muted">
-                  Added {dateTime(p.created_at)} · last used {timeAgo(p.last_used_at)}
-                </div>
-              </div>
-              <button
-                className="btn-text btn-sm text-error"
-                onClick={() => void remove(p.id, p.name)}
-              >
-                Remove
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="mb-4 text-sm text-muted">No passkeys yet.</p>
-      )}
-      <button
-        className="btn-primary"
-        disabled={!passkeysSupported() || busy}
-        onClick={() => setNaming(true)}
-      >
-        <Icon name="add" size={18} />
-        Add a passkey
-      </button>
-      {naming && (
-        <Modal
-          title="Add a passkey"
-          onClose={() => setNaming(false)}
-          footer={
-            <>
-              <button className="btn-text" onClick={() => setNaming(false)}>
-                Cancel
-              </button>
-              <button className="btn-primary" disabled={busy} onClick={() => void register()}>
-                Continue
-              </button>
-            </>
-          }
-        >
-          <Field label="Name" hint={`Signed in as ${user.email}`}>
-            <input
-              className="input"
-              placeholder="e.g. MacBook Touch ID"
-              value={name}
-              maxLength={64}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </Field>
-        </Modal>
-      )}
     </Section>
   );
 }

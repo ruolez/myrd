@@ -13,7 +13,6 @@ import type {
   FolderId,
   LoginSession,
   Page,
-  Passkey,
   Release,
   ReleaseId,
   ReleaseOS,
@@ -161,26 +160,12 @@ export const api = {
       request<{ user: User }>("POST", "/v1/auth/login/totp", { ticket, code }),
     signup: (email: string, password: string) =>
       request<{ user: User }>("POST", "/v1/auth/signup", { email, password }),
-    passkeyBegin: () =>
-      request<{ ticket: string; publicKey: unknown }>("POST", "/v1/auth/passkey/begin", {}),
-    passkeyFinish: (ticket: string, credential: unknown) =>
-      request<{ user: User }>("POST", "/v1/auth/passkey/finish", { ticket, credential }),
     logout: () => request<object>("POST", "/v1/auth/logout", {}),
   },
 
   account: {
     changePassword: (current_password: string | null, new_password: string) =>
       request<object>("POST", "/v1/account/password", { current_password, new_password }),
-    passkeys: () => request<{ items: Passkey[] }>("GET", "/v1/account/passkeys"),
-    passkeyBegin: () =>
-      request<{ ticket: string; publicKey: unknown }>("POST", "/v1/account/passkeys/begin", {}),
-    passkeyFinish: (ticket: string, name: string, credential: unknown) =>
-      request<{ passkey: Passkey }>("POST", "/v1/account/passkeys/finish", {
-        ticket,
-        name,
-        credential,
-      }),
-    deletePasskey: (id: string) => request<object>("DELETE", `/v1/account/passkeys/${id}`),
     totpSetup: () =>
       request<{ secret: string; otpauth_url: string; qr_png: string }>(
         "POST",

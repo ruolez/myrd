@@ -22,7 +22,7 @@ make up          # generates .env with fresh secrets, builds and starts everythi
 
 To try a session:
 
-1. Sign in, go to **Devices → Add device → Docker demo**, and copy the token.
+1. Sign in, go to **Devices → Add device** and copy the enrollment token (any OS; the demo device is no longer listed there).
 2. Open the device console at http://localhost:5562, paste the token and click **Enroll**. The device shows as online.
 3. Click **Connect**. The device console asks *"Allow this new browser?"*; choose **Allow and remember**.
 4. You now control a 1080p XFCE desktop. Use the toolbar for the HUD, **Stream** settings, **Files**, fullscreen (adds pointer and keyboard lock), clipboard and **Reconnect via relay** (forces TURN).
