@@ -11,6 +11,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "rc_internal.h"
+#include "rc_scale.h"
 #include "rc_vpx.h"
 
 @interface RCStreamOutput : NSObject <SCStreamOutput, SCStreamDelegate>
@@ -852,4 +853,139 @@ const char *rc_encoder_name(void) {
     }
     pthread_mutex_unlock(&g_ctl);
     return g_encoder;
+}
+
+// ---------------- preview (rc_snapshot) ----------------
+
+// macOS 13: one frame from a short-lived SCStream.
+@interface RCSnapshotOutput : NSObject <SCStreamOutput>
+@property(nonatomic) CVPixelBufferRef frame;
+@property(nonatomic, strong) dispatch_semaphore_t done;
+@end
+
+@implementation RCSnapshotOutput
+- (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sb ofType:(SCStreamOutputType)type {
+    if (type != SCStreamOutputTypeScreen || self.frame) return;
+    CFArrayRef att = CMSampleBufferGetSampleAttachmentsArray(sb, false);
+    if (att && CFArrayGetCount(att) > 0) {
+        NSDictionary *info = (__bridge NSDictionary *)CFArrayGetValueAtIndex(att, 0);
+        NSNumber *status = info[SCStreamFrameInfoStatus];
+        if (status && status.integerValue != SCFrameStatusComplete) return;
+    }
+    CVPixelBufferRef pb = CMSampleBufferGetImageBuffer(sb);
+    if (!pb) return;
+    self.frame = CVPixelBufferRetain(pb);
+    dispatch_semaphore_signal(self.done);
+}
+@end
+
+// Copies a BGRA pixel buffer into a tight w×h buffer (cropping if larger).
+static uint8_t *copy_pixbuf(CVPixelBufferRef pb, int32_t w, int32_t h) {
+    if (CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) return NULL;
+    int32_t pw = (int32_t)CVPixelBufferGetWidth(pb), ph = (int32_t)CVPixelBufferGetHeight(pb);
+    size_t stride = CVPixelBufferGetBytesPerRow(pb);
+    const uint8_t *base = CVPixelBufferGetBaseAddress(pb);
+    uint8_t *out = calloc((size_t)w * h, 4);
+    if (out && base) {
+        int32_t cw = MIN(w, pw), ch = MIN(h, ph);
+        for (int32_t y = 0; y < ch; y++) memcpy(out + (size_t)y * w * 4, base + y * stride, (size_t)cw * 4);
+    }
+    CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+    return out;
+}
+
+// Draws a CGImage into a tight BGRA w×h buffer.
+static uint8_t *copy_cgimage(CGImageRef img, int32_t w, int32_t h) {
+    uint8_t *out = calloc((size_t)w * h, 4);
+    if (!out) return NULL;
+    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef ctx = CGBitmapContextCreate(out, (size_t)w, (size_t)h, 8, (size_t)w * 4, cs,
+                                             kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    CGColorSpaceRelease(cs);
+    if (!ctx) {
+        free(out);
+        return NULL;
+    }
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationHigh);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), img);
+    CGContextRelease(ctx);
+    return out;
+}
+
+// Caller holds g_ctl: a capture cannot start meanwhile.
+static int snapshot_locked(uint32_t monitor_id, int32_t max_w, int32_t max_h, rc_image *out) {
+    if (atomic_load(&g_running) || g_stream) return RC_ERR_BUSY;
+    if (!CGPreflightScreenCaptureAccess()) return RC_ERR_PERMISSION; // never prompts
+    if (session_locked()) return RC_ERR_LOCKED;
+    uint32_t did = monitor_id ? monitor_id : CGMainDisplayID();
+    if (CGDisplayIsAsleep(did)) return RC_ERR_ASLEEP;
+    SCShareableContent *content = shareable_content(NO, NULL);
+    SCContentFilter *filter = content ? make_filter(content, did, NO) : nil;
+    if (!filter) return RC_ERR;
+    uint32_t pw = 0, ph = 0;
+    rc_display_pixels(did, &pw, &ph);
+    int32_t w, h;
+    rc_fit((int32_t)pw, (int32_t)ph, max_w, max_h, &w, &h);
+
+    SCStreamConfiguration *sc = [SCStreamConfiguration new];
+    sc.width = (size_t)w; // the GPU scales
+    sc.height = (size_t)h;
+    sc.showsCursor = NO;
+    sc.pixelFormat = kCVPixelFormatType_32BGRA;
+    sc.queueDepth = 3;
+
+    uint8_t *px = NULL;
+    if (@available(macOS 14.0, *)) {
+        __block CGImageRef img = NULL;
+        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+        [SCScreenshotManager captureImageWithFilter:filter configuration:sc
+                                  completionHandler:^(CGImageRef image, NSError *e) {
+            if (image && !e) img = CGImageRetain(image);
+            dispatch_semaphore_signal(sem);
+        }];
+        if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)) != 0) return RC_ERR;
+        if (!img) return RC_ERR;
+        px = copy_cgimage(img, w, h);
+        CGImageRelease(img);
+    } else {
+        RCSnapshotOutput *o = [RCSnapshotOutput new];
+        o.done = dispatch_semaphore_create(0);
+        sc.minimumFrameInterval = CMTimeMake(1, 30);
+        SCStream *stream = [[SCStream alloc] initWithFilter:filter configuration:sc delegate:nil];
+        dispatch_queue_t q = dispatch_queue_create("rc.snapshot", DISPATCH_QUEUE_SERIAL);
+        if (![stream addStreamOutput:o type:SCStreamOutputTypeScreen sampleHandlerQueue:q error:NULL]) return RC_ERR;
+        dispatch_semaphore_t started = dispatch_semaphore_create(0);
+        __block BOOL ok = NO;
+        [stream startCaptureWithCompletionHandler:^(NSError *e) {
+            ok = e == nil;
+            dispatch_semaphore_signal(started);
+        }];
+        dispatch_semaphore_wait(started, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
+        if (ok) dispatch_semaphore_wait(o.done, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
+        dispatch_semaphore_t stopped = dispatch_semaphore_create(0);
+        [stream stopCaptureWithCompletionHandler:^(NSError *e) { dispatch_semaphore_signal(stopped); }];
+        dispatch_semaphore_wait(stopped, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC));
+        dispatch_sync(q, ^{}); // the handler is done with o
+        if (!o.frame) return RC_ERR;
+        px = copy_pixbuf(o.frame, w, h);
+        CVPixelBufferRelease(o.frame);
+        o.frame = NULL;
+    }
+    if (!px) return RC_ERR;
+    for (size_t i = 3; i < (size_t)w * h * 4; i += 4) px[i] = 255;
+    out->pixels = px;
+    out->width = w;
+    out->height = h;
+    out->stride = w * 4;
+    return RC_OK;
+}
+
+int rc_snapshot(uint32_t monitor_id, int32_t max_w, int32_t max_h, rc_image *out) {
+    if (!out) return RC_ERR;
+    memset(out, 0, sizeof *out);
+    pthread_mutex_lock(&g_ctl);
+    int rc;
+    @autoreleasepool { rc = snapshot_locked(monitor_id, max_w, max_h, out); }
+    pthread_mutex_unlock(&g_ctl);
+    return rc;
 }

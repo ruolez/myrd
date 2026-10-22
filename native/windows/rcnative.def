@@ -22,4 +22,5 @@ EXPORTS
     rc_request_permission
     rc_screen_locked
     rc_shutdown
+    rc_snapshot
     rc_wallpaper_hide

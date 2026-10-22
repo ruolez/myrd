@@ -52,6 +52,9 @@ func onReady(h Hooks, ready func(update func(State))) {
 	activity.Hide()
 	updating := systray.AddMenuItem("", "")
 	updating.Disable()
+	previewLine := systray.AddMenuItem("", "")
+	previewLine.Disable()
+	previewLine.Hide()
 	updating.Hide()
 	var enroll *systray.MenuItem
 	if h.OnEnroll != nil {
@@ -64,6 +67,11 @@ func onReady(h Hooks, ready func(update func(State))) {
 	if h.OnAskNew != nil {
 		askNew = systray.AddMenuItemCheckbox("Ask before new browsers connect",
 			"Show a prompt on this computer before a browser it has not approved connects. Off: the first connection from your account is allowed and remembered.", false)
+	}
+	var previews *systray.MenuItem
+	if h.OnPreviews != nil {
+		previews = systray.AddMenuItemCheckbox("Show screen previews",
+			"Send a small picture of this screen about once a minute to your dashboard while it is open. It is encrypted for your approved browsers only.", false)
 	}
 	end := systray.AddMenuItem("End session", "Disconnect the controlling browser now")
 	end.Disable()
@@ -131,6 +139,12 @@ func onReady(h Hooks, ready func(update func(State))) {
 		} else {
 			updating.Hide()
 		}
+		if s.Preview != "" {
+			previewLine.SetTitle(s.Preview)
+			previewLine.Show()
+		} else {
+			previewLine.Hide()
+		}
 		systray.SetTooltip(truncTip(tip))
 
 		if enroll != nil {
@@ -163,12 +177,22 @@ func onReady(h Hooks, ready func(update func(State))) {
 				askNew.Uncheck()
 			}
 		}
+		if previews != nil {
+			if s.Previews {
+				previews.Check()
+			} else {
+				previews.Uncheck()
+			}
+		}
 	}
 
 	go func() {
-		var uninstallCh, enrollCh, askNewCh chan struct{}
+		var uninstallCh, enrollCh, askNewCh, previewsCh chan struct{}
 		if askNew != nil {
 			askNewCh = askNew.ClickedCh
+		}
+		if previews != nil {
+			previewsCh = previews.ClickedCh
 		}
 		if uninstall != nil {
 			uninstallCh = uninstall.ClickedCh
@@ -200,6 +224,16 @@ func onReady(h Hooks, ready func(update func(State))) {
 					askNew.Uncheck()
 				}
 				h.OnAskNew(ask)
+			case <-previewsCh:
+				mu.Lock()
+				on := !last.Previews
+				mu.Unlock()
+				if on {
+					previews.Check()
+				} else {
+					previews.Uncheck()
+				}
+				h.OnPreviews(on)
 			case <-end.ClickedCh:
 				if h.OnEndSession != nil {
 					h.OnEndSession()

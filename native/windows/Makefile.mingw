@@ -19,7 +19,7 @@ CXXFLAGS += -std=c++17 -Wall -Wno-unknown-pragmas -Wno-missing-braces -DUNICODE 
 CFLAGS ?= -O2 -g0
 CFLAGS += -std=gnu11 -Wall -Wextra -Wno-unused-parameter -I../include -I$(VPX)/include
 SRC  := $(wildcard src/*.cpp)
-OBJ  := $(patsubst src/%.cpp,build/obj/%.o,$(SRC)) build/obj/rc_vpx.o build/obj/rc_nv12.o
+OBJ  := $(patsubst src/%.cpp,build/obj/%.o,$(SRC)) build/obj/rc_vpx.o build/obj/rc_nv12.o build/obj/rc_scale.o
 LIB  := build/librcnative.a
 
 all: $(LIB) build/libvpx.a
@@ -36,6 +36,10 @@ build/obj/rc_vpx.o: ../common/rc_vpx.c ../common/rc_vpx.h ../include/rc_native.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 build/obj/rc_nv12.o: ../common/rc_nv12.c ../common/rc_nv12.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I../common -c $< -o $@
+
+build/obj/rc_scale.o: ../common/rc_scale.c ../common/rc_scale.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I../common -c $< -o $@
 

@@ -358,3 +358,61 @@ func TestHelperCtrlAltDeleteReachesTheService(t *testing.T) {
 		t.Fatal("the service never got the Ctrl+Alt+Delete request")
 	}
 }
+
+func TestProxyForwardsDeviceInfoOnlyWhenTheServerTakesIt(t *testing.T) {
+	rec := &recorder{}
+	p := &Proxy{Send: rec.Send}
+	link, stop := pair(t, p, &fakeTarget{}, HelperEvents{})
+	defer stop()
+	report := proto.HostInfoReport{Info: proto.HostInfo{OSName: "Windows 11 Pro"}}
+	countInfo := func() int {
+		n := 0
+		for _, m := range rec.all() {
+			if m.Type == proto.TypeDeviceInfo {
+				n++
+			}
+		}
+		return n
+	}
+
+	// Before hello_ack, and from a server without the feature: dropped.
+	link.Send(proto.TypeDeviceInfo, report)
+	p.SetServerFeatures(nil)
+	link.Send(proto.TypeDeviceInfo, report)
+	link.Send(proto.TypePinsSync, proto.PinsSync{}) // a marker that does get through
+	waitFor(t, func() bool { return len(rec.all()) == 1 })
+	if countInfo() != 0 {
+		t.Fatalf("device.info forwarded to a server without the feature: %+v", rec.all())
+	}
+
+	p.SetServerFeatures([]string{proto.FeatureDeviceInfo})
+	link.Send(proto.TypeDeviceInfo, report)
+	waitFor(t, func() bool { return countInfo() == 1 })
+}
+
+type previewSink struct{ got [][]byte }
+
+func (p *previewSink) Handle(raw []byte) { p.got = append(p.got, raw) }
+
+func TestPreviewRouterSendsPreviewRequestsToPreviews(t *testing.T) {
+	target, sink := &fakeTarget{}, &previewSink{}
+	r := PreviewRouter{HelperTarget: target, Previews: sink}
+	r.HandleSignal(proto.TypePreviewRequest, []byte(`{"req":"p1"}`))
+	r.HandleSignal(proto.TypeSessionOffer, []byte(`{"session_id":"s1"}`))
+	if len(sink.got) != 1 || string(sink.got[0]) != `{"req":"p1"}` {
+		t.Fatalf("previews got %q", sink.got)
+	}
+	if len(target.signals) != 1 || target.signals[0].Type != proto.TypeSessionOffer {
+		t.Fatalf("session manager got %+v", target.signals)
+	}
+}
+
+func TestProxyAnswersPreviewRequestsWithoutHelper(t *testing.T) {
+	rec := &recorder{}
+	p := &Proxy{Send: rec.Send}
+	p.HandleSignal(proto.TypePreviewRequest, []byte(`{"v":1,"type":"preview.request","req":"r9"}`))
+	want := []sent{{proto.TypePreviewUnavailable, `{"v":0,"type":"","req":"r9","reason":"no_console"}`}}
+	if got := rec.all(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}

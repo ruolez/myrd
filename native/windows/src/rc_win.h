@@ -170,6 +170,7 @@ const char *encoder_probe();
 int capture_start(const rc_capture_config *cfg, rc_frame_fn on_frame, rc_cursor_shape_fn on_shape,
                   rc_cursor_pos_fn on_pos, void *user);
 void capture_stop();
+int capture_snapshot(uint32_t monitor_id, int32_t max_w, int32_t max_h, rc_image *out);
 void capture_configure(int32_t bitrate_kbps, int32_t fps);
 void capture_request_keyframe();
 int capture_refine(int32_t max_qp);

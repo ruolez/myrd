@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +37,17 @@ type Proxy struct {
 	helperKey string
 
 	held atomic.Bool // an installer is replacing the exe: no helper may run
+	// serverFeatures is hello_ack.features: the helper's messages for a
+	// feature the server does not accept are dropped here.
+	serverFeatures atomic.Pointer[[]string]
+}
+
+// SetServerFeatures records what the server accepts (hello_ack.features).
+func (p *Proxy) SetServerFeatures(f []string) { p.serverFeatures.Store(&f) }
+
+func (p *Proxy) serverAccepts(feature string) bool {
+	f := p.serverFeatures.Load()
+	return f != nil && slices.Contains(*f, feature)
 }
 
 var _ session.Handler = (*Proxy)(nil)
@@ -118,6 +130,9 @@ func (p *Proxy) readLoop(r io.Reader) error {
 			if f.Type == "" || len(f.Data) == 0 {
 				continue
 			}
+			if f.Type == proto.TypeDeviceInfo && !p.serverAccepts(proto.FeatureDeviceInfo) {
+				continue
+			}
 			p.sendServer(f.Type, f.Data)
 		case KindActive:
 			var ids []string
@@ -173,12 +188,20 @@ func (p *Proxy) HandleSignal(msgType string, raw []byte) {
 	}
 	// No helper (nobody at the console yet, or it is restarting): refuse an
 	// offer at once instead of letting the browser wait for the timeout.
-	if msgType == proto.TypeSessionOffer {
+	switch msgType {
+	case proto.TypeSessionOffer:
 		var o struct {
 			SessionID string `json:"session_id"`
 		}
 		if json.Unmarshal(raw, &o) == nil && o.SessionID != "" {
 			p.sendServer(proto.TypeSessionEnd, proto.SessionEnd{SessionID: o.SessionID, Reason: proto.EndError})
+		}
+	case proto.TypePreviewRequest:
+		var r struct {
+			Req string `json:"req"`
+		}
+		if json.Unmarshal(raw, &r) == nil {
+			p.sendServer(proto.TypePreviewUnavailable, proto.PreviewUnavailable{Req: r.Req, Reason: proto.PreviewNoConsole})
 		}
 	}
 }

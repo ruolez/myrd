@@ -44,6 +44,8 @@ type Status struct {
 	Paused    bool   `json:"paused"`
 	// AskNewBrowsers: "Ask before new browsers connect" (config.Prefs).
 	AskNewBrowsers bool             `json:"ask_new_browsers"`
+	ScreenPreviews bool             `json:"screen_previews"` // "Show screen previews" (config.Prefs)
+	Preview        string           `json:"preview"`         // the latest preview sent, for a few minutes
 	Encoder        string           `json:"encoder"`
 	Session        *session.Info    `json:"session"`
 	Transfers      []files.Activity `json:"transfers"` // newest first, see TransferLog
@@ -59,6 +61,8 @@ type Options struct {
 	SetPaused  func(bool)
 	// SetAskNewBrowsers is the "Ask before new browsers connect" switch.
 	SetAskNewBrowsers func(bool)
+	// SetScreenPreviews is the "Show screen previews" switch.
+	SetScreenPreviews func(bool)
 	OnPinsChanged     func()
 }
 
@@ -149,14 +153,18 @@ func (c *Console) Handler() http.Handler {
 	}))
 	mux.HandleFunc("POST /api/prefs", c.guard(func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
-			AskNewBrowsers bool `json:"ask_new_browsers"`
+			AskNewBrowsers *bool `json:"ask_new_browsers"`
+			ScreenPreviews *bool `json:"screen_previews"`
 		}
 		if json.NewDecoder(r.Body).Decode(&in) != nil {
 			writeErr(w, http.StatusBadRequest, "bad json")
 			return
 		}
-		if c.o.SetAskNewBrowsers != nil {
-			c.o.SetAskNewBrowsers(in.AskNewBrowsers)
+		if in.AskNewBrowsers != nil && c.o.SetAskNewBrowsers != nil {
+			c.o.SetAskNewBrowsers(*in.AskNewBrowsers)
+		}
+		if in.ScreenPreviews != nil && c.o.SetScreenPreviews != nil {
+			c.o.SetScreenPreviews(*in.ScreenPreviews)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{})
 	}))

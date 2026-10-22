@@ -129,6 +129,9 @@ type Prefs struct {
 	// approved connects. Off: the first session from a browser is approved
 	// and remembered for its account, as "Allow and remember" would.
 	AskNewBrowsers bool `json:"ask_new_browsers"`
+	// NoScreenPreviews stops the small screen pictures the owner's
+	// dashboard shows (named as a negative so the zero value keeps them on).
+	NoScreenPreviews bool `json:"no_screen_previews,omitempty"`
 }
 
 // PrefsPath is prefs.json in the data dir.
@@ -148,3 +151,13 @@ func LoadPrefs(dataDir string) (Prefs, error) {
 }
 
 func SavePrefs(dataDir string, p Prefs) error { return writeJSON(dataDir, PrefsPath(dataDir), p) }
+
+// UpdatePrefs changes some prefs and keeps the others as stored.
+func UpdatePrefs(dataDir string, change func(*Prefs)) error {
+	p, err := LoadPrefs(dataDir)
+	if err != nil {
+		return err
+	}
+	change(&p)
+	return SavePrefs(dataDir, p)
+}

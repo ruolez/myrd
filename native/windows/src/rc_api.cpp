@@ -90,6 +90,11 @@ int rc_wallpaper_hide(int hide) { return wallpaper_hide(hide != 0); }
 
 int rc_screen_locked(void) { return RC_ERR_UNSUPPORTED; }
 
+int rc_snapshot(uint32_t monitor_id, int32_t max_w, int32_t max_h, rc_image *out) {
+    if (!out) return RC_ERR;
+    return capture_snapshot(monitor_id, max_w, max_h, out);
+}
+
 int rc_consent_prompt(const char *title, const char *message, int32_t timeout_s) {
     return consent_prompt(title, message, timeout_s);
 }

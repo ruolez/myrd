@@ -83,6 +83,9 @@ function render(s) {
   $("s-version").textContent = st.version;
   if (document.activeElement !== $("pause")) $("pause").checked = st.paused;
   if (document.activeElement !== $("ask-new")) $("ask-new").checked = st.ask_new_browsers;
+  if (document.activeElement !== $("previews")) $("previews").checked = st.screen_previews;
+  $("preview-line").hidden = !st.preview;
+  $("preview-line").textContent = st.preview || "";
 
   const banner = $("session-banner");
   banner.classList.toggle("hidden", !st.session);
@@ -120,6 +123,9 @@ $("token").addEventListener("input", (e) => {
 });
 $("end-btn").addEventListener("click", () => post("/api/session/end").then(refresh));
 $("pause").addEventListener("change", (e) => post("/api/pause", { paused: e.target.checked }).then(refresh));
+$("previews").addEventListener("change", (e) =>
+  post("/api/prefs", { screen_previews: e.target.checked }).then(refresh),
+);
 $("ask-new").addEventListener("change", (e) =>
   post("/api/prefs", { ask_new_browsers: e.target.checked }).then(refresh),
 );

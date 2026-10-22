@@ -122,6 +122,29 @@ int main(void) {
         CHECK(rc_wallpaper_hide(0) == RC_OK, "rc_wallpaper_hide(0) probe before capture");
         CHECK(rc_screen_locked() == 0, "rc_screen_locked() is 0 while the harness runs unlocked");
 
+        // A preview: scaled to fit, opaque, not all black; refused without permission.
+        rc_image snap;
+        int src = rc_snapshot(0, 480, 480, &snap);
+        if (screen) {
+            CHECK(src == RC_OK, "rc_snapshot -> %d", src);
+            if (src == RC_OK) {
+                CHECK(snap.width > 0 && snap.width <= 480 && snap.height > 0 && snap.height <= 480 &&
+                          (snap.width == 480 || snap.height == 480) && snap.stride == snap.width * 4,
+                      "snapshot fits 480x480: %dx%d stride %d", snap.width, snap.height, snap.stride);
+                long lit = 0;
+                for (int i = 0; i < snap.width * snap.height; i++) {
+                    const uint8_t *p = snap.pixels + i * 4;
+                    if (p[3] != 255) break;
+                    lit += p[0] | p[1] | p[2] ? 1 : 0;
+                }
+                CHECK(lit > 0, "snapshot has content (%ld lit pixels)", lit);
+                printf("     snapshot %dx%d\n", snap.width, snap.height);
+                rc_free(snap.pixels);
+            }
+        } else {
+            CHECK(src == RC_ERR_PERMISSION, "snapshot without Screen Recording -> RC_ERR_PERMISSION (%d)", src);
+        }
+
         // RC_HARNESS_MONITOR=<index> captures another monitor (a static one tests refinement).
         const char *mi = getenv("RC_HARNESS_MONITOR");
         int mon = mi ? atoi(mi) : 0;

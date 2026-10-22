@@ -494,14 +494,17 @@ func TestPinnedAutoAcceptSkipsPrompt(t *testing.T) {
 }
 
 func TestRememberedAccountSkipsPromptForItsOtherBrowsers(t *testing.T) {
+	// An approved browser of a trusted account is pinned itself (it can then
+	// receive screen previews); "Allow once" for another account pins nothing.
 	cases := []struct {
 		name       string
 		pinnedBy   string
 		wantPrompt bool
+		wantPins   int
 	}{
-		{"same account", ownerID, false},
-		{"pin from before accounts were recorded", "", false},
-		{"another account", "5b7c9d1e-other", true},
+		{"same account", ownerID, false, 2},
+		{"pin from before accounts were recorded", "", false, 2},
+		{"another account", "5b7c9d1e-other", true, 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -515,6 +518,9 @@ func TestRememberedAccountSkipsPromptForItsOtherBrowsers(t *testing.T) {
 			calls := h.prompter.calls()
 			if prompted := len(calls) > 0; prompted != c.wantPrompt || (prompted && (len(calls) != 1 || !calls[0].NewKey)) {
 				t.Fatalf("prompts = %+v, want new-browser prompt %v", calls, c.wantPrompt)
+			}
+			if got := len(h.pins.List()); got != c.wantPins {
+				t.Fatalf("pins after approval = %d, want %d", got, c.wantPins)
 			}
 		})
 	}

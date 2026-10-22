@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the BGRA → NV12 converter tests, then builds libvpx for the host and
+# Runs the BGRA → NV12 converter and preview scaler tests, then builds libvpx for the host and
 # runs the full-color encoder tests.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -13,6 +13,8 @@ esac
 mkdir -p "$HERE/build"
 ${CC:-cc} -O2 -std=gnu11 -Wall -Wextra -Wno-unused-parameter -I"$HERE" \
   "$HERE/test/nv12_test.c" "$HERE/rc_nv12.c" -o "$HERE/build/nv12-test"
+${CC:-cc} -O2 -std=gnu11 -Wall -Wextra -I"$HERE" "$HERE/test/scale_test.c" "$HERE/rc_scale.c" -o "$HERE/build/scale-test"
+"$HERE/build/scale-test"
 "$HERE/build/nv12-test"
 VPX="$("$HERE/build-libvpx.sh" "$T" | tail -1)"
 ${CC:-cc} -O2 -std=gnu11 -Wall -Wextra -Wno-unused-parameter -I"$HERE" -I"$HERE/../include" -I"$VPX/include" \

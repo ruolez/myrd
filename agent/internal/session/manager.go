@@ -158,6 +158,9 @@ func (m *Manager) Revoke(spki string) {
 	}
 }
 
+// IsRevoked reports whether the client key (base64 SPKI) was revoked.
+func (m *Manager) IsRevoked(spki string) bool { return m.isRevoked(spki) }
+
 func (m *Manager) isRevoked(spki string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()

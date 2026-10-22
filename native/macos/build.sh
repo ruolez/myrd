@@ -34,6 +34,9 @@ for arch in $ARCHS; do
   xcrun clang -c "$COMMON/rc_vpx.c" -o "$OBJDIR/rc_vpx.o" -arch "$arch" -mmacosx-version-min="$MIN_MACOS" \
     -std=gnu11 -Wall -Wextra -Wno-unused-parameter "${OPT[@]}" "${INC[@]}"
   OBJS+=("$OBJDIR/rc_vpx.o")
+  xcrun clang -c "$COMMON/rc_scale.c" -o "$OBJDIR/rc_scale.o" -arch "$arch" -mmacosx-version-min="$MIN_MACOS" \
+    -std=gnu11 -Wall -Wextra "${OPT[@]}" "${INC[@]}"
+  OBJS+=("$OBJDIR/rc_scale.o")
   xcrun libtool -static -o "$OUT/librcnative-$arch.a" "${OBJS[@]}" "$VPX/lib/libvpx.a" 2>/dev/null
   LIBS+=("$OUT/librcnative-$arch.a")
 done

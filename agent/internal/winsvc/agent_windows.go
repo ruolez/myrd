@@ -24,8 +24,10 @@ import (
 	"github.com/ruolez/remotectl/agent/internal/identity"
 	"github.com/ruolez/remotectl/agent/internal/pins"
 	"github.com/ruolez/remotectl/agent/internal/platform"
+	"github.com/ruolez/remotectl/agent/internal/preview"
 	"github.com/ruolez/remotectl/agent/internal/session"
 	"github.com/ruolez/remotectl/agent/internal/signal"
+	"github.com/ruolez/remotectl/agent/internal/sysinfo"
 	"github.com/ruolez/remotectl/agent/internal/tray"
 	"github.com/ruolez/remotectl/agent/internal/update"
 	"github.com/ruolez/remotectl/proto"
@@ -155,6 +157,7 @@ func runConnected(ctx context.Context, o *Options, p *Proxy) error {
 				return h
 			},
 			OnHelloAck: func(a proto.HelloAck) {
+				p.SetServerFeatures(a.Features)
 				p.SetRevoked(a.RevokedClientKeys)
 				p.SetDevice(a.Device)
 				upd.HelloAcked()
@@ -165,6 +168,8 @@ func runConnected(ctx context.Context, o *Options, p *Proxy) error {
 			OnUpdateCheck: func(m proto.UpdateCheck) {
 				go upd.CheckNow(ctx, update.Trigger{Explicit: m.Explicit, Force: m.Force})
 			},
+			// The helper in the console session takes the picture.
+			OnPreviewRequest: func(raw []byte) { p.HandleSignal(proto.TypePreviewRequest, raw) },
 			OnDeviceUpdate: func(u proto.DeviceUpdate) {
 				p.SetDevice(proto.DeviceInfo{ID: st.DeviceID, Name: u.Name, AutoAccept: u.AutoAccept})
 			},
@@ -362,15 +367,16 @@ func RunHelper(o Options) error {
 		return fmt.Errorf("pins: %w", err)
 	}
 
-	var autoAccept, paused, askNew atomic.Bool
+	var autoAccept, paused, askNew, noPreviews atomic.Bool
 	prefs, err := config.LoadPrefs(o.Settings.DataDir)
 	if err != nil {
 		o.Log.Warn("winsvc: prefs unreadable, using defaults", "err", err)
 	}
 	askNew.Store(prefs.AskNewBrowsers)
+	noPreviews.Store(prefs.NoScreenPreviews)
 	var trayUpdate atomic.Pointer[func(tray.State)]
 	var trayMu sync.Mutex
-	trayState := tray.State{Enrolled: true, Status: "Connecting…", AskNew: prefs.AskNewBrowsers}
+	trayState := tray.State{Enrolled: true, Status: "Connecting…", AskNew: prefs.AskNewBrowsers, Previews: !prefs.NoScreenPreviews}
 	pushTray := func(f func(*tray.State)) {
 		trayMu.Lock()
 		f(&trayState)
@@ -433,10 +439,46 @@ func RunHelper(o Options) error {
 		return err
 	}
 
+	// The helper runs in the console session, where the console user, idle
+	// time and lock screen are visible; the service drops these reports when
+	// the server does not take them.
+	collector := &sysinfo.Collector{Locked: sysinfo.InputDesktopLocked}
+	info := sysinfo.NewReporter(collector.Collect,
+		func(h proto.HostInfo) error { return link.Send(proto.TypeDeviceInfo, proto.HostInfoReport{Info: h}) },
+		func() bool { return true })
+	go info.Run(ctx)
+
+	previews := preview.New(preview.Options{Backend: backend, Pins: ps, DeviceKey: key, Send: link.Send, Revoked: mgr.IsRevoked,
+		DeviceID: func() string {
+			st, _ := config.Load(o.Settings.DataDir)
+			return st.DeviceID
+		},
+		State: func() preview.DeviceState {
+			return preview.DeviceState{PreviewsOff: noPreviews.Load(), Paused: paused.Load(), AskEveryTime: !autoAccept.Load(),
+				ScreenPermission: backend.Permissions().Screen, InSession: mgr.Current() != nil}
+		},
+		OnServed: func(label string, at time.Time) {
+			pushTray(func(s *tray.State) {
+				s.Preview = "Screen preview sent to " + label + " at " + at.Local().Format("15:04")
+			})
+			time.AfterFunc(5*time.Minute, func() {
+				pushTray(func(s *tray.State) {
+					if time.Since(at) >= 5*time.Minute {
+						s.Preview = ""
+					}
+				})
+			})
+		},
+		Log: o.Log})
+
 	served := make(chan error, 1)
 	go func() {
-		served <- Serve(r, mgr, HelperEvents{
-			OnDevice: func(d proto.DeviceInfo) { autoAccept.Store(d.AutoAccept) },
+		served <- Serve(r, PreviewRouter{HelperTarget: mgr, Previews: previews}, HelperEvents{
+			// Sent on every hello_ack: a new connection gets a report right away.
+			OnDevice: func(d proto.DeviceInfo) {
+				autoAccept.Store(d.AutoAccept)
+				info.Kick()
+			},
 			OnStatus: func(s ServiceStatus) {
 				pushTray(func(t *tray.State) {
 					t.Enrolled, t.Online, t.Status, t.Update = s.Enrolled, s.Online, s.Status, s.Update
@@ -468,10 +510,17 @@ func RunHelper(o Options) error {
 		},
 		OnAskNew: func(ask bool) {
 			askNew.Store(ask)
-			if err := config.SavePrefs(o.Settings.DataDir, config.Prefs{AskNewBrowsers: ask}); err != nil {
+			if err := config.UpdatePrefs(o.Settings.DataDir, func(p *config.Prefs) { p.AskNewBrowsers = ask }); err != nil {
 				o.Log.Error("winsvc: saving prefs failed", "err", err)
 			}
 			pushTray(func(s *tray.State) { s.AskNew = ask })
+		},
+		OnPreviews: func(on bool) {
+			noPreviews.Store(!on)
+			if err := config.UpdatePrefs(o.Settings.DataDir, func(p *config.Prefs) { p.NoScreenPreviews = !on }); err != nil {
+				o.Log.Error("winsvc: saving prefs failed", "err", err)
+			}
+			pushTray(func(s *tray.State) { s.Previews = on })
 		},
 		OnQuit: func() {
 			link.Quit()
@@ -487,7 +536,8 @@ func RunHelper(o Options) error {
 }
 
 func helperCaps(b platform.Backend, key ed25519.PrivateKey) HelperCaps {
-	c := HelperCaps{Capabilities: proto.Capabilities{Codecs: []string{"h264"}, MaxFPS: session.EncoderMaxFPS(b.EncoderName()), Encoder: b.EncoderName()},
+	c := HelperCaps{Capabilities: proto.Capabilities{Codecs: []string{"h264"}, MaxFPS: session.EncoderMaxFPS(b.EncoderName()), Encoder: b.EncoderName(),
+		Features: []string{proto.FeatureDeviceInfo, proto.FeaturePreview}},
 		DeviceKey: base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey))}
 	if mons, err := b.Monitors(); err == nil {
 		for _, m := range mons {

@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,8 +29,10 @@ import (
 	"github.com/ruolez/remotectl/agent/internal/identity"
 	"github.com/ruolez/remotectl/agent/internal/pins"
 	"github.com/ruolez/remotectl/agent/internal/platform"
+	"github.com/ruolez/remotectl/agent/internal/preview"
 	"github.com/ruolez/remotectl/agent/internal/session"
 	"github.com/ruolez/remotectl/agent/internal/signal"
+	"github.com/ruolez/remotectl/agent/internal/sysinfo"
 	"github.com/ruolez/remotectl/agent/internal/tray"
 	"github.com/ruolez/remotectl/agent/internal/update"
 	"github.com/ruolez/remotectl/proto"
@@ -68,6 +71,9 @@ type Agent struct {
 	enrolled chan struct{}
 	activity string // tray line from fileFeed
 	updLine  string // tray line from update.status
+	// previewLine and previewAt: the latest screen preview sent (tray, console).
+	previewLine string
+	previewAt   time.Time
 
 	fileFeed  *tray.ActivityFeed
 	transfers devconsole.TransferLog
@@ -77,6 +83,8 @@ type Agent struct {
 	askNew     atomic.Bool // config.Prefs.AskNewBrowsers
 	installing atomic.Bool // refuse new sessions while the OS installer runs (BeforeInstall)
 	prompting  atomic.Bool // the enrollment token dialog is open
+	serverInfo atomic.Bool // the server accepts device.info (hello_ack.features)
+	noPreviews atomic.Bool // config.Prefs.NoScreenPreviews
 	runCtx     context.Context
 }
 
@@ -108,6 +116,7 @@ func New(cfg Config) (*Agent, error) {
 	}
 	a := &Agent{cfg: cfg, log: cfg.Log, ks: cfg.Keystore, pins: ps, state: st, enrolled: make(chan struct{})}
 	a.askNew.Store(prefs.AskNewBrowsers)
+	a.noPreviews.Store(prefs.NoScreenPreviews)
 	a.fileFeed = tray.NewActivityFeed(a.setActivity, tray.Notify)
 	if st.Enrolled() {
 		close(a.enrolled)
@@ -222,11 +231,39 @@ func (a *Agent) SetPaused(p bool) {
 // SetAskNewBrowsers is the local "Ask before new browsers connect" switch.
 func (a *Agent) SetAskNewBrowsers(ask bool) {
 	a.askNew.Store(ask)
-	if err := config.SavePrefs(a.cfg.Settings.DataDir, config.Prefs{AskNewBrowsers: ask}); err != nil {
+	if err := config.UpdatePrefs(a.cfg.Settings.DataDir, func(p *config.Prefs) { p.AskNewBrowsers = ask }); err != nil {
 		a.log.Error("saving prefs failed", "err", err)
 	}
 	a.log.Info("ask before new browsers connect", "on", ask)
 	a.pushTray()
+}
+
+// SetScreenPreviews is the local "Show screen previews" switch.
+func (a *Agent) SetScreenPreviews(on bool) {
+	a.noPreviews.Store(!on)
+	if err := config.UpdatePrefs(a.cfg.Settings.DataDir, func(p *config.Prefs) { p.NoScreenPreviews = !on }); err != nil {
+		a.log.Error("saving prefs failed", "err", err)
+	}
+	a.log.Info("screen previews", "on", on)
+	a.pushTray()
+}
+
+// previewShownFor is how long the tray shows the latest preview sent.
+const previewShownFor = 5 * time.Minute
+
+func (a *Agent) onPreviewServed(label string, at time.Time) {
+	a.mu.Lock()
+	a.previewLine = "Screen preview sent to " + label + " at " + at.Local().Format("15:04")
+	a.previewAt = at
+	a.mu.Unlock()
+	a.pushTray()
+}
+
+func (a *Agent) recentPreviewLocked() string {
+	if time.Since(a.previewAt) > previewShownFor {
+		return ""
+	}
+	return a.previewLine
 }
 
 func (a *Agent) currentHandler() session.Handler {
@@ -241,6 +278,7 @@ func (a *Agent) TrayHooks(quit func()) tray.Hooks {
 		OnEndSession: a.EndSession,
 		OnPause:      a.SetPaused,
 		OnAskNew:     a.SetAskNewBrowsers,
+		OnPreviews:   a.SetScreenPreviews,
 		OnQuit:       quit,
 		OnUninstall:  uninstallAction,
 		OnEnroll:     a.enrollAction(),
@@ -289,7 +327,7 @@ func (a *Agent) pushTray() {
 	a.mu.Lock()
 	up := a.trayUp
 	st := tray.State{Enrolled: a.state.Enrolled(), Online: a.sigState.Online, Paused: a.paused.Load(), Activity: a.activity,
-		Update: a.updLine, AskNew: a.askNew.Load()}
+		Update: a.updLine, AskNew: a.askNew.Load(), Previews: !a.noPreviews.Load(), Preview: a.recentPreviewLocked()}
 	mgr := a.mgr
 	sigState := a.sigState
 	a.mu.Unlock()
@@ -324,10 +362,12 @@ func (a *Agent) pushTray() {
 func (a *Agent) consoleStatus() devconsole.Status {
 	a.mu.Lock()
 	st, ss, mgr := a.state, a.sigState, a.mgr
+	previewLine := a.recentPreviewLocked()
 	a.mu.Unlock()
 	out := devconsole.Status{Enrolled: st.Enrolled(), DeviceID: st.DeviceID, Name: st.Name, ServerURL: st.ServerURL,
 		Hostname: a.cfg.Settings.Hostname, Version: a.cfg.Version, Online: ss.Online, LastError: ss.LastError,
-		Fatal: ss.Fatal, Paused: a.paused.Load(), AskNewBrowsers: a.askNew.Load(), Encoder: a.cfg.Backend.EncoderName(), Transfers: a.transfers.List()}
+		Fatal: ss.Fatal, Paused: a.paused.Load(), AskNewBrowsers: a.askNew.Load(), Encoder: a.cfg.Backend.EncoderName(), Transfers: a.transfers.List(),
+		ScreenPreviews: !a.noPreviews.Load(), Preview: previewLine}
 	if mgr != nil {
 		out.Session = mgr.Current()
 	}
@@ -348,6 +388,10 @@ func (a *Agent) hello() proto.Hello {
 		h.Capabilities.Codecs = []string{"h264"}
 		h.Capabilities.MaxFPS = session.EncoderMaxFPS(a.cfg.Backend.EncoderName())
 		h.Capabilities.Encoder = a.cfg.Backend.EncoderName()
+		h.Capabilities.Features = []string{proto.FeatureDeviceInfo}
+		if a.cfg.Backend.Name() != "none" { // the cgo-less stub cannot take pictures
+			h.Capabilities.Features = append(h.Capabilities.Features, proto.FeaturePreview)
+		}
 		p := a.cfg.Backend.Permissions()
 		h.Permissions = proto.Permissions{Screen: p.Screen, Input: p.Input}
 	}
@@ -423,7 +467,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.cfg.Settings.ConsoleAddr != "" {
 		a.console = devconsole.New(devconsole.Options{Addr: a.cfg.Settings.ConsoleAddr, Log: a.log, Pins: a.pins,
 			Status: a.consoleStatus, Enroll: a.Enroll, EndSession: a.EndSession, SetPaused: a.SetPaused,
-			SetAskNewBrowsers: a.SetAskNewBrowsers, OnPinsChanged: a.syncPins})
+			SetAskNewBrowsers: a.SetAskNewBrowsers, SetScreenPreviews: a.SetScreenPreviews, OnPinsChanged: a.syncPins})
 		go func() {
 			if err := a.console.Run(ctx); err != nil {
 				a.log.Error("device console failed", "err", err)
@@ -567,9 +611,29 @@ func (a *Agent) runConnected(ctx context.Context) error {
 				restartIntoUpdate()
 			})
 		}})
+	collector := &sysinfo.Collector{}
+	if runtime.GOOS == "darwin" {
+		collector.Locked = a.cfg.Backend.ScreenLocked
+	}
+	var previews *preview.Service
+	if mgr != nil {
+		previews = preview.New(preview.Options{Backend: a.cfg.Backend, Pins: a.pins, DeviceKey: key,
+			DeviceID: func() string { return a.State().DeviceID }, Send: a.send, Revoked: mgr.IsRevoked,
+			State: func() preview.DeviceState {
+				return preview.DeviceState{PreviewsOff: a.noPreviews.Load(), Paused: a.paused.Load(),
+					Updating: a.installing.Load(), AskEveryTime: !a.autoAccept.Load(),
+					ScreenPermission: a.cfg.Backend.Permissions().Screen, InSession: mgr.Current() != nil}
+			},
+			OnServed: a.onPreviewServed, Log: a.log})
+	}
+	infoReporter := sysinfo.NewReporter(collector.Collect,
+		func(h proto.HostInfo) error { return a.send(proto.TypeDeviceInfo, proto.HostInfoReport{Info: h}) },
+		a.serverInfo.Load)
 	sigClient = signal.New(signal.Options{
 		API: client, DeviceID: st.DeviceID, Key: key, Handler: handler, Log: a.log, Hello: a.hello,
 		OnHelloAck: func(m proto.HelloAck) {
+			a.serverInfo.Store(slices.Contains(m.Features, proto.FeatureDeviceInfo))
+			infoReporter.Kick()
 			a.autoAccept.Store(m.Device.AutoAccept)
 			a.renamed(m.Device.Name)
 			if mgr != nil {
@@ -582,6 +646,11 @@ func (a *Agent) runConnected(ctx context.Context) error {
 		},
 		OnUpdateCheck: func(m proto.UpdateCheck) {
 			go upd.CheckNow(ctx, update.Trigger{Explicit: m.Explicit, Force: m.Force})
+		},
+		OnPreviewRequest: func(raw []byte) {
+			if previews != nil {
+				previews.Handle(raw)
+			}
 		},
 		OnDeviceUpdate: func(m proto.DeviceUpdate) {
 			a.autoAccept.Store(m.AutoAccept)
@@ -612,6 +681,9 @@ func (a *Agent) runConnected(ctx context.Context) error {
 	defer cancel()
 	go upd.Run(cctx)
 	go a.watchPermissions(cctx)
+	if a.cfg.Capabilities == nil {
+		go infoReporter.Run(cctx) // service mode: the session helper reports
+	}
 	a.pushTray()
 	return sigClient.Run(cctx)
 }

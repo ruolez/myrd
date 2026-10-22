@@ -44,3 +44,17 @@ func TestPrefsDefaultToNotAskingAndRoundTrip(t *testing.T) {
 		t.Fatalf("got %+v %v", p, err)
 	}
 }
+
+func TestUpdatePrefsKeepsTheOtherPrefs(t *testing.T) {
+	dir := t.TempDir()
+	if err := SavePrefs(dir, Prefs{AskNewBrowsers: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdatePrefs(dir, func(p *Prefs) { p.NoScreenPreviews = true }); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadPrefs(dir)
+	if err != nil || got != (Prefs{AskNewBrowsers: true, NoScreenPreviews: true}) {
+		t.Fatalf("prefs %+v, %v", got, err)
+	}
+}

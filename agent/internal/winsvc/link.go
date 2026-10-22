@@ -45,6 +45,23 @@ func (l *Link) SAS() error                { return l.write(KindSAS, "", nil) }
 
 var _ session.Outbound = (*Link)(nil).Send
 
+// PreviewRouter sends preview.request to previews and every other
+// signaling message to the session manager (the helper's Serve target).
+type PreviewRouter struct {
+	HelperTarget
+	Previews interface{ Handle(raw []byte) }
+}
+
+func (r PreviewRouter) HandleSignal(msgType string, raw []byte) {
+	if msgType == proto.TypePreviewRequest {
+		if r.Previews != nil {
+			r.Previews.Handle(raw)
+		}
+		return
+	}
+	r.HelperTarget.HandleSignal(msgType, raw)
+}
+
 // HelperEvents receive service → helper notifications other than signaling.
 type HelperEvents struct {
 	OnDevice func(proto.DeviceInfo)

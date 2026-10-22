@@ -51,6 +51,10 @@ func rcErr(rc C.int) error {
 		return platform.ErrUnsupported
 	case C.RC_ERR_BUSY:
 		return platform.ErrBusy
+	case C.RC_ERR_LOCKED:
+		return platform.ErrLocked
+	case C.RC_ERR_ASLEEP:
+		return platform.ErrAsleep
 	}
 	if rc >= 0 {
 		return nil
@@ -187,6 +191,19 @@ func (b *Backend) HideWallpaper(hide bool) error {
 }
 
 func (b *Backend) ScreenLocked() bool { return C.rc_screen_locked() == 1 }
+
+func (b *Backend) Snapshot(monitorID uint32, maxW, maxH int) (platform.Image, error) {
+	var img C.rc_image
+	if err := rcErr(C.rc_snapshot(C.uint32_t(monitorID), C.int32_t(maxW), C.int32_t(maxH), &img)); err != nil {
+		return platform.Image{}, err
+	}
+	defer C.rc_free(unsafe.Pointer(img.pixels))
+	w, h, stride := int(img.width), int(img.height), int(img.stride)
+	if img.pixels == nil || w <= 0 || h <= 0 || stride < w*4 {
+		return platform.Image{}, fmt.Errorf("native snapshot returned %dx%d stride %d", w, h, stride)
+	}
+	return platform.Image{Pix: C.GoBytes(unsafe.Pointer(img.pixels), C.int(stride*h)), Width: w, Height: h, Stride: stride}, nil
+}
 
 func (b *Backend) Indicator(on bool) {
 	v := C.int(0)

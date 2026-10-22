@@ -32,7 +32,10 @@ func (Backend) ClipboardText() (string, error)   { return "", platform.ErrUnsupp
 func (Backend) SetClipboardText(string) error    { return platform.ErrUnsupported }
 func (Backend) HideWallpaper(bool) error         { return platform.ErrUnsupported }
 func (Backend) ScreenLocked() bool               { return false }
-func (Backend) Indicator(bool)                   {}
+func (Backend) Snapshot(uint32, int, int) (platform.Image, error) {
+	return platform.Image{}, platform.ErrUnsupported
+}
+func (Backend) Indicator(bool) {}
 func (Backend) ConsentPrompt(string, string, int) (platform.Consent, error) {
 	return platform.ConsentDeny, platform.ErrUnsupported
 }

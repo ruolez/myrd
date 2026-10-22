@@ -55,6 +55,9 @@ type Backend struct {
 	wallpaperHidden  bool
 	wallpaperCalls   []bool
 	locked           bool
+	snapshot         platform.Image
+	snapshotErr      error
+	snapshots        int
 }
 
 func New() *Backend {
@@ -268,6 +271,45 @@ func (b *Backend) ScreenLocked() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.locked
+}
+
+// Snapshot returns the picture set by SetSnapshot (a grey 160×90 by
+// default), ErrBusy while capturing and ErrLocked on the unlock screen.
+func (b *Backend) Snapshot(_ uint32, maxW, maxH int) (platform.Image, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.snapshots++
+	switch {
+	case b.snapshotErr != nil:
+		return platform.Image{}, b.snapshotErr
+	case b.capturing:
+		return platform.Image{}, platform.ErrBusy
+	case b.locked:
+		return platform.Image{}, platform.ErrLocked
+	}
+	img := b.snapshot
+	if img.Pix == nil {
+		w, h := min(160, maxW), min(90, maxH)
+		img = platform.Image{Pix: make([]byte, w*h*4), Width: w, Height: h, Stride: w * 4}
+		for i := range img.Pix {
+			img.Pix[i] = 0x80
+		}
+	}
+	return img, nil
+}
+
+// SetSnapshot sets the picture (or the error) Snapshot returns.
+func (b *Backend) SetSnapshot(img platform.Image, err error) {
+	b.mu.Lock()
+	b.snapshot, b.snapshotErr = img, err
+	b.mu.Unlock()
+}
+
+// Snapshots counts Snapshot calls.
+func (b *Backend) Snapshots() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.snapshots
 }
 
 // SetLocked puts the fake device on its unlock screen or takes it off.

@@ -9,7 +9,16 @@ var (
 	ErrPermission  = errors.New("permission not granted")
 	ErrUnsupported = errors.New("unsupported on this platform")
 	ErrBusy        = errors.New("capture already running")
+	ErrLocked      = errors.New("the screen is locked")
+	ErrAsleep      = errors.New("the display is asleep")
 )
+
+// Image is a BGRA picture, top-down (Snapshot).
+type Image struct {
+	Pix           []byte
+	Width, Height int
+	Stride        int
+}
 
 type Monitor struct {
 	ID      uint32
@@ -137,6 +146,12 @@ type Backend interface {
 	// controller sees; the state outlives capture restarts. ErrUnsupported
 	// when the platform cannot hide it.
 	HideWallpaper(hide bool) error
+
+	// Snapshot takes one picture of a monitor (0 = primary) scaled down to
+	// fit maxW×maxH, without starting a capture, for a dashboard preview.
+	// ErrBusy while a capture runs, ErrPermission, ErrLocked, ErrAsleep or
+	// ErrUnsupported (rc_native.h rc_snapshot).
+	Snapshot(monitorID uint32, maxW, maxH int) (Image, error)
 
 	// ScreenLocked reports whether the device shows its unlock screen (a
 	// logged-in session that is locked); false where the backend cannot tell.

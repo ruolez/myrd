@@ -162,6 +162,12 @@ func (s *sess) run(o proto.SessionOffer) {
 		}
 		remember = remember || c == platform.ConsentRemember
 	}
+	// A browser the account already trusts is pinned itself once a session
+	// from it is approved, so it can receive screen previews (which need the
+	// exact key pinned, see pins.Store.PinnedFor).
+	if trusted && !m.o.Pins.IsPinned(s.clientKey.PublicKey) {
+		remember = true
+	}
 	if remember {
 		if err := m.o.Pins.Pin(s.clientKey.PublicKey, s.clientKey.Label, s.userID, time.Now()); err != nil {
 			s.log.Error("pin failed", "err", err)

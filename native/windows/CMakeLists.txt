@@ -20,6 +20,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 file(GLOB RC_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
 add_library(rcnative SHARED ${RC_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/../common/rc_nv12.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/../common/rc_scale.c
             ${CMAKE_CURRENT_SOURCE_DIR}/rcnative.def)
 target_compile_definitions(rcnative PRIVATE UNICODE _UNICODE _WIN32_WINNT=0x0A00 WINVER=0x0A00 NOMINMAX WIN32_LEAN_AND_MEAN)
 target_include_directories(rcnative PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include)

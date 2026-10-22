@@ -62,6 +62,8 @@ type Options struct {
 	OnKeyRevoked   func(proto.KeyRevoked)
 	OnUpdateCheck  func(proto.UpdateCheck)
 	OnStatus       func(Status)
+	// OnPreviewRequest gets preview.request (raw JSON); it must not block.
+	OnPreviewRequest func(raw []byte)
 }
 
 type Client struct {
@@ -273,6 +275,10 @@ func (c *Client) connectOnce(ctx context.Context) error {
 			var m proto.UpdateCheck
 			if json.Unmarshal(data, &m) == nil && c.o.OnUpdateCheck != nil {
 				c.o.OnUpdateCheck(m)
+			}
+		case proto.TypePreviewRequest:
+			if c.o.OnPreviewRequest != nil {
+				c.o.OnPreviewRequest(data)
 			}
 		case proto.TypeSessionOffer, proto.TypeICECandidate, proto.TypeSessionEnd:
 			if c.o.Handler != nil {

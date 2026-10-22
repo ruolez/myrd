@@ -109,3 +109,31 @@ func TestUnknownKeyNotTrusted(t *testing.T) {
 		t.Fatal("unexpected trust")
 	}
 }
+
+func TestPinnedForNeedsThisExactKey(t *testing.T) {
+	const owner = "owner"
+	s, _ := Open(filepath.Join(t.TempDir(), "pins.json"))
+	mine, sibling, legacy := newSPKI(t), newSPKI(t), newSPKI(t)
+	_ = s.Pin(mine, "Chrome", owner, time.Now())
+	_ = s.Pin(legacy, "Old Chrome", "", time.Now())
+	cases := []struct {
+		name string
+		key  string
+		user string
+		want bool
+	}{
+		{"pinned for this user", mine, owner, true},
+		{"pinned for another user", mine, "other", false},
+		{"another browser of the account", sibling, owner, false},
+		{"legacy pin", legacy, "anyone", true},
+		{"not base64", "not base64!", owner, false},
+	}
+	for _, c := range cases {
+		if got := s.PinnedFor(c.key, c.user); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+	if !s.Trusted(sibling, owner) {
+		t.Fatal("account trust should still hold for sessions")
+	}
+}

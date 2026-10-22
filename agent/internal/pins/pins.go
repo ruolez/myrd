@@ -87,6 +87,21 @@ func (s *Store) Trusted(spkiB64, userID string) bool {
 	return false
 }
 
+// PinnedFor reports whether this exact key (base64 SPKI) is pinned for
+// userID (or by a pin from before user ids were recorded). Unlike Trusted,
+// another pin of the same account does not count: previews go only to
+// browsers that were themselves approved on the device.
+func (s *Store) PinnedFor(spkiB64, userID string) bool {
+	h, err := proto.ClientKeyHash(spkiB64)
+	if err != nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.pins[h]
+	return ok && (p.UserID == "" || p.UserID == userID)
+}
+
 // Pin records an approval by userID and persists it.
 func (s *Store) Pin(spkiB64, label, userID string, now time.Time) error {
 	h, err := proto.ClientKeyHash(spkiB64)

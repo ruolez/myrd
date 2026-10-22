@@ -7,6 +7,7 @@
 // from GDI into system memory, are converted on the CPU and go to the
 // software MFT (run_loop_cpu). One capture at a time.
 #include "rc_win.h"
+#include "rc_scale.h"
 
 #ifdef RC_HAVE_VPX
 #include "rc_vpx.h"
@@ -979,6 +980,76 @@ int capture_refine(int32_t max_qp) {
 const char *capture_encoder_name() {
     Guard g(g_cap_lock);
     return g_cap ? g_cap->encoder : nullptr;
+}
+
+} // namespace rcw
+
+namespace rcw {
+
+// ---------------------------------------------------------------- preview
+
+// One GDI copy of the monitor, scaled down with HALFTONE: available on every
+// Windows version (the Windows 7 build too) and cheap once a minute. Holds
+// g_cap_lock, so a capture cannot start meanwhile.
+int capture_snapshot(uint32_t monitor_id, int32_t max_w, int32_t max_h, rc_image *out) {
+    memset(out, 0, sizeof *out);
+    Guard g(g_cap_lock);
+    if (g_cap) return RC_ERR_BUSY;
+    if (!input_desktop_is_default()) return RC_ERR_LOCKED; // lock screen, UAC: never copied
+    MonitorInfo mon = {};
+    bool found = monitor_id != 0 && find_monitor(monitor_id, &mon);
+    if (!found) {
+        MonitorInfo all[16];
+        int n = enumerate_monitors(all, 16);
+        for (int i = 0; i < n && i < 16 && !found; i++) {
+            if (all[i].pub.primary || (monitor_id == 0 && i == n - 1)) {
+                mon = all[i];
+                found = true;
+            }
+        }
+    }
+    if (!found) return RC_ERR;
+    int sw = mon.rect.right - mon.rect.left, sh = mon.rect.bottom - mon.rect.top;
+    int32_t w, h;
+    rc_fit(sw, sh, max_w, max_h, &w, &h);
+
+    HDC screen = GetDC(nullptr);
+    if (!screen) return RC_ERR;
+    HDC mem = CreateCompatibleDC(screen);
+    BITMAPINFO bi = {};
+    bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = -h; // top-down
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void *bits = nullptr;
+    HBITMAP bmp = mem ? CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0) : nullptr;
+    int rc = RC_ERR;
+    if (bmp) {
+        HGDIOBJ old = SelectObject(mem, bmp);
+        SetStretchBltMode(mem, HALFTONE);
+        SetBrushOrgEx(mem, 0, 0, nullptr);
+        BOOL ok = StretchBlt(mem, 0, 0, w, h, screen, mon.rect.left, mon.rect.top, sw, sh, SRCCOPY);
+        SelectObject(mem, old);
+        GdiFlush();
+        if (ok) {
+            size_t n = (size_t)w * h * 4;
+            out->pixels = (uint8_t *)malloc(n);
+            if (out->pixels) {
+                memcpy(out->pixels, bits, n);
+                for (size_t i = 3; i < n; i += 4) out->pixels[i] = 255;
+                out->width = w;
+                out->height = h;
+                out->stride = w * 4;
+                rc = RC_OK;
+            }
+        }
+        DeleteObject(bmp);
+    }
+    if (mem) DeleteDC(mem);
+    ReleaseDC(nullptr, screen);
+    return rc;
 }
 
 } // namespace rcw

@@ -9,7 +9,7 @@
  * that agent/internal/native links through cgo.
  *
  * Rules:
- *  - Go never touches raw pixels. Capture + encode happen here; the frame
+ *  - Go never touches raw pixels of the stream. Capture + encode happen here; the frame
  *    callback delivers one complete H.264 access unit in Annex-B form
  *    (start codes 00 00 00 01), or with RC_CODEC_VP9 one VP9 frame.
  *    Keyframes MUST carry SPS+PPS in-band.
@@ -29,6 +29,9 @@
  *  - Coordinates crossing this ABI are normalized 0..65535 of the monitor.
  *  - Key codes crossing this ABI are already platform codes (the HID→platform
  *    mapping lives in Go: agent/internal/keymap). See rc_input_event.keycode.
+ *  - rc_snapshot is the one exception to the pixel rule: a dashboard
+ *    thumbnail (at most 640×640 BGRA, once a minute) is JPEG-encoded in Go,
+ *    the same on every platform.
  */
 #ifndef RC_NATIVE_H
 #define RC_NATIVE_H
@@ -44,6 +47,8 @@ extern "C" {
 #define RC_ERR_PERMISSION  -2  /* screen or input permission not granted */
 #define RC_ERR_UNSUPPORTED -3
 #define RC_ERR_BUSY        -4  /* capture already running */
+#define RC_ERR_LOCKED      -5  /* lock screen or secure desktop: nothing to show */
+#define RC_ERR_ASLEEP      -6  /* the display is asleep */
 
 typedef struct {
     uint32_t id;        /* stable for the life of the process */
@@ -188,6 +193,22 @@ int  rc_wallpaper_hide(int hide);
  *            service's job).
  * Returns 1, 0 or RC_ERR_UNSUPPORTED. */
 int  rc_screen_locked(void);
+
+/* ---- dashboard preview ---- */
+typedef struct {
+    uint8_t *pixels;  /* BGRA, top-down; allocated by the backend, free with rc_free */
+    int32_t  width, height, stride;
+} rc_image;
+
+/* One picture of monitor_id (0 = the primary monitor) scaled down to fit
+ * max_w×max_h (area-averaged, never enlarged), without the cursor and
+ * without starting a capture. It must not ask for permission, wake the
+ * display, hold power assertions, show the session border or reset the
+ * idle timer, and returns within about 2 s.
+ * Returns RC_OK, RC_ERR_BUSY while a capture runs (rc_capture_start waits
+ * for a snapshot in progress), RC_ERR_PERMISSION, RC_ERR_LOCKED,
+ * RC_ERR_ASLEEP, RC_ERR_UNSUPPORTED or RC_ERR. */
+int  rc_snapshot(uint32_t monitor_id, int32_t max_w, int32_t max_h, rc_image *out);
 
 /* ---- session UI (native so it cannot be hidden by the controller) ---- */
 /* Show/hide the always-on-top red border on every monitor. */

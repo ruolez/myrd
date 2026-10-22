@@ -28,6 +28,7 @@
 #include <libavutil/pixfmt.h>
 #include <x264.h>
 
+#include "rc_scale.h"
 #include "rc_vpx.h"
 
 #include <errno.h>
@@ -648,6 +649,47 @@ int rc_capture_start(const rc_capture_config *cfg, rc_frame_fn on_frame, rc_curs
     }
     pthread_mutex_unlock(&g.mu);
     return RC_OK;
+}
+
+/* ---------------- preview ---------------- */
+
+/* Holds g.mu throughout, so rc_capture_start waits for it. */
+int rc_snapshot(uint32_t monitor_id, int32_t max_w, int32_t max_h, rc_image *out) {
+    memset(out, 0, sizeof *out);
+    pthread_mutex_lock(&g.mu);
+    if (!g.inited) {
+        pthread_mutex_unlock(&g.mu);
+        return RC_ERR;
+    }
+    if (atomic_load(&g.running)) {
+        pthread_mutex_unlock(&g.mu);
+        return RC_ERR_BUSY;
+    }
+    refresh_monitors_locked();
+    rc_monitor mon;
+    if (!find_monitor_locked(monitor_id, &mon)) {
+        pthread_mutex_unlock(&g.mu);
+        return RC_ERR;
+    }
+    XImage *img = XGetImage(g.dpy, DefaultRootWindow(g.dpy), mon.x, mon.y, mon.width, mon.height, AllPlanes, ZPixmap);
+    pthread_mutex_unlock(&g.mu);
+    if (!img) return RC_ERR;
+    int rc = RC_ERR;
+    if (img->bits_per_pixel == 32) {
+        int32_t w, h;
+        rc_fit((int32_t)mon.width, (int32_t)mon.height, max_w, max_h, &w, &h);
+        out->pixels = malloc((size_t)w * h * 4);
+        if (out->pixels) {
+            rc_scale_bgra((const uint8_t *)img->data, (int32_t)mon.width, (int32_t)mon.height, img->bytes_per_line,
+                          out->pixels, w, h);
+            out->width = w;
+            out->height = h;
+            out->stride = w * 4;
+            rc = RC_OK;
+        }
+    }
+    XDestroyImage(img);
+    return rc;
 }
 
 void rc_capture_stop(void) {

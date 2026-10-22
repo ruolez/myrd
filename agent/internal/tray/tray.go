@@ -1,6 +1,6 @@
 // Package tray is the device-local status surface: a menu-bar / system-tray
 // icon that turns red during a session, with Pause, Ask before new browsers
-// connect, End session (kill switch) and Quit. On the headless Linux demo device it is a no-op and the device
+// connect, Show screen previews, End session (kill switch) and Quit. On the headless Linux demo device it is a no-op and the device
 // console (internal/devconsole) plays this role.
 package tray
 
@@ -13,6 +13,8 @@ type State struct {
 	InSession bool
 	Paused    bool   // new sessions refused while paused
 	AskNew    bool   // "Ask before new browsers connect" (config.Prefs.AskNewBrowsers)
+	Previews  bool   // "Show screen previews" (!config.Prefs.NoScreenPreviews)
+	Preview   string // "Screen preview sent to <browser> at 10:42", for a few minutes after one
 	Peer      string // "<label> (<email>)" of the controlling browser
 	Status    string // one-line human status, e.g. "Online", "Waiting for enrollment"
 	Activity  string // file transfer line, e.g. "Receiving report.pdf (42%)"; see ActivityFeed
@@ -23,6 +25,7 @@ type Hooks struct {
 	OnEndSession func()            // kill switch: end the active session now
 	OnPause      func(paused bool) // refuse new sessions while paused
 	OnAskNew     func(ask bool)    // "Ask before new browsers connect"; nil hides it
+	OnPreviews   func(on bool)     // "Show screen previews"; nil hides it
 	OnQuit       func()
 	OnUninstall  func() // macOS "Uninstall RemoteAgent" menu item; nil hides it
 	OnEnroll     func() // "Enroll this device…" while not enrolled; nil hides it
