@@ -13,6 +13,7 @@ import { Badge, Spinner } from "../components/ui";
 import { keyFingerprint } from "../lib/devicePins";
 import { displayRect } from "../lib/geometry";
 import { comboInput } from "../lib/combos";
+import type { Combo } from "../lib/combos";
 import { encodeText } from "../lib/input";
 import { streamView } from "../lib/stream";
 import { CursorLayer } from "../session/CursorLayer";
@@ -22,7 +23,7 @@ import { useTransfers } from "../session/files/TransferList";
 import { TransferPill } from "../session/files/TransferPill";
 import { isFinal } from "../session/FileChannel";
 import { Hud } from "../session/Hud";
-import { KeysMenu } from "../session/KeysMenu";
+import { KeysButton } from "../session/KeysMenu";
 import { END_REASONS, RemoteSession } from "../session/RemoteSession";
 import type { Snapshot } from "../session/RemoteSession";
 import { StreamButton, StreamMenu } from "../session/StreamMenu";
@@ -235,6 +236,10 @@ export function SessionView() {
     }
   };
   const onHotkey = useCallback(() => openPanel("stream"), [openPanel]);
+  const sendCombo = (c: Combo) => {
+    for (const m of comboInput(c.keys)) session?.sendInput(m);
+    closePanel("keys");
+  };
 
   useRemoteInput(
     { session: sessionRef, surface: surfaceRef, video: videoRef, keyboard: kbRef },
@@ -494,13 +499,14 @@ export function SessionView() {
             onClick={() => void typeClipboard()}
             disabled={!live}
           />
-          <ToolButton
-            label="Send keys (Ctrl+Alt+Del, Alt+Tab…)"
-            icon="keyboard"
-            active={keysOpen}
-            onClick={() => (keysOpen ? closePanel("keys") : openPanel("keys"))}
+          <KeysButton
+            os={snap?.agentOs ?? null}
+            open={keysOpen && !fullscreen}
             disabled={!live}
-            text="Keys"
+            align="end"
+            onToggle={() => (keysOpen ? closePanel("keys") : openPanel("keys"))}
+            onSend={sendCombo}
+            onClose={() => closePanel("keys")}
           />
           <ToolButton
             label={relative ? "Absolute mouse" : "Relative mouse (pointer lock)"}
@@ -602,7 +608,7 @@ export function SessionView() {
           />
         )}
 
-        {fullscreen && pill && live && (
+        {fullscreen && (pill || keysOpen) && live && (
           <div
             className="absolute top-3 left-1/2 z-30 flex -translate-x-1/2 items-center gap-1 rounded-full bg-black/75 px-2 py-1 text-sm shadow-lg"
             onPointerEnter={() => pillTimer.current && clearTimeout(pillTimer.current)}
@@ -623,12 +629,13 @@ export function SessionView() {
               onClick={() => openPanel("files")}
               disabled={!files}
             />
-            <ToolButton
-              label="Send keys (Ctrl+Alt+Del, Alt+Tab…)"
-              icon="keyboard"
-              text="Keys"
-              active={keysOpen}
-              onClick={() => openPanel("keys")}
+            <KeysButton
+              os={snap?.agentOs ?? null}
+              open={keysOpen && fullscreen}
+              align="center"
+              onToggle={() => (keysOpen ? closePanel("keys") : openPanel("keys"))}
+              onSend={sendCombo}
+              onClose={() => closePanel("keys")}
             />
             <ToolButton
               label={
@@ -651,17 +658,6 @@ export function SessionView() {
 
         {filesOpen && files && (
           <FilesPanel files={files} onClose={() => closePanel("files")} onFolder={setFilesFolder} />
-        )}
-        {keysOpen && live && (
-          <KeysMenu
-            className="top-3 left-3"
-            os={snap?.agentOs ?? null}
-            onSend={(c) => {
-              for (const m of comboInput(c.keys)) session?.sendInput(m);
-              closePanel("keys");
-            }}
-            onClose={() => closePanel("keys")}
-          />
         )}
         {streamOpen && snap && live && (
           <StreamMenu
