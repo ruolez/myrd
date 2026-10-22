@@ -17,13 +17,14 @@ import { bytes, dateTime, osName } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
 import {
   MAX_SIDECAR_BYTES,
+  addReleaseFiles,
   formatRollout,
+  pairFiles,
   parseSidecar,
-  pickPair,
   releaseFileMatches,
   uploadErrorMessage,
 } from "../../lib/release";
-import type { SidecarResult } from "../../lib/release";
+import type { FilePair, ReleaseSidecar, SidecarResult } from "../../lib/release";
 
 const ROLLOUT_DEBOUNCE_MS = 600;
 
@@ -266,22 +267,51 @@ function RolloutSlider({
   );
 }
 
-type SigState = { file: File; result: SidecarResult };
+type PairState = {
+  key: string;
+  installer: File | null;
+  sig: File | null;
+  sidecar: ReleaseSidecar | null;
+  /** Why this pair cannot be uploaded yet; null when it can. */
+  issue: string | null;
+  /** Why its last upload failed; uploading again retries it. */
+  failed: string | null;
+};
+
+const target = (s: ReleaseSidecar) => `${osName(s.os)} ${s.arch}`;
+
+function pairState(
+  p: FilePair<File>,
+  sigs: ReadonlyMap<File, SidecarResult>,
+  failed: Readonly<Record<string, string>>,
+): PairState {
+  const key = (p.installer ?? p.sig)!.name;
+  const result = p.sig ? sigs.get(p.sig) : undefined;
+  const sidecar = result?.ok ? result.sidecar : null;
+  const issue = !p.installer
+    ? `No installer for ${p.sig?.name}`
+    : !p.sig
+      ? `No .sig for ${p.installer.name}`
+      : !result
+        ? "Reading the signature…"
+        : !result.ok
+          ? `${p.sig.name} is not a usable signature: ${result.error}`
+          : releaseFileMatches(result.sidecar, p.installer);
+  return { key, installer: p.installer, sig: p.sig, sidecar, issue, failed: failed[key] ?? null };
+}
 
 function UploadRelease({ onUploaded }: { onUploaded: () => void }) {
   const toast = useToast();
   const input = useRef<HTMLInputElement>(null);
-  const readSeq = useRef(0);
-  const [installer, setInstaller] = useState<File | null>(null);
-  const [sig, setSig] = useState<SigState | null>(null);
-  const [ignored, setIgnored] = useState<string[]>([]);
+  const [files, setFiles] = useState<File[]>([]);
+  const [sigs, setSigs] = useState<ReadonlyMap<File, SidecarResult>>(new Map());
+  const [failed, setFailed] = useState<Record<string, string>>({});
   const [rollout, setRollout] = useState(100);
   const [dragging, setDragging] = useState(false);
-  const [progress, setProgress] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState<{ key: string; progress: number } | null>(null);
+  const busy = uploading !== null;
 
   const readSig = async (file: File) => {
-    const my = ++readSeq.current;
     let result: SidecarResult;
     if (file.size > MAX_SIDECAR_BYTES) result = { ok: false, error: "signature file is too large" };
     else {
@@ -291,69 +321,85 @@ function UploadRelease({ onUploaded }: { onUploaded: () => void }) {
         result = { ok: false, error: "signature file could not be read" };
       }
     }
-    if (my === readSeq.current) setSig({ file, result });
+    setSigs((prev) => new Map(prev).set(file, result));
   };
 
-  const addFiles = (files: File[]) => {
-    const p = pickPair(files);
-    setError(null);
-    setIgnored(p.ignored.map((f) => f.name));
-    if (p.installer) setInstaller(p.installer);
-    if (p.sig) void readSig(p.sig);
+  const forget = (names: readonly string[]) =>
+    setFailed((prev) => {
+      const next = { ...prev };
+      for (const n of names) delete next[n];
+      return next;
+    });
+
+  const addFiles = (added: File[]) => {
+    setFiles((prev) => addReleaseFiles(prev, added));
+    forget(added.map((f) => f.name));
+    for (const f of pairFiles(added).pairs) if (f.sig) void readSig(f.sig);
   };
+
+  const remove = (gone: readonly (File | null)[]) =>
+    setFiles((prev) => prev.filter((f) => !gone.includes(f)));
 
   const clear = () => {
-    readSeq.current++;
-    setInstaller(null);
-    setSig(null);
-    setIgnored([]);
-    setError(null);
+    setFiles([]);
+    setFailed({});
     if (input.current) input.current.value = "";
   };
 
-  const sidecar = sig?.result.ok ? sig.result.sidecar : null;
-  const sigError = sig && !sig.result.ok ? sig.result.error : null;
-  const mismatch = sidecar && installer ? releaseFileMatches(sidecar, installer) : null;
-  const ready = !!installer && !!sidecar && !mismatch && progress === null;
+  const { pairs: filePairs, ignored } = pairFiles(files);
+  const pairs = filePairs.map((p) => pairState(p, sigs, failed));
+  const ready = pairs.filter((p) => !p.issue);
 
   const upload = async () => {
-    if (!installer || !sig || !sidecar) return;
-    setProgress(0);
-    setError(null);
-    try {
-      await api.admin.uploadRelease(
-        { sig: sig.file, file: installer, rolloutPct: rollout },
-        setProgress,
-      );
+    const uploaded: string[] = [];
+    let version = "";
+    for (const p of ready) {
+      if (!p.installer || !p.sig || !p.sidecar) continue;
+      const key = p.key;
+      setUploading({ key, progress: 0 });
+      forget([key]);
+      try {
+        await api.admin.uploadRelease(
+          { sig: p.sig, file: p.installer, rolloutPct: rollout },
+          (progress) => setUploading({ key, progress }),
+        );
+        uploaded.push(target(p.sidecar));
+        version = p.sidecar.version;
+        remove([p.installer, p.sig]);
+      } catch (e) {
+        const msg = e instanceof ApiError ? uploadErrorMessage(e.code, e.message) : errorMessage(e);
+        setFailed((prev) => ({ ...prev, [key]: msg }));
+      }
+    }
+    setUploading(null);
+    if (uploaded.length === pairs.length) clear();
+    if (uploaded.length) {
       toast(
-        `Uploaded ${sidecar.version} for ${osName(sidecar.os)} ${sidecar.arch} as a draft`,
+        `Uploaded ${version} for ${uploaded.join(", ")} as ${uploaded.length === 1 ? "a draft" : "drafts"}`,
         "success",
       );
-      clear();
       onUploaded();
-    } catch (e) {
-      setError(e instanceof ApiError ? uploadErrorMessage(e.code, e.message) : errorMessage(e));
-    } finally {
-      setProgress(null);
     }
   };
 
   const onDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setDragging(false);
-    if (progress === null) addFiles(Array.from(e.dataTransfer.files));
+    if (!busy) addFiles(Array.from(e.dataTransfer.files));
   };
 
+  const at = uploading ? ready.findIndex((p) => p.key === uploading.key) + 1 : 0;
   return (
     <section className="card mb-6 space-y-4 p-6">
       <div>
-        <h2 className="font-medium">Upload a release</h2>
+        <h2 className="font-medium">Upload releases</h2>
         <p className="text-sm text-muted">
-          Drop the installer (<code className="font-mono">.pkg</code> or{" "}
+          Drop the installers (<code className="font-mono">.pkg</code>,{" "}
           <code className="font-mono">.msi</code>) together with the{" "}
-          <code className="font-mono">.sig</code> that{" "}
-          <code className="font-mono">remotectl-release sign</code> wrote next to it. Uploads start
-          as drafts; publishing rolls them out.
+          <code className="font-mono">.sig</code> files that{" "}
+          <code className="font-mono">remotectl-release sign</code> wrote next to them: one release
+          or a whole release folder (macOS, Windows and Windows 7). Uploads start as drafts;
+          publishing rolls them out.
         </p>
       </div>
       <div
@@ -369,11 +415,11 @@ function UploadRelease({ onUploaded }: { onUploaded: () => void }) {
       >
         <Icon name="upload" size={28} className="text-muted" />
         <div>
-          Drop the installer and its signature here, or{" "}
+          Drop installers and their signatures here, or{" "}
           <button
             type="button"
             className="font-medium text-primary hover:underline"
-            disabled={progress !== null}
+            disabled={busy}
             onClick={() => input.current?.click()}
           >
             choose files
@@ -393,43 +439,30 @@ function UploadRelease({ onUploaded }: { onUploaded: () => void }) {
         />
       </div>
 
-      {(installer || sig) && (
-        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-          <dt className="text-muted">Installer</dt>
-          <dd className="truncate">
-            {installer ? `${installer.name} · ${bytes(installer.size)}` : "missing"}
-          </dd>
-          <dt className="text-muted">Signature</dt>
-          <dd className="truncate">{sig ? sig.file.name : "missing"}</dd>
-          {sidecar && (
-            <>
-              <dt className="text-muted">Version</dt>
-              <dd className="font-medium">{sidecar.version}</dd>
-              <dt className="text-muted">Target</dt>
-              <dd className="inline-flex items-center gap-1.5">
-                <OsIcon os={sidecar.os} size={16} />
-                {osName(sidecar.os)} · {sidecar.arch}
-              </dd>
-              <dt className="text-muted">Signed file</dt>
-              <dd className="truncate">
-                {sidecar.filename} · {bytes(sidecar.size)}
-              </dd>
-              <dt className="text-muted">Key id</dt>
-              <dd className="font-mono text-xs leading-5">{sidecar.key_id}</dd>
-            </>
-          )}
-        </dl>
+      {pairs.length > 0 && (
+        <ul className="divide-y divide-outline rounded-xl border border-outline text-sm">
+          {pairs.map((p) => (
+            <PairRow
+              key={p.key}
+              p={p}
+              progress={uploading?.key === p.key ? uploading.progress : null}
+              busy={busy}
+              onRemove={() => {
+                remove([p.installer, p.sig]);
+                forget([p.key]);
+              }}
+            />
+          ))}
+        </ul>
       )}
-      {sigError && <ErrorBox error={`${sig?.file.name} is not a usable signature: ${sigError}`} />}
-      {mismatch && <ErrorBox error={mismatch} />}
       {ignored.length > 0 && (
         <p className="text-xs text-warning">
-          Ignored {ignored.join(", ")}: only one .pkg or .msi and one .sig are used.
+          Ignored {ignored.map((f) => f.name).join(", ")}: only .pkg and .msi installers and their
+          .sig files are uploaded.
         </p>
       )}
-      {error && <ErrorBox error={error} />}
 
-      {(installer || sig) && (
+      {pairs.length > 0 && (
         <label className="flex flex-wrap items-center gap-3 text-sm">
           <span className="text-muted">Rollout once published</span>
           <input
@@ -446,25 +479,79 @@ function UploadRelease({ onUploaded }: { onUploaded: () => void }) {
           <span className="text-xs text-muted">{formatRollout(rollout)}</span>
         </label>
       )}
-      {progress !== null && (
-        <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
-          <div
-            className="h-full bg-primary transition-[width]"
-            style={{ width: `${Math.round(progress * 100)}%` }}
-          />
-        </div>
-      )}
-      {(installer || sig) && (
+      {pairs.length > 0 && (
         <div className="flex justify-end gap-2">
-          <button className="btn-text" disabled={progress !== null} onClick={clear}>
+          <button className="btn-text" disabled={busy} onClick={clear}>
             Clear
           </button>
-          <button className="btn-primary" disabled={!ready} onClick={() => void upload()}>
+          <button
+            className="btn-primary"
+            disabled={busy || ready.length === 0}
+            onClick={() => void upload()}
+          >
             <Icon name="upload" size={18} />
-            {progress !== null ? `Uploading ${Math.round(progress * 100)}%` : "Upload draft"}
+            {busy
+              ? `Uploading ${at} of ${ready.length}`
+              : ready.length > 1
+                ? `Upload ${ready.length} drafts`
+                : "Upload draft"}
           </button>
         </div>
       )}
     </section>
+  );
+}
+
+function PairRow({
+  p,
+  progress,
+  busy,
+  onRemove,
+}: {
+  p: PairState;
+  progress: number | null;
+  busy: boolean;
+  onRemove: () => void;
+}) {
+  const s = p.sidecar;
+  return (
+    <li className="flex items-start gap-3 px-4 py-3">
+      {s ? <OsIcon os={s.os} size={20} /> : <Icon name="file" size={20} className="text-muted" />}
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <div className="font-medium">
+          {s ? `${s.version} · ${target(s)}` : (p.installer ?? p.sig)?.name}
+        </div>
+        <div className="truncate text-xs text-muted">
+          {p.installer ? `${p.installer.name} · ${bytes(p.installer.size)}` : "installer missing"}
+          {" + "}
+          {p.sig ? p.sig.name : ".sig missing"}
+        </div>
+        {s && <div className="font-mono text-xs text-muted">key {s.key_id}</div>}
+        {progress !== null ? (
+          <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
+            <div
+              className="h-full bg-primary transition-[width]"
+              style={{ width: `${Math.round(progress * 100)}%` }}
+            />
+          </div>
+        ) : p.issue || p.failed ? (
+          <p className="text-xs text-error">{p.issue ?? p.failed}</p>
+        ) : (
+          <p className="inline-flex items-center gap-1 text-xs text-success">
+            <Icon name="check" size={14} />
+            Ready
+          </p>
+        )}
+      </div>
+      <button
+        className="btn-text btn-sm"
+        aria-label={`Remove ${p.key}`}
+        title="Remove"
+        disabled={busy}
+        onClick={onRemove}
+      >
+        <Icon name="close" size={16} />
+      </button>
+    </li>
   );
 }

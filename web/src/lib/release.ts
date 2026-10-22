@@ -108,16 +108,39 @@ export function releaseFileMatches(
 const isInstaller = (name: string) => /\.(pkg|msi)$/i.test(name);
 const isSig = (name: string) => /\.sig$/i.test(name);
 
-/** Sorts dropped files into an installer and its .sig; everything else is ignored. */
-export function pickPair<F extends { name: string }>(
+export type FilePair<F> = { installer: F | null; sig: F | null };
+
+/**
+ * Sorts dropped files into installers and their sidecars: a .sig goes with the
+ * installer it is named after (`<installer>.sig`). A lone installer and a lone
+ * .sig left over are paired anyway; any other leftover is a pair with a
+ * missing half. Files that are neither are ignored.
+ */
+export function pairFiles<F extends { name: string }>(
   files: readonly F[],
-): { installer: F | null; sig: F | null; ignored: F[] } {
-  const installers = files.filter((f) => isInstaller(f.name));
+): { pairs: FilePair<F>[]; ignored: F[] } {
   const sigs = files.filter((f) => isSig(f.name));
-  const named = installers.find((i) => sigs.some((s) => s.name === `${i.name}.sig`));
-  const installer = named ?? installers[0] ?? null;
-  const sig = (named && sigs.find((s) => s.name === `${named.name}.sig`)) || sigs[0] || null;
-  return { installer, sig, ignored: files.filter((f) => f !== installer && f !== sig) };
+  const pairs: FilePair<F>[] = files
+    .filter((f) => isInstaller(f.name))
+    .map((installer) => ({
+      installer,
+      sig: sigs.find((s) => s.name.toLowerCase() === `${installer.name.toLowerCase()}.sig`) ?? null,
+    }));
+  const loose = sigs.filter((s) => !pairs.some((p) => p.sig === s));
+  const alone = pairs.filter((p) => !p.sig);
+  if (alone.length === 1 && loose.length === 1) alone[0]!.sig = loose.pop()!;
+  for (const sig of loose) pairs.push({ installer: null, sig });
+  return { pairs, ignored: files.filter((f) => !isInstaller(f.name) && !isSig(f.name)) };
+}
+
+/** `prev` with `added` merged in; a file with the name of one already there replaces it. */
+export function addReleaseFiles<F extends { name: string }>(
+  prev: readonly F[],
+  added: readonly F[],
+): F[] {
+  const byName = new Map(prev.map((f) => [f.name, f]));
+  for (const f of added) byName.set(f.name, f);
+  return [...byName.values()];
 }
 
 export function formatRollout(pct: number): string {

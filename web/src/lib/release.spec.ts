@@ -4,7 +4,8 @@ import {
   MAX_SIDECAR_BYTES,
   formatRollout,
   parseSidecar,
-  pickPair,
+  addReleaseFiles,
+  pairFiles,
   releaseFileMatches,
   uploadErrorMessage,
 } from "./release";
@@ -115,36 +116,71 @@ describe("releaseFileMatches", () => {
   });
 });
 
-describe("pickPair", () => {
+describe("pairFiles", () => {
   const f = (name: string) => ({ name });
 
-  test("takes the installer and its sidecar dropped together, in either order", () => {
-    const pkg = f("RemoteAgent.pkg");
+  test("a macOS, Windows and Windows 7 release dropped together make three pairs", () => {
+    const pkg = f("RemoteAgent-0.3.14.pkg");
+    const msi = f("RemoteAgent-0.3.14-x64.msi");
+    const win7 = f("RemoteAgent-0.3.14-x64-win7.msi");
+    const pkgSig = f(`${pkg.name}.sig`);
+    const msiSig = f(`${msi.name}.sig`);
+    const win7Sig = f(`${win7.name}.sig`);
+    const sums = [f(`${msi.name}.sha256`), f(`${win7.name}.sha256`)];
+    expect(pairFiles([win7Sig, pkg, sums[0]!, msiSig, win7, pkgSig, msi, sums[1]!])).toEqual({
+      pairs: [
+        { installer: pkg, sig: pkgSig },
+        { installer: win7, sig: win7Sig },
+        { installer: msi, sig: msiSig },
+      ],
+      ignored: sums,
+    });
+  });
+
+  test("the sidecar name is matched without regard to case", () => {
+    const msi = f("RemoteAgent.MSI");
+    const sig = f("remoteagent.msi.sig");
+    expect(pairFiles([msi, f("RemoteAgent.pkg"), sig]).pairs[0]).toEqual({ installer: msi, sig });
+  });
+
+  test("a single file is a pair with its other half missing", () => {
+    const msi = f("RemoteAgent.msi");
     const sig = f("RemoteAgent.pkg.sig");
-    expect([pickPair([sig, pkg]), pickPair([pkg, sig])]).toEqual([
-      { installer: pkg, sig, ignored: [] },
-      { installer: pkg, sig, ignored: [] },
+    expect([pairFiles([msi]), pairFiles([sig])]).toEqual([
+      { pairs: [{ installer: msi, sig: null }], ignored: [] },
+      { pairs: [{ installer: null, sig }], ignored: [] },
     ]);
   });
 
-  test("a single file fills only its own slot", () => {
-    const msi = f("RemoteAgent.MSI");
-    expect(pickPair([msi])).toEqual({ installer: msi, sig: null, ignored: [] });
+  test("one renamed installer and one leftover .sig are still paired", () => {
+    const named = f("a.pkg");
+    const namedSig = f("a.pkg.sig");
+    const renamed = f("b.msi");
+    const other = f("other.sig");
+    expect(pairFiles([named, renamed, other, namedSig]).pairs).toEqual([
+      { installer: named, sig: namedSig },
+      { installer: renamed, sig: other },
+    ]);
   });
 
-  test("among several installers, the one named by the sidecar wins", () => {
-    const mac = f("RemoteAgent.pkg");
-    const win = f("RemoteAgent.msi");
-    const sig = f("RemoteAgent.msi.sig");
-    expect(pickPair([mac, sig, win])).toEqual({ installer: win, sig, ignored: [mac] });
+  test("leftovers that cannot be told apart stay unpaired", () => {
+    const [a, b, x, y] = [f("a.pkg"), f("b.msi"), f("x.sig"), f("y.sig")];
+    expect(pairFiles([a, b, x, y]).pairs).toEqual([
+      { installer: a, sig: null },
+      { installer: b, sig: null },
+      { installer: null, sig: x },
+      { installer: null, sig: y },
+    ]);
   });
+});
 
-  test("without a name match the first of each kind wins and the rest are ignored", () => {
-    const a = f("a.pkg");
-    const b = f("b.pkg");
-    const sig = f("other.sig");
-    const txt = f("notes.txt");
-    expect(pickPair([txt, a, b, sig])).toEqual({ installer: a, sig, ignored: [txt, b] });
+describe("addReleaseFiles", () => {
+  test("adds new names and replaces a file picked again under the same name", () => {
+    const pkg = { name: "a.pkg", v: 1 };
+    const sig = { name: "a.pkg.sig", v: 1 };
+    const again = { name: "a.pkg", v: 2 };
+    const msi = { name: "b.msi", v: 1 };
+    expect(addReleaseFiles([pkg, sig], [again, msi])).toEqual([again, sig, msi]);
   });
 });
 
