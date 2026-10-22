@@ -32,14 +32,22 @@ Device    { "id","name","hostname","os":"darwin|windows|linux","arch","agent_ver
             "pinned_clients":[{"client_key_id","label","approved_at"}],   // informational mirror
             "latest_version":string|null,"update_available":bool,      // newest published release for its os/arch
             "update_state":""|"checking|downloading|waiting_idle|installing|up_to_date|failed|rolled_back",
-            "update_from","update_version","update_error","update_at":ts|null }
+            "update_from","update_version","update_error","update_at":ts|null,
+            "folder_id":uuid|null,"tag_ids":[uuid],"favorite":bool,"notes":string,  // the owner's organization
+            "last_connected_at":ts|null,                                          // the owner's latest connected session
+            "info":HostInfo|null,"info_at":ts|null,                               // latest device.info report (§3)
+            "features":[string],                                                  // the agent's optional features
+            "previews":bool }                                                     // the owner allows screen previews (§3)
+Folder    { "id","parent_id":uuid|null,"name","position":int,"created_at" }      // a tree per user, at most 8 levels
+Tag       { "id","name","color":0..11,"created_at" }                             // color = palette slot
 Monitor   { "id":int,"name","x","y","width","height","scale":float,"primary":bool }
 Session   { "id","device_id","device_name","user_id","user_email","client_key_id","client_key_label",
             "state":"pending|active|ended|failed","created_at","connected_at","ended_at","end_reason",
             "ice_path":"host|srflx|relay"|null,"bytes_sent","bytes_recv","client_ip","agent_ip","duration_s":int|null }
 AuditEvent{ "id":int,"ts","actor":"user|agent|admin|system","event","user_id","user_email",
             "device_id","device_name","session_id","ip","meta":{} }
-ClientKey { "id","label","public_key":"<b64 SPKI>","created_at","last_used_at","revoked_at" }
+ClientKey { "id","label","public_key":"<b64 SPKI>","created_at","last_used_at","revoked_at",
+            "preview_key":"<b64 SPKI, ECDH P-256>"|null }                         // §4.1
 Passkey   { "id","name","created_at","last_used_at","transports":[string] }
 LoginSession { "id","ip","user_agent","created_at","last_seen_at","expires_at","current":bool }
 Release   { "id","version","os":"darwin|windows","arch":"amd64|arm64|universal|amd64-win7","url":"/v1/releases/<id>/file",
@@ -55,7 +63,7 @@ Release   { "id","version","os":"darwin|windows","arch":"amd64|arm64|universal|a
 |---|---|---|
 | GET | `/healthz` (via Caddy also `/v1/healthz`) | `{"ok":true,"db":true}` |
 | GET | `/v1/releases/{id}/file` | the installer of a published release (`Content-Disposition` = its filename, `X-Content-SHA256`, Range supported); 404 when unpublished, except for admins |
-| GET | `/v1/config` | `{"product_name":"remotectl","version","signup_allowed":bool,"webauthn":{"rp_id","origin"},"downloads":{"macos":url\|null,"windows":url\|null}}` |
+| GET | `/v1/config` | `{"product_name":"remotectl","version","signup_allowed":bool,"webauthn":{"rp_id","origin"},"downloads":{"macos":url\|null,"windows":url\|null},"features":["organization","device_info","previews"],"screen_previews":bool}`; `features` lists optional APIs (absent on older servers) |
 
 ### Auth
 | Method | Path | Body → Response |
@@ -90,13 +98,24 @@ Rate limit: 10 failed attempts / 15 min per IP and per email → 429.
 | GET | `/v1/client-keys` | → `{items:[ClientKey]}` |
 | POST | `/v1/client-keys` | `{public_key: b64 SPKI P-256, label}` → `{client_key}` (idempotent on public_key for the same user) |
 | DELETE | `/v1/client-keys/{id}` | revoke → `{}`; server pushes `client_key.revoked` to the user's online agents |
+| PUT | `/v1/client-keys/{id}/preview-key` | `{public_key: b64 SPKI ECDH P-256, signature: b64 P1363 by the client key over PreviewKeyMessage}` → `{client_key}` (§4.1). 400 `bad_signature`; a different key drops the previews sealed to the old one |
+| GET | `/v1/previews?client_key_id=&device_ids=a,b` | → `{items:[preview]}`: the latest stored preview of each listed device of the caller (≤ 100) sealed to that browser key's current preview key; empty while the admin setting is off |
 
 ### Devices
 | Method | Path | Body → Response |
 |---|---|---|
 | GET | `/v1/devices` | → `{items:[Device]}` (only the caller's) |
 | GET | `/v1/devices/{id}` | → `{device}` |
-| PATCH | `/v1/devices/{id}` | `{name?, auto_accept?}` → `{device}`; pushes `device.update` to the agent |
+| PATCH | `/v1/devices/{id}` | `{name?, auto_accept?, previews?, folder_id?:uuid\|null, favorite?, notes? (≤ 4000 chars, trimmed), tag_ids? (full replacement, ≤ 20)}` → `{device}`; pushes `device.update` to the agent when `name` or `auto_accept` is present. Folder and tags must be the caller's (404 otherwise) |
+| POST | `/v1/devices/bulk` | `{device_ids (1..500), folder_id?:uuid\|null, favorite?, add_tag_ids?, remove_tag_ids?}` → `{items:[Device]}`; one transaction, 404 if any id is not the caller's, 400 if a device would carry more than 20 tags |
+| GET | `/v1/folders` | → `{items:[Folder]}` (ordered by position, then name) |
+| POST | `/v1/folders` | `{name (1..64), parent_id?:uuid\|null}` → `{folder}` (appended last among its siblings). 409 when a sibling has that name (case-insensitive); 400 past 8 levels or 500 folders |
+| PATCH | `/v1/folders/{id}` | `{name?, parent_id?:uuid\|null, position?}` → `{folder}`; `"parent_id": null` moves it to the top level. 400 when moving into itself or a subfolder, or past 8 levels |
+| DELETE | `/v1/folders/{id}` | → `{}`; its devices and subfolders move to its parent (a subfolder whose name is taken there becomes `name (2)`) |
+| GET | `/v1/tags` | → `{items:[Tag]}` |
+| POST | `/v1/tags` | `{name (1..32), color? (0..11, default 0)}` → `{tag}`; 409 on a duplicate name (case-insensitive); at most 200 |
+| PATCH | `/v1/tags/{id}` | `{name?, color?}` → `{tag}` |
+| DELETE | `/v1/tags/{id}` | → `{}`; removed from every device |
 | DELETE | `/v1/devices/{id}` | → `{}`; marks removed, closes its socket, agent auth refused afterwards |
 | POST | `/v1/devices/{id}/update` | `{force?:bool}` → 202 `{version}`; sends `update.check{explicit:true,force}`. 409 `device_offline` \| `up_to_date` \| `unsupported` (Linux demo). Audited `agent.update.requested` |
 | POST | `/v1/enroll-tokens` | `{}` → `{token:"XXXX-XXXX", expires_at}` (charset `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`, 15 min, single use, stored hashed) |
@@ -137,7 +156,7 @@ Rate limit: 10 failed attempts / 15 min per IP and per email → 429.
 | DELETE | `/v1/admin/releases/{id}` | → `{}`; removes the file |
 | POST | `/v1/admin/devices/{id}/update` | `{force?:bool}` → 202 `{version}`; as `/v1/devices/{id}/update` for any device |
 | POST | `/v1/admin/updates/push` | `{os?:"darwin"\|"windows"}` → `{queued:int}`; "Update all outdated": `update.check{explicit:true}` (never forced) to every online outdated device, spread over up to 10 min |
-| GET / PUT | `/v1/admin/settings` | `{signup_allowed:bool, default_auto_accept:bool, max_session_hours:int, download_macos_url, download_windows_url}` |
+| GET / PUT | `/v1/admin/settings` | `{signup_allowed:bool, default_auto_accept:bool, max_session_hours:int, download_macos_url, download_windows_url, screen_previews:bool}`; turning `screen_previews` off drops every stored preview |
 
 `GET /v1/admin/overview` →
 ```jsonc
@@ -208,8 +227,52 @@ Rules:
 - Server pushes `device.update{name,auto_accept}`, `client_key.revoked{public_key}`.
 - `session.file{session_id, files:[FileRecord]}` (audit only, never relayed): one record per finished file transfer, batched (≤ 50 records per message). `FileRecord = {xfer, direction: "upload"|"download", name, dir, size, bytes, sha256, result: "ok"|"cancelled"|"error", error, duration_ms}`; `upload` = browser → device. The server accepts it for a session of this device that connected, also after it ended (records are flushed just before `session.end`), and audits each record as above; batches over 50 are rejected with `bad_request`.
 
+### Optional features
+
+Both sides list optional message sets they accept: the agent in `hello.capabilities.features`, the server in `hello_ack.features`. Neither sends a feature's messages unless the other listed it (the server answers unknown types with `error`). Features: `device_info`, `preview` (the agent lists it when its backend can take snapshots).
+
+### Device info (feature `device_info`)
+
+The agent sends `device.info{info: HostInfo}` right after `hello_ack` (once it has a CPU reading, about a second), at least every 60 s, and within 10 s when the console user or the lock state changes (checked every 5 s). The server keeps the latest per device (`Device.info`, `info_at`), drops reports less than 5 s after the previous one, and pushes `device.info{device_id, info, at}` to the owner's browsers.
+
+```jsonc
+HostInfo { "os_name":"macOS","os_version":"15.1","os_build":"24B83",
+           "user":"alice"|""|null,          // console user; "" = nobody signed in; null = cannot tell (Linux demo)
+           "idle_s":int|null, "uptime_s":int, "locked":bool|null,
+           "cpu_pct":0..100|null,           // over the last ≥ 1 s
+           "cpu_count":int, "mem_total":bytes, "mem_used":bytes,
+           "disks":[{"name","mount","fs","total","free"}] }   // ≤ 32; free = available to the user
+```
+
+Sources: macOS sysctl, Mach host statistics (used = app + wired + compressed), CGEventSource idle time, SCDynamicStore console user, the startup volume and local volumes under `/Volumes`. Windows: registry `CurrentVersion` (ProductName shows Windows 11 from build 22000), GetSystemTimes, GlobalMemoryStatusEx, fixed drives with a letter; the console user, idle time and lock state (input desktop other than `Default`) come from the session helper, and the service drops the helper's reports when the server did not list the feature. Linux (demo device): /proc and statfs; no user, idle or lock. The server truncates text to 128 characters, clamps numbers and keeps at most 32 disks with a size.
+
+### Screen previews (feature `preview`)
+
+The dashboard shows a small picture of each device's screen. Pictures are sealed on the device for one browser's preview key (§4.1); the server relays and stores them but cannot read or forge them.
+
+```
+Browser                        Server                                  Agent
+ ── preview.watch{client_key_id, device_ids ≤100} ─▶   (replaces this socket's set; [] = stop)
+ ── GET /v1/previews ─▶  latest stored previews (first paint)
+                               per watched device, at most once a minute:
+                               ── preview.request{req, recipients[≤5]} ─▶
+                                                                    gate, one snapshot, seal per recipient
+                               ◀── preview{req, client_key_id, …} ──  (one per recipient)
+                               ◀── preview.unavailable{req, client_key_id?, reason, retry_after_s?} ──
+ ◀── preview{device_id, …, received_at} / preview.unavailable{device_id, reason, at} ──
+```
+
+- The browser watches the devices whose tiles are on screen (debounced 300 ms; `[]` while the tab is hidden; sent again after a reconnect), and only devices with `previews`, the `preview` feature and no session open in that tab (an open session shows live video).
+- Server, per watched device: the first request goes out within 15 s of the watch (unless a preview under a minute old is stored), then one a minute. It asks only when the admin setting and the device's `previews` are on, the device is online with the feature and not busy. Recipients are the watching browser keys with a preview key that the device has pinned (`device_pinned_clients`); a watching key that is not pinned gets `preview.unavailable{reason:"untrusted"}` instead (one session from that browser pins it, §4). A request not answered within 20 s lapses.
+- `preview.request.recipients[]` = `{client_key:{id, public_key, label, created_at}, preview_key, preview_key_sig, user:{id,email}}`.
+- Agent: refuses everyone with `preview.unavailable` (no `client_key_id`) when its "Show screen previews" switch is off (`previews_off`), when paused (`paused`), installing an update (`updating`), the device asks every time (`ask_every_time`, i.e. `auto_accept` off), screen permission is missing (`no_permission`) or a session is running (`in_session`). Per recipient: `untrusted` unless that exact key is pinned for the recipient's user (account-level trust is not enough), `bad_key` when the client key's signature over the preview key does not verify, `too_soon` with `retry_after_s` within 30 s of the previous preview to that key (the server reschedules; browsers never see it). Then one snapshot of the primary monitor (`rc_snapshot`, ≤ 480 px on the long side, reused for 20 s) — `locked` on the lock screen or a secure desktop, `display_off` while the display sleeps, `capture_failed`, `unsupported`, and on Windows `no_console` when no session helper runs — encoded to JPEG under 45 KB (quality 70 → 35, 480 → 360 px) and sealed for each remaining recipient.
+- `preview` (agent → server) = `{req, client_key_id, captured_at_ms, monitor_id, width, height, mime:"image/jpeg", eph_pub, iv, ciphertext, sig}` (§4.1). The server checks that it answers its request for that key, that the ciphertext is at most 46080 bytes and the size at most 640×640, and the device's signature; it relays it with `device_id` and `received_at` to the sockets watching that device with that key, keeps the latest per device and key in memory (at most 2000) and in `device_previews` (written at most every 10 min, pruned after 7 days), and audits `preview.served` once per device, key and day.
+- The browser opens a preview only with the device key it pinned itself (§4: a preview never pins a key; an unpinned device shows "connect once", a changed key "identity changed"), verifies before decrypting, ignores one not newer than what it shows, and keeps pictures as object URLs in memory only (at most 150). A picture older than 2 minutes, or of an offline device, is shown dimmed with its age.
+- Turning a device's `previews` off, removing it, or turning the admin setting off drops its stored previews.
+
 ### Browser extras
-- Server pushes `device.status{device_id,online,status,last_seen_at}` to all of the owner's browser sockets on connect/disconnect/disable/remove.
+- Server pushes `device.status{device_id,online,status,last_seen_at,busy}` to all of the owner's browser sockets on connect/disconnect/disable/remove, and whenever a session of the device is created or ends (`busy` = a pending or active session exists; only meaningful while online).
+- Server pushes `org.changed{kind:"devices"|"folders"|"tags", ids:[uuid]}` to all of the owner's browser sockets after any organization change (including the one that made it), so open tabs refetch.
 - Server pushes `device.update_status{device_id,state,from,version,error,at}` to the owner's browser sockets when a device's update state changes.
 
 ## 4. End-to-end trust (DTLS fingerprint signing)
@@ -220,7 +283,17 @@ Rules:
 - Agent: Ed25519 device key → 64-byte sig → base64 std.
 - Each side recomputes the fingerprint from the **remote** SDP it received and verifies the remote's signature over it. Mismatch → `session.end{bad_signature}`, nothing is connected.
 - Browser pins `device.public_key` per device id in IndexedDB store `device_pins` on first session; a different key later → hard warning screen; the user may explicitly re-trust.
-- Agent pins client keys by `sha256(SPKI DER)` hex in its local store (authoritative). A pin records the `user.id` that approved it (`user_id`; pins from before 0.3.9 have none and count for the device's owner, the only user the server lets open sessions to it; a pinned key fills its in on use). A browser is **trusted** when its key is pinned or a pin was approved by the same user: "Allow and remember" trusts the account on that device, so the user's other browsers connect without the new-browser prompt. Untrusted key: since 0.3.15 the agent treats it as "Allow and remember" without asking (pins it for the session's user, then applies `auto_accept` as for a trusted key) unless the device-local preference **Ask before new browsers connect** is on (tray / device console checkbox, `prefs.json` `ask_new_browsers` in the data dir, default off). With it on: device prompt "Allow this new browser: <label>, first seen <created_at>? (user <email>)" with Deny / Allow once / Allow and remember. Trusted + `auto_accept` → no prompt; trusted + !auto_accept → light prompt "Allow session from <label>?". Prompt timeout 60 s → `not_approved`. Revoking a client key drops its pin and the account trust that came with it.
+- Agent pins client keys by `sha256(SPKI DER)` hex in its local store (authoritative). A pin records the `user.id` that approved it (`user_id`; pins from before 0.3.9 have none and count for the device's owner, the only user the server lets open sessions to it; a pinned key fills its in on use). A browser is **trusted** when its key is pinned or a pin was approved by the same user: "Allow and remember" trusts the account on that device, so the user's other browsers connect without the new-browser prompt. Untrusted key: since 0.3.15 the agent treats it as "Allow and remember" without asking (pins it for the session's user, then applies `auto_accept` as for a trusted key) unless the device-local preference **Ask before new browsers connect** is on (tray / device console checkbox, `prefs.json` `ask_new_browsers` in the data dir, default off). With it on: device prompt "Allow this new browser: <label>, first seen <created_at>? (user <email>)" with Deny / Allow once / Allow and remember. Trusted + `auto_accept` → no prompt; trusted + !auto_accept → light prompt "Allow session from <label>?". Prompt timeout 60 s → `not_approved`. Revoking a client key drops its pin and the account trust that came with it. An approved session from a browser that is trusted through its account but not pinned itself also pins that browser's key, so it can receive screen previews (§3), which need the exact key pinned.
+
+### 4.1 Screen preview keys
+
+- **Preview key.** Besides its ECDSA client key, each browser profile holds a non-extractable ECDH P-256 key in IndexedDB (`preview_keys`, by user id). Its SPKI is registered with `PUT /v1/client-keys/{id}/preview-key`, signed by the client key (P1363) over
+  `PreviewKeyMessage = "remotectl-preview-key-v1\n" + ck_sha + "\n" + pk_sha`, where `ck_sha` and `pk_sha` are the lowercase hex SHA-256 of the client key's and the preview key's SPKI DER. Agents check this signature, so a key the server substitutes is refused (`bad_key`).
+- **Seal (agent).** An ephemeral P-256 key; `shared` = ECDH(ephemeral, preview key) = the 32-byte X coordinate (WebCrypto `deriveBits(256)`); `key` = HKDF-SHA256(`shared`, salt = the 65-byte uncompressed ephemeral public key, info = `"remotectl-preview-v1\n" + device_id + "\n" + ck_sha + "\n" + pk_sha`, 32 bytes); `ciphertext` = AES-256-GCM(`key`, 12-byte random `iv`, JPEG, additional data = the header) with the 16-byte tag appended.
+- **Header**: one line each, no trailing newline: `remotectl-preview-v1`, device_id (lowercase), ck_sha, pk_sha, captured_at_ms, monitor_id, width, height, mime, base64(eph_pub), base64(iv).
+- **Signature**: Ed25519 by the device key over `header + "\n" + hex(sha256(ciphertext))`.
+- **Open (browser)**: rebuild the header, verify the signature with the device key this browser pinned, then decrypt. The signature binds the device (the server cannot show one device's screen on another's tile) and `captured_at_ms` (it cannot pass an old picture off as new; it can only withhold new ones). Decrypting alone proves nothing: anyone who knows the preview key's public half can encrypt to it.
+- Vectors: `preview` in `docs/test-vectors.json` (fixed keys, the expected header, ciphertext and signature, and cases that must fail); `proto/preview.go` implements both sides for Go, `web/src/lib/previewCrypto.ts` the browser's.
 
 ## 5. Data channels
 
@@ -380,8 +453,8 @@ Rules:
 
 ## 6. Agent device-local surfaces
 
-- macOS/Windows: tray icon (red during a session) with Pause / Ask before new browsers connect / End session (kill switch) / Quit, native border overlay, native consent prompt. An unenrolled macOS agent asks for the token in a dialog (before the permission prompts, which follow enrollment) and keeps an **Enroll this device…** menu item that reopens it; an agent waiting for enrollment also picks up `remote-agent enroll --server … --token …` run in a terminal by the same user (it polls its state file every 2 s).
-- Linux Docker demo device: a local "device console" web page (port 5562 on the host) stands in for the physical screen: enrollment token entry, consent prompts, kill switch, Ask before new browsers connect, pinned browsers list, session indicator.
+- macOS/Windows: tray icon (red during a session) with Pause / Ask before new browsers connect / Show screen previews (on by default; `prefs.json` `no_screen_previews`; for 5 minutes after one the menu says "Screen preview sent to <browser> at <time>") / End session (kill switch) / Quit, native border overlay, native consent prompt. An unenrolled macOS agent asks for the token in a dialog (before the permission prompts, which follow enrollment) and keeps an **Enroll this device…** menu item that reopens it; an agent waiting for enrollment also picks up `remote-agent enroll --server … --token …` run in a terminal by the same user (it polls its state file every 2 s).
+- Linux Docker demo device: a local "device console" web page (port 5562 on the host) stands in for the physical screen: enrollment token entry, consent prompts, kill switch, Ask before new browsers connect, Show screen previews, pinned browsers list, session indicator.
 
 ## 7. Agent updates
 
