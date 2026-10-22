@@ -1,15 +1,18 @@
 import { useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router";
 import type { DragEvent, ReactNode } from "react";
 import { api, errorMessage } from "../../api/client";
 import type { FolderId, Tag } from "../../api/types";
 import { useDirectory } from "../../app/directory";
+import { useWorkspaceState } from "../../app/workspace";
 import { Icon } from "../../components/icons";
 import type { IconName } from "../../components/icons";
 import { Menu } from "../../components/menu";
 import { TagDot, useConfirm, usePrompt, useToast } from "../../components/ui";
 import { viewCounts } from "../../lib/deviceFilters";
 import type { DashView, FilterCtx, SmartView } from "../../lib/deviceFilters";
-import { viewKey } from "../../lib/dashboardState";
+import { parseDashParams, toDashParams, viewKey } from "../../lib/dashboardState";
+import { useNow } from "../../lib/hooks";
 import { buildTree, canMoveFolder, deviceCounts, flattenTree } from "../../lib/folders";
 import { useCreateFolder, useOrgDialog } from "./dialogs";
 import { DEVICE_DRAG } from "./DeviceTile";
@@ -68,14 +71,14 @@ function Row({
   const [over, setOver] = useState(false);
   return (
     <li
-      className={`group flex items-center rounded-full pr-1 text-sm ${
+      className={`group flex items-center rounded-full pr-1 text-[13px] ${
         over
           ? "bg-primary-soft ring-2 ring-primary"
           : active
             ? "bg-primary-soft text-primary"
             : "hover:bg-surface-2"
       }`}
-      style={{ paddingLeft: 4 + depth * 14 }}
+      style={{ paddingLeft: 12 + depth * 14 }}
       draggable={draggable}
       onDragStart={onDragStart}
       onDragOver={(e) => {
@@ -92,10 +95,10 @@ function Row({
         onDrop(e);
       }}
     >
-      {lead ?? <span className="w-5" />}
+      {lead ?? <span className="w-4 shrink-0" />}
       <button
         type="button"
-        className="flex min-w-0 flex-1 items-center gap-2.5 py-1.5 pr-1 pl-1 text-left font-medium"
+        className="flex min-w-0 flex-1 items-center gap-2 py-1 pr-1 pl-1 text-left"
         aria-current={active ? "page" : undefined}
         onClick={onClick}
       >
@@ -215,13 +218,13 @@ export function DashboardPane({
   };
 
   return (
-    <nav aria-label="Device views" className="space-y-5">
+    <nav aria-label="Device views" className="space-y-3">
       <ul className="space-y-0.5">
         {SMART.filter((s) => organization || !s.org).map((s) => (
           <Row
             key={s.view}
             active={current === s.view}
-            icon={<Icon name={s.icon} size={18} />}
+            icon={<Icon name={s.icon} size={16} />}
             label={s.label}
             count={counts[s.view]}
             onClick={() => onView(s.view)}
@@ -233,20 +236,20 @@ export function DashboardPane({
 
       {organization && (
         <section>
-          <div className="mb-1 flex items-center justify-between px-3">
-            <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Folders</h2>
+          <div className="mb-0.5 flex items-center justify-between pr-1 pl-5">
+            <h2 className="text-[11px] font-medium tracking-wide text-muted uppercase">Folders</h2>
             <button
-              className="btn-text btn-sm -mr-2 px-1.5"
+              className="btn-text btn-sm px-1"
               aria-label="New folder"
               title="New folder"
               onClick={() => void createFolder(null)}
             >
-              <Icon name="add" size={18} />
+              <Icon name="add" size={16} />
             </button>
           </div>
           {rows.length === 0 ? (
-            <p className="px-3 text-xs text-muted">
-              Group devices by place, team or customer. Drag devices onto a folder to file them.
+            <p className="pr-2 pl-5 text-xs text-muted">
+              None yet. Add one, then drag devices onto it.
             </p>
           ) : (
             <ul className="space-y-0.5">
@@ -258,7 +261,7 @@ export function DashboardPane({
                   icon={
                     <Icon
                       name={children.length && !collapsed.has(f.id) ? "folderOpen" : "folder"}
-                      size={18}
+                      size={16}
                     />
                   }
                   label={f.name}
@@ -275,7 +278,7 @@ export function DashboardPane({
                     children.length ? (
                       <button
                         type="button"
-                        className="flex h-5 w-5 items-center justify-center rounded text-muted hover:text-text"
+                        className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted hover:text-text"
                         aria-label={collapsed.has(f.id) ? `Expand ${f.name}` : `Collapse ${f.name}`}
                         aria-expanded={!collapsed.has(f.id)}
                         onClick={() => onToggleFolder(f.id)}
@@ -329,21 +332,19 @@ export function DashboardPane({
 
       {organization && (
         <section>
-          <div className="mb-1 flex items-center justify-between px-3">
-            <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Tags</h2>
+          <div className="mb-0.5 flex items-center justify-between pr-1 pl-5">
+            <h2 className="text-[11px] font-medium tracking-wide text-muted uppercase">Tags</h2>
             <button
-              className="btn-text btn-sm -mr-2 px-1.5"
+              className="btn-text btn-sm px-1"
               aria-label="New tag"
               title="New tag"
               onClick={() => dialog({ kind: "tag", tag: null })}
             >
-              <Icon name="add" size={18} />
+              <Icon name="add" size={16} />
             </button>
           </div>
           {tags.length === 0 ? (
-            <p className="px-3 text-xs text-muted">
-              Tags label devices across folders, e.g. “Windows 7” or “Needs reboot”.
-            </p>
+            <p className="pr-2 pl-5 text-xs text-muted">None yet, e.g. “Windows 7”.</p>
           ) : (
             <ul className="space-y-0.5">
               {tags.map((t) => (
@@ -407,4 +408,62 @@ export function viewTitle(
     return tags.find((t) => t.id === view.tag)?.name ?? "Tag";
   }
   return SMART.find((s) => s.view === view)?.label ?? "All devices";
+}
+
+const COLLAPSED_KEY = "remotectl-folders-collapsed";
+
+function loadCollapsed(): Set<FolderId> {
+  try {
+    const v = JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]") as unknown;
+    return new Set(Array.isArray(v) ? v.filter((x): x is FolderId => typeof x === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * The device views as sub-navigation of "Devices" in the app sidebar: reads
+ * the view from the dashboard URL and navigates to /devices?view=…, keeping
+ * the dashboard's search and filters.
+ */
+export function DeviceViewsNav({ onNavigate }: { onNavigate?: () => void }) {
+  const { folders, tags } = useDirectory();
+  const ws = useWorkspaceState();
+  const now = useNow(60_000);
+  const loc = useLocation();
+  const navigate = useNavigate();
+  const [collapsed, setCollapsed] = useState(loadCollapsed);
+  const onDashboard = loc.pathname === "/devices";
+  const params = new URLSearchParams(onDashboard ? loc.search : "");
+  const view = onDashboard ? parseDashParams(params).view : ("" as DashView);
+  const openHere = useMemo(() => new Set<string>(ws.order), [ws.order]);
+  const ctx: FilterCtx = useMemo(
+    () => ({ folders, tags, now, openHere }),
+    [folders, tags, now, openHere],
+  );
+  return (
+    <DashboardPane
+      view={view}
+      ctx={ctx}
+      collapsed={collapsed}
+      onToggleFolder={(id) =>
+        setCollapsed((c) => {
+          const next = new Set(c);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          try {
+            localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
+          } catch {
+            // storage unavailable
+          }
+          return next;
+        })
+      }
+      onView={(v) => {
+        const next = toDashParams({ ...parseDashParams(params), view: v }).toString();
+        navigate(next ? `/devices?${next}` : "/devices");
+        onNavigate?.();
+      }}
+    />
+  );
 }

@@ -30,7 +30,8 @@ export const previewReasonText: Record<string, string> = {
 function localReason(d: Device, adminOn: boolean): string | null {
   if (!adminOn) return null;
   if (!d.previews) return "Previews are off for this device";
-  if (!d.features.includes("preview")) return d.online ? "Update the agent to see previews" : null;
+  // An agent without the feature simply has no preview yet; no notice on every tile.
+  if (!d.features.includes("preview")) return null;
   return null;
 }
 

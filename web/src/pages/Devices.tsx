@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, KeyboardEvent, MouseEvent, ReactNode } from "react";
 import { Link, useSearchParams } from "react-router";
-import type { Device, FolderId, Tag } from "../api/types";
+import type { Device, Tag } from "../api/types";
 import { useDirectory } from "../app/directory";
 import { useWorkspace, useWorkspaceState } from "../app/workspace";
 import { Icon } from "../components/icons";
@@ -24,11 +24,10 @@ import { useNow } from "../lib/hooks";
 import { gridNav, selectRange, toggleId } from "../lib/selection";
 import { LiveThumb } from "../session/LiveThumb";
 import { useDeviceActions } from "./devices/actions";
-import { DashboardPane, viewTitle } from "./devices/DashboardPane";
+import { DeviceViewsNav, viewTitle } from "./devices/DashboardPane";
 import { DeviceTable } from "./devices/DeviceTable";
 import { DEVICE_DRAG, DeviceTile } from "./devices/DeviceTile";
 import type { TileProps } from "./devices/DeviceTile";
-import { DeviceDialogs } from "./devices/dialogs";
 
 const CHIPS: { chip: Chip; label: string }[] = [
   { chip: "online", label: "Online" },
@@ -88,14 +87,6 @@ function onGridKey(e: KeyboardEvent<HTMLElement>) {
 type TileOverrides = Pick<TileProps, "media" | "status" | "primary">;
 
 export function Devices() {
-  return (
-    <DeviceDialogs>
-      <Dashboard />
-    </DeviceDialogs>
-  );
-}
-
-function Dashboard() {
   const dir = useDirectory();
   const { devices, folders, tags, organization, loading, error } = dir;
   const actions = useDeviceActions();
@@ -188,15 +179,6 @@ function Dashboard() {
     );
     e.dataTransfer.effectAllowed = "move";
   };
-
-  const collapsed = useMemo(() => new Set(prefs.collapsed), [prefs.collapsed]);
-  const toggleFolder = (id: FolderId) =>
-    setPrefs((p) => ({
-      ...p,
-      collapsed: p.collapsed.includes(id)
-        ? p.collapsed.filter((x) => x !== id)
-        : [...p.collapsed, id],
-    }));
 
   const overrides = (d: Device): TileOverrides =>
     actions.openHere(d)
@@ -365,20 +347,6 @@ function Dashboard() {
       </div>
     );
 
-  const pane = (
-    <DashboardPane
-      view={view}
-      onView={(v) => {
-        setPaneOpen(false);
-        setSelected(new Set());
-        setState({ view: v });
-      }}
-      ctx={ctx}
-      collapsed={collapsed}
-      onToggleFolder={toggleFolder}
-    />
-  );
-
   return (
     <>
       <PageHeader
@@ -406,9 +374,8 @@ function Dashboard() {
           <ErrorBox error={error} onRetry={() => void dir.reload()} />
         </div>
       )}
-      <div className="flex gap-6">
-        {devices.length > 0 && <aside className="hidden w-60 shrink-0 lg:block">{pane}</aside>}
-        <div className="min-w-0 flex-1 space-y-4">
+      <div>
+        <div className="min-w-0 space-y-4">
           {devices.length > 0 && (
             <div className="flex flex-wrap items-center gap-2">
               <button
@@ -430,7 +397,7 @@ function Dashboard() {
                   role="dialog"
                   aria-label="Device views"
                 >
-                  {pane}
+                  <DeviceViewsNav onNavigate={() => setPaneOpen(false)} />
                 </Popover>
               )}
               <label className="relative min-w-48 flex-1">

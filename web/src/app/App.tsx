@@ -11,6 +11,7 @@ import { Activity } from "../pages/Activity";
 import { AddDevice } from "../pages/AddDevice";
 import { DeviceDetail } from "../pages/DeviceDetail";
 import { Devices } from "../pages/Devices";
+import { DeviceDialogs } from "../pages/devices/dialogs";
 import { Login } from "../pages/Login";
 import { NotFound } from "../pages/NotFound";
 import { Settings } from "../pages/Settings";
@@ -42,7 +43,9 @@ function RequireAuth() {
       <WorkspaceProvider>
         <PreviewProvider>
           <PaletteProvider>
-            <Outlet />
+            <DeviceDialogs>
+              <Outlet />
+            </DeviceDialogs>
           </PaletteProvider>
         </PreviewProvider>
       </WorkspaceProvider>

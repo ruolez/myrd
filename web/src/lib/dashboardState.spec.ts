@@ -63,11 +63,11 @@ describe("dashboard params", () => {
 
 describe("parseDashPrefs", () => {
   test("round-trips", () => {
-    const p = { layout: "list", size: "l", sort: "name", collapsed: ["a" as FolderId] } as const;
-    expect(parseDashPrefs(serializeDashPrefs({ ...p, collapsed: [...p.collapsed] }))).toEqual(p);
+    const p = { layout: "list", size: "l", sort: "name" } as const;
+    expect(parseDashPrefs(serializeDashPrefs(p))).toEqual(p);
   });
 
-  test.each([null, "", "not json", "42", '{"layout":"huge","size":9,"sort":"x","collapsed":"no"}'])(
+  test.each([null, "", "not json", "42", '{"layout":"huge","size":9,"sort":"x"}'])(
     "falls back to defaults for %j",
     (raw) => {
       expect(parseDashPrefs(raw)).toEqual(DEFAULT_PREFS);

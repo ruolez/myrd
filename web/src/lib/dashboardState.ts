@@ -72,14 +72,12 @@ export type DashPrefs = {
   layout: Layout;
   size: TileSize;
   sort: SortKey;
-  collapsed: FolderId[];
 };
 
 export const DEFAULT_PREFS: DashPrefs = {
   layout: "grid",
   size: "m",
   sort: "status",
-  collapsed: [],
 };
 
 export const PREFS_KEY = "remotectl-dashboard";
@@ -96,9 +94,6 @@ export function parseDashPrefs(raw: string | null): DashPrefs {
     layout: v.layout === "list" ? "list" : "grid",
     size: v.size === "s" || v.size === "l" ? v.size : "m",
     sort: (SORTS as readonly unknown[]).includes(v.sort) ? (v.sort as SortKey) : DEFAULT_PREFS.sort,
-    collapsed: Array.isArray(v.collapsed)
-      ? v.collapsed.filter((x): x is FolderId => typeof x === "string").slice(0, 500)
-      : [],
   };
 }
 

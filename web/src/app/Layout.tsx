@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
 import { NavLink, Outlet, useLocation, useMatches } from "react-router";
 import { Icon } from "../components/icons";
 import type { IconName } from "../components/icons";
@@ -6,6 +7,7 @@ import { Brand, ErrorBox } from "../components/ui";
 import { signaling } from "../lib/signaling";
 import type { ConnState } from "../lib/signaling";
 import { useAuth, useUser } from "./auth";
+import { DeviceViewsNav } from "../pages/devices/DashboardPane";
 import { SessionCount, SessionDock } from "./SessionDock";
 import { useTheme } from "./theme";
 
@@ -33,7 +35,16 @@ function useSignalState(): ConnState {
   return s;
 }
 
-function NavList({ items, onNavigate }: { items: NavItem[]; onNavigate: () => void }) {
+function NavList({
+  items,
+  onNavigate,
+  below,
+}: {
+  items: NavItem[];
+  onNavigate: () => void;
+  /** Sub-navigation shown under an item (by its path). */
+  below?: Partial<Record<string, ReactNode>>;
+}) {
   return (
     <ul className="space-y-0.5">
       {items.map((it) => (
@@ -51,6 +62,7 @@ function NavList({ items, onNavigate }: { items: NavItem[]; onNavigate: () => vo
             <Icon name={it.icon} size={20} />
             {it.label}
           </NavLink>
+          {below?.[it.to] && <div className="mt-1 mb-2">{below[it.to]}</div>}
         </li>
       ))}
     </ul>
@@ -77,7 +89,16 @@ export function Layout() {
       <div className="px-3 pt-2">
         <Brand size={30} />
       </div>
-      <NavList items={mainNav} onNavigate={() => setOpen(false)} />
+      <NavList
+        items={mainNav}
+        onNavigate={() => setOpen(false)}
+        below={{
+          // The device views nest under Devices while a device page is open.
+          "/devices": loc.pathname.startsWith("/devices") ? (
+            <DeviceViewsNav onNavigate={() => setOpen(false)} />
+          ) : null,
+        }}
+      />
       <SessionDock />
       {user.is_admin && (
         <div>

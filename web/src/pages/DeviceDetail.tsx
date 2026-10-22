@@ -37,17 +37,9 @@ import {
 } from "../lib/health";
 import { useAsync, useNow, usePaged } from "../lib/hooks";
 import { updateBadge } from "../lib/update";
-import { DeviceDialogs, NOTES_MAX, useOrgDialog } from "./devices/dialogs";
+import { NOTES_MAX, useOrgDialog } from "./devices/dialogs";
 
 export function DeviceDetail() {
-  return (
-    <DeviceDialogs>
-      <DeviceDetailPage />
-    </DeviceDialogs>
-  );
-}
-
-function DeviceDetailPage() {
   const { id = "" } = useParams();
   const dir = useDirectory();
   const dialog = useOrgDialog();
