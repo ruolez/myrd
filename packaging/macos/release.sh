@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Builds and signs a macOS release: dist/macos/RemoteAgent-<VERSION>.pkg plus
-# its .sig sidecar, ready for Admin → Releases.
+# Builds and signs a macOS release: RemoteAgent-<VERSION>.pkg plus its .sig
+# sidecar, moved to dist/releases/<VERSION>/ (where `make release-windows`
+# puts that version's MSIs), ready for Admin → Releases.
 #   SERVER_URL   control plane baked into the app (default https://myrd.site)
 #   RELEASE_KEY  release private key file (default ~/.config/remotectl/release.key)
 # Needs the identity from make-signing-cert.sh (or DEVELOPER_ID_APP).
@@ -31,7 +32,10 @@ fi
 (cd "$ROOT/server" && "$ROOT/scripts/gohost.sh" run ./cmd/remotectl-release sign \
   --key-file "$RELEASE_KEY" --version "$VERSION" --os darwin --arch universal "$PKG")
 (cd "$ROOT/server" && "$ROOT/scripts/gohost.sh" run ./cmd/remotectl-release verify "$PKG")
+REL="$ROOT/dist/releases/$VERSION"
+mkdir -p "$REL"
+mv -f "$PKG" "$PKG.sig" "$REL/"
 echo
 echo "Upload both files in Admin → Releases:"
-echo "  $PKG"
-echo "  $PKG.sig"
+echo "  $REL/$(basename "$PKG")"
+echo "  $REL/$(basename "$PKG").sig"

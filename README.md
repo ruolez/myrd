@@ -149,10 +149,10 @@ packaging/macos/make-signing-cert.sh                                   # stable 
 
 Each release:
 
-1. Bump `VERSION` (for example `0.3.0` → `0.3.1`) and commit.
-2. macOS: `make release-macos` builds `dist/macos/RemoteAgent-<version>.pkg` (universal, server `https://myrd.site`) and its `.sig`.
-3. Windows: `gh workflow run agent-windows.yml -R ruolez/myrd -f release=true -f server_url=https://myrd.site`, then `gh run download <run> -R ruolez/myrd` gives the `.msi` and its `.msi.sig`.
-4. In **Admin → Releases**, drop each installer together with its `.sig`, then **Publish**. Online devices of that OS start updating within minutes. The rollout % limits how many devices take it automatically. **Use as Add-device installer** also makes it the download on the Add device page.
+1. Bump `VERSION` (for example `0.3.0` → `0.3.1`), commit and push.
+2. macOS: `make release-macos` builds `RemoteAgent-<version>.pkg` (universal, server `https://myrd.site`) and its `.sig`.
+3. Windows: `make release-windows` runs the `agent-windows.yml` release build in CI, waits for it and collects `RemoteAgent-<version>-x64.msi` and the Windows 7 build `RemoteAgent-<version>-x64-win7.msi`, each with `.sig` and `.sha256` (`scripts/release-windows.sh <run-id>` collects a finished run).
+4. Both put their files in `dist/releases/<version>/`. In **Admin → Releases**, drop each installer together with its `.sig`, then **Publish**. Online devices of that OS start updating within minutes. The rollout % limits how many devices take it automatically. A release published at 100% also becomes the download on the Add device page (**Use as Add-device installer** does it by hand).
 
 Devices wait until no session is active before installing. On a device page, **Update now** starts an update immediately, and **Force** ends a running session for it. **Update all outdated** pushes to every online device of an OS. A build that cannot reach the server within 5 minutes of installing, or that keeps crashing, is replaced by the previous one, and the device reports **rolled back**. The device lists show each agent's version, the latest release and the update state.
 
