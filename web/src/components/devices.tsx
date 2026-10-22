@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, errorMessage } from "../api/client";
 import type { Device } from "../api/types";
+import { applyStatus } from "../lib/directory";
 import { useInterval } from "../lib/hooks";
 import { signaling } from "../lib/signaling";
 import type { DeviceUpdateStatus } from "../lib/signaling";
@@ -22,26 +23,8 @@ export function useLiveDeviceStatus(
   useEffect(
     () =>
       signaling.on("device.status", (m) => {
-        const id = m.device_id as string;
-        const status = m.status as string;
-        if (status === "removed") {
-          setDevices((list) => list.filter((d) => d.id !== id));
-          onRemoved?.();
-          return;
-        }
-        setDevices((list) =>
-          list.map((d) =>
-            d.id === id
-              ? {
-                  ...d,
-                  online: Boolean(m.online),
-                  status: status as Device["status"],
-                  last_seen_at: (m.last_seen_at as string | undefined) ?? d.last_seen_at,
-                  busy: m.online ? d.busy : false,
-                }
-              : d,
-          ),
-        );
+        setDevices((list) => applyStatus(list, m));
+        if (m.status === "removed") onRemoved?.();
       }),
     [setDevices, onRemoved],
   );

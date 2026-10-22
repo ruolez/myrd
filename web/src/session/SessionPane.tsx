@@ -1,13 +1,11 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   DragEvent as ReactDragEvent,
   PointerEvent as ReactPointerEvent,
   ReactNode,
   RefObject,
 } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router";
-import { api } from "../api/client";
-import { useUser } from "../app/auth";
+import { useSessionSnap } from "../app/workspace";
 import { Icon } from "../components/icons";
 import { Badge, Spinner } from "../components/ui";
 import { keyFingerprint } from "../lib/devicePins";
@@ -15,22 +13,19 @@ import { displayRect } from "../lib/geometry";
 import { comboInput } from "../lib/combos";
 import type { Combo } from "../lib/combos";
 import { encodeText } from "../lib/input";
+import type { Hotkey } from "../lib/shortcuts";
 import { streamView } from "../lib/stream";
-import { CursorLayer } from "../session/CursorLayer";
-import { DropOverlay } from "../session/files/DropOverlay";
-import { FilesPanel } from "../session/files/FilesPanel";
-import { useTransfers } from "../session/files/TransferList";
-import { TransferPill } from "../session/files/TransferPill";
-import { isFinal } from "../session/FileChannel";
-import { Hud } from "../session/Hud";
-import { KeysButton } from "../session/KeysMenu";
-import { END_REASONS, RemoteSession } from "../session/RemoteSession";
-import type { Snapshot } from "../session/RemoteSession";
-import { StreamButton, StreamMenu } from "../session/StreamMenu";
-import { useRemoteInput } from "../session/useRemoteInput";
-
-type KeyboardLock = { lock?: (codes?: string[]) => Promise<void>; unlock?: () => void };
-const keyboardApi = () => (navigator as Navigator & { keyboard?: KeyboardLock }).keyboard;
+import { CursorLayer } from "./CursorLayer";
+import { DropOverlay } from "./files/DropOverlay";
+import { FilesPanel } from "./files/FilesPanel";
+import { useTransfers } from "./files/TransferList";
+import { TransferPill } from "./files/TransferPill";
+import { Hud } from "./Hud";
+import { KeysButton } from "./KeysMenu";
+import { END_REASONS } from "./RemoteSession";
+import type { RemoteSession, Snapshot } from "./RemoteSession";
+import { StreamButton, StreamMenu } from "./StreamMenu";
+import { useRemoteInput } from "./useRemoteInput";
 
 const HUD_KEY = "remotectl-hud";
 
@@ -129,20 +124,46 @@ const phaseText: Partial<Record<Snapshot["phase"], string>> = {
   connecting: "Connecting to the device…",
 };
 
-export function SessionView() {
-  const { deviceId = "" } = useParams();
-  const [params, setParams] = useSearchParams();
-  const user = useUser();
-  const navigate = useNavigate();
-  const forceRelay = params.get("relay") === "1";
+export type PaneProps = {
+  session: RemoteSession;
+  /** Name from the device list until the session reports its own. */
+  name: string;
+  /** The session in view; the others stay mounted (state, cursor) but hidden. */
+  focused: boolean;
+  forceRelay: boolean;
+  fullscreen: boolean;
+  keyboardLocked: boolean;
+  onToggleFullscreen: () => void;
+  onHotkey: (h: Hotkey) => void;
+  onReconnect: (relay: boolean) => void;
+  onTrust: (key: string) => void;
+  /** Ends and removes this session from the workspace. */
+  onClose: () => void;
+  onBack: () => void;
+  /** Left of the toolbar (back button, session tabs). */
+  leading: ReactNode;
+  /** Extra controls in the fullscreen bar (session switching). */
+  fullscreenExtras?: ReactNode;
+};
 
-  const [session, setSession] = useState<RemoteSession | null>(null);
-  const [attempt, setAttempt] = useState(0);
-  const [trustKey, setTrustKey] = useState<string | undefined>(undefined);
+export function SessionPane({
+  session,
+  name: listName,
+  focused,
+  forceRelay,
+  fullscreen,
+  keyboardLocked,
+  onToggleFullscreen,
+  onHotkey: onWorkspaceHotkey,
+  onReconnect,
+  onTrust,
+  onClose,
+  onBack,
+  leading,
+  fullscreenExtras,
+}: PaneProps) {
   const [hud, setHud] = useState(readHudPref);
-  const [fullscreen, setFullscreen] = useState(false);
   const [relative, setRelative] = useState(false);
-  const [deviceName, setDeviceName] = useState("");
   const [streamOpen, setStreamOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const [keysOpen, setKeysOpen] = useState(false);
@@ -158,43 +179,10 @@ export function SessionView() {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const kbRef = useRef<HTMLTextAreaElement>(null);
-  const sessionRef = useRef<RemoteSession | null>(null);
+  const sessionRef = useRef<RemoteSession | null>(session);
+  sessionRef.current = session;
 
-  useEffect(() => {
-    let cancelled = false;
-    api.devices
-      .get(deviceId)
-      .then((r) => !cancelled && setDeviceName(r.device.name))
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [deviceId]);
-
-  useEffect(() => {
-    const s = new RemoteSession({
-      deviceId,
-      deviceName: "",
-      userId: user.id,
-      forceRelay,
-      trustNewDeviceKey: trustKey,
-    });
-    sessionRef.current = s;
-    setSession(s);
-    void s.start();
-    const onUnload = () => s.end("user_hangup");
-    window.addEventListener("pagehide", onUnload);
-    return () => {
-      window.removeEventListener("pagehide", onUnload);
-      s.end("user_hangup");
-      if (sessionRef.current === s) sessionRef.current = null;
-    };
-  }, [deviceId, user.id, forceRelay, trustKey, attempt]);
-
-  const snap = useSyncExternalStore(
-    useCallback((fn: () => void) => session?.subscribe(fn) ?? (() => undefined), [session]),
-    () => session?.snapshot ?? null,
-  );
+  const snap = useSessionSnap(session);
 
   // Attach the stream without re-rendering frames through a canvas.
   useEffect(() => {
@@ -205,6 +193,7 @@ export function SessionView() {
   }, [snap?.stream]);
 
   const live = snap?.phase === "connected" || snap?.phase === "reconnecting";
+  const active = live && focused;
   const files = snap?.filesState === "ready" ? snap.files : null;
 
   // The stream is sized to the stage in device pixels and drawn 1:1 (fit),
@@ -213,11 +202,12 @@ export function SessionView() {
   const videoSize = useVideoSize(videoRef);
   const scale = snap?.streamPrefs.scale ?? "fit";
   const rect = displayRect(stage.w, stage.h, videoSize.w, videoSize.h, stage.dpr, scale);
+  // Only the pane in view measures a real stage; a hidden one keeps its size.
   useEffect(() => {
-    session?.setView(scale === "fit" ? streamView(stage.w, stage.h, stage.dpr) : null);
-  }, [session, scale, stage.w, stage.h, stage.dpr]);
+    if (!focused || stage.w <= 0) return;
+    session.setView(scale === "fit" ? streamView(stage.w, stage.h, stage.dpr) : null);
+  }, [session, focused, scale, stage.w, stage.h, stage.dpr]);
   const transfers = useTransfers(snap?.files ?? null);
-  const transfersActive = transfers.some((t) => !isFinal(t));
 
   // In-stage panels release pointer lock; it comes back on close if it was on.
   const openPanel = useCallback((which: Panel) => {
@@ -235,7 +225,10 @@ export function SessionView() {
       kbRef.current?.focus({ preventScroll: true });
     }
   };
-  const onHotkey = useCallback(() => openPanel("stream"), [openPanel]);
+  const onHotkey = useCallback(
+    (h: Hotkey) => (h.t === "streamMenu" ? openPanel("stream") : onWorkspaceHotkey(h)),
+    [openPanel, onWorkspaceHotkey],
+  );
   const sendCombo = (c: Combo) => {
     for (const m of comboInput(c.keys)) session?.sendInput(m);
     closePanel("keys");
@@ -243,9 +236,10 @@ export function SessionView() {
 
   useRemoteInput(
     { session: sessionRef, surface: surfaceRef, video: videoRef, keyboard: kbRef },
-    live,
+    active,
     snap?.activeMonitor ?? 0,
     onHotkey,
+    keyboardLocked,
   );
 
   useEffect(() => {
@@ -255,29 +249,6 @@ export function SessionView() {
       setKeysOpen(false);
     }
   }, [live]);
-
-  // A drop that misses the stage must not navigate away (and end the session).
-  useEffect(() => {
-    const prevent = (e: DragEvent) => {
-      if (hasFiles(e)) e.preventDefault();
-    };
-    window.addEventListener("dragover", prevent);
-    window.addEventListener("drop", prevent);
-    return () => {
-      window.removeEventListener("dragover", prevent);
-      window.removeEventListener("drop", prevent);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!transfersActive) return;
-    const guard = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = "";
-    };
-    window.addEventListener("beforeunload", guard);
-    return () => window.removeEventListener("beforeunload", guard);
-  }, [transfersActive]);
 
   useEffect(() => {
     if (!hint) return;
@@ -291,9 +262,9 @@ export function SessionView() {
     pillTimer.current = setTimeout(() => setPill(false), ms);
   }, []);
   useEffect(() => {
-    if (fullscreen) revealPill(3000);
+    if (fullscreen && focused) revealPill(3000);
     else setPill(false);
-  }, [fullscreen, revealPill]);
+  }, [fullscreen, focused, revealPill]);
   useEffect(
     () => () => {
       if (pillTimer.current) clearTimeout(pillTimer.current);
@@ -335,7 +306,7 @@ export function SessionView() {
   // Clipboard: push local clipboard to the remote when the session regains focus.
   const lastClip = useRef<string | null>(null);
   useEffect(() => {
-    if (!live) return;
+    if (!active) return;
     const sync = () => {
       if (!document.hasFocus()) return;
       navigator.clipboard
@@ -351,37 +322,23 @@ export function SessionView() {
     sync();
     window.addEventListener("focus", sync);
     return () => window.removeEventListener("focus", sync);
-  }, [live]);
+  }, [active]);
 
-  // Fullscreen ⇒ Keyboard Lock (so Cmd+W, Alt+Tab, Esc reach the remote). Pointer Lock
-  // stays opt-in: under it the cursor can only be drawn where the device reports
-  // it, a network round trip behind the hand, while without it the browser's own
-  // cursor follows the mouse with no delay.
+  // Pointer Lock stays opt-in: under it the cursor can only be drawn where
+  // the device reports it, a network round trip behind the hand, while
+  // without it the browser's own cursor follows the mouse with no delay.
   useEffect(() => {
-    const onFs = () => {
-      const fs = document.fullscreenElement === stageRef.current && !!stageRef.current;
-      setFullscreen(fs);
-      if (fs) {
-        void keyboardApi()
-          ?.lock?.()
-          .catch(() => undefined);
-      } else {
-        keyboardApi()?.unlock?.();
-        setRelative(false);
-      }
-    };
     const onLock = () => setRelative(document.pointerLockElement === surfaceRef.current);
-    document.addEventListener("fullscreenchange", onFs);
     document.addEventListener("pointerlockchange", onLock);
-    return () => {
-      document.removeEventListener("fullscreenchange", onFs);
-      document.removeEventListener("pointerlockchange", onLock);
-    };
+    return () => document.removeEventListener("pointerlockchange", onLock);
   }, []);
+  useEffect(() => {
+    if (!fullscreen) setRelative(false);
+  }, [fullscreen]);
 
   useEffect(() => {
     const el = surfaceRef.current;
-    if (!el || !live) return;
+    if (!el || !active) return;
     if (relative && document.pointerLockElement !== el) {
       const req = el.requestPointerLock as unknown as (o?: {
         unadjustedMovement?: boolean;
@@ -395,11 +352,10 @@ export function SessionView() {
     } else if (!relative && document.pointerLockElement === el) {
       document.exitPointerLock();
     }
-  }, [relative, live]);
+  }, [relative, active]);
 
   const toggleFullscreen = () => {
-    if (document.fullscreenElement) void document.exitFullscreen();
-    else void stageRef.current?.requestFullscreen({ navigationUI: "hide" }).catch(() => undefined);
+    onToggleFullscreen();
     kbRef.current?.focus();
   };
 
@@ -419,13 +375,10 @@ export function SessionView() {
     kbRef.current?.focus();
   };
 
-  const reconnect = (relay = forceRelay) => {
-    if (relay !== forceRelay) setParams(relay ? { relay: "1" } : {}, { replace: true });
-    else setAttempt((a) => a + 1);
-  };
+  const reconnect = (relay = forceRelay) => onReconnect(relay);
 
   const phase = snap?.phase ?? "preparing";
-  const name = snap?.deviceName || deviceName || "Device";
+  const name = snap?.deviceName || listName || "Device";
   const monitors = snap?.monitors ?? [];
   const monitor = monitors[snap?.activeMonitor ?? 0];
   // Cursor shapes are in native pixels: prefer the agent's native size for this stream.
@@ -437,15 +390,14 @@ export function SessionView() {
     snap?.filesState === "unsupported" ? "Files (not supported by this device's agent)" : "Files";
 
   return (
-    <div className="flex h-screen flex-col bg-black text-white">
-      <header className="flex flex-wrap items-center gap-2 border-b border-white/10 bg-[#1e1f20] px-3 py-2 text-sm">
-        <Link
-          to="/devices"
-          className="btn btn-sm text-white/80 hover:bg-white/10"
-          aria-label="Back to devices"
-        >
-          <Icon name="back" size={18} />
-        </Link>
+    <div
+      className={`min-h-0 flex-1 flex-col bg-black text-white ${focused ? "flex" : "hidden"}`}
+      aria-hidden={!focused}
+    >
+      <header
+        className={`flex flex-wrap items-center gap-2 border-b border-white/10 bg-[#1e1f20] px-3 py-2 text-sm ${fullscreen ? "hidden" : ""}`}
+      >
+        {leading}
         <span className="truncate font-medium">{name}</span>
         {phase === "connected" && (
           <Badge tone={path === "relay" ? "relay" : "success"} dot>
@@ -535,10 +487,9 @@ export function SessionView() {
           />
           <button
             className="btn btn-sm ml-1 bg-[#d93025] text-white hover:brightness-110"
-            onClick={() => {
-              session?.end("user_hangup");
-            }}
+            onClick={() => session.end("user_hangup")}
             disabled={phase === "ended" || phase === "pin_mismatch"}
+            title="End this session (the device is released)"
           >
             <Icon name="callEnd" size={16} />
             End
@@ -579,7 +530,7 @@ export function SessionView() {
               video={videoRef}
               surface={surfaceRef}
               nativeWidth={nativeWidth}
-              active={live}
+              active={active}
             />
             <div
               ref={surfaceRef}
@@ -626,6 +577,7 @@ export function SessionView() {
             onPointerEnter={() => pillTimer.current && clearTimeout(pillTimer.current)}
             onPointerLeave={() => revealPill(1500)}
           >
+            {fullscreenExtras}
             <ToolButton
               label="Stream settings (Ctrl+Alt+Shift+S)"
               icon="speed"
@@ -720,7 +672,7 @@ export function SessionView() {
             )}
             <button
               className="btn-outline mt-2 border-white/30 text-white hover:bg-white/10"
-              onClick={() => session?.end("user_hangup")}
+              onClick={onClose}
             >
               Cancel
             </button>
@@ -771,7 +723,13 @@ export function SessionView() {
               )}
               <button
                 className="btn-outline border-white/30 text-white hover:bg-white/10"
-                onClick={() => navigate("/devices")}
+                onClick={onClose}
+              >
+                Close
+              </button>
+              <button
+                className="btn-outline border-white/30 text-white hover:bg-white/10"
+                onClick={onBack}
               >
                 Back to devices
               </button>
@@ -784,8 +742,8 @@ export function SessionView() {
             name={name}
             pinned={snap.pinMismatch.pinned}
             offered={snap.pinMismatch.offered}
-            onCancel={() => navigate("/devices")}
-            onTrust={() => setTrustKey(snap.pinMismatch?.offered)}
+            onCancel={onClose}
+            onTrust={() => snap.pinMismatch && onTrust(snap.pinMismatch.offered)}
           />
         )}
       </div>

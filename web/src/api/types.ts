@@ -6,6 +6,8 @@ export type DeviceId = Brand<string, "DeviceId">;
 export type SessionId = Brand<string, "SessionId">;
 export type ClientKeyId = Brand<string, "ClientKeyId">;
 export type ReleaseId = Brand<string, "ReleaseId">;
+export type FolderId = Brand<string, "FolderId">;
+export type TagId = Brand<string, "TagId">;
 
 export type User = {
   id: UserId;
@@ -71,6 +73,69 @@ export type Device = {
   update_error: string;
   update_at: string | null;
   owner_email?: string;
+  /** The owner's organization (servers with the "organization" feature). */
+  folder_id: FolderId | null;
+  tag_ids: TagId[];
+  favorite: boolean;
+  notes: string;
+  /** The owner's latest connected session. */
+  last_connected_at: string | null;
+  /** Latest device.info report (agents with the "device_info" feature). */
+  info: HostInfo | null;
+  info_at: string | null;
+  /** Optional agent features, e.g. "device_info", "preview". */
+  features: string[];
+  /** The owner allows screen previews of this device. */
+  previews: boolean;
+};
+
+export type DiskInfo = { name: string; mount: string; fs: string; total: number; free: number };
+
+/** PROTOCOL §3 device.info. Null fields: the platform cannot tell. */
+export type HostInfo = {
+  os_name: string;
+  os_version: string;
+  os_build: string;
+  /** Console user; "" when nobody is signed in. */
+  user: string | null;
+  idle_s: number | null;
+  uptime_s: number;
+  locked: boolean | null;
+  cpu_pct: number | null;
+  cpu_count: number;
+  mem_total: number;
+  mem_used: number;
+  disks: DiskInfo[];
+};
+
+export type Folder = {
+  id: FolderId;
+  parent_id: FolderId | null;
+  name: string;
+  position: number;
+  created_at: string;
+};
+
+/** Palette slot 0..11 (--c-tag-1..12). */
+export type TagColor = number;
+
+export type Tag = { id: TagId; name: string; color: TagColor; created_at: string };
+
+export type DevicePatch = {
+  name?: string;
+  auto_accept?: boolean;
+  previews?: boolean;
+  folder_id?: FolderId | null;
+  favorite?: boolean;
+  notes?: string;
+  tag_ids?: TagId[];
+};
+
+export type BulkPatch = {
+  folder_id?: FolderId | null;
+  favorite?: boolean;
+  add_tag_ids?: TagId[];
+  remove_tag_ids?: TagId[];
 };
 
 export type SessionState = "pending" | "active" | "ended" | "failed";
@@ -118,6 +183,8 @@ export type ClientKey = {
   created_at: string;
   last_used_at: string | null;
   revoked_at: string | null;
+  /** ECDH P-256 SPKI the agent seals screen previews to; null before registration. */
+  preview_key?: string | null;
 };
 
 export type Passkey = {
@@ -183,6 +250,10 @@ export type AppConfig = {
   signup_allowed: boolean;
   webauthn: { rp_id: string; origin: string };
   downloads: Record<DownloadOS, DownloadLink | null>;
+  /** Optional server APIs, e.g. "organization" (absent on older servers). */
+  features?: string[];
+  /** The admin allows screen previews (servers with the "previews" feature). */
+  screen_previews?: boolean;
 };
 
 export type AdminOverview = {
@@ -216,6 +287,7 @@ export type AdminOverview = {
 
 export type AdminSettings = {
   signup_allowed: boolean;
+  screen_previews?: boolean;
   default_auto_accept: boolean;
   max_session_hours: number;
   download_macos_url: string;

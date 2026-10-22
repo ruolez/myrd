@@ -13,10 +13,14 @@ import { DeviceDetail } from "../pages/DeviceDetail";
 import { Devices } from "../pages/Devices";
 import { Login } from "../pages/Login";
 import { NotFound } from "../pages/NotFound";
-import { SessionView } from "../pages/SessionView";
 import { Settings } from "../pages/Settings";
 import { Signup } from "../pages/Signup";
+import { WorkspaceView } from "../session/WorkspaceView";
 import { AuthProvider, useAuth } from "./auth";
+import { DirectoryProvider } from "./directory";
+import { PaletteProvider } from "./palette";
+import { PreviewProvider } from "./previews";
+import { WorkspaceProvider } from "./workspace";
 import { Layout } from "./Layout";
 import { ThemeProvider } from "./theme";
 
@@ -33,7 +37,17 @@ function RequireAuth() {
       );
     return <Navigate to={`/login?next=${encodeURIComponent(loc.pathname + loc.search)}`} replace />;
   }
-  return <Outlet />;
+  return (
+    <DirectoryProvider key={user.id}>
+      <WorkspaceProvider>
+        <PreviewProvider>
+          <PaletteProvider>
+            <Outlet />
+          </PaletteProvider>
+        </PreviewProvider>
+      </WorkspaceProvider>
+    </DirectoryProvider>
+  );
 }
 
 function RequireAdmin() {
@@ -63,12 +77,12 @@ const router = createBrowserRouter([
       {
         element: <RequireAuth />,
         children: [
-          { path: "/session/:deviceId", element: <SessionView /> },
+          { path: "/session/:deviceId", element: <WorkspaceView /> },
           {
             element: <Layout />,
             children: [
               { path: "/", element: <Navigate to="/devices" replace /> },
-              { path: "/devices", element: <Devices /> },
+              { path: "/devices", element: <Devices />, handle: { wide: true } },
               { path: "/devices/add", element: <AddDevice /> },
               { path: "/devices/:id", element: <DeviceDetail /> },
               { path: "/activity", element: <Activity /> },

@@ -1,19 +1,31 @@
 // Minimal IndexedDB key/value helper. DB "remotectl", stores per PROTOCOL §4.
 
 const DB_NAME = "remotectl";
-const STORES = ["client_keys", "device_pins"] as const;
+const STORES = ["client_keys", "device_pins", "preview_keys"] as const;
+const VERSION = 2; // 2: preview_keys
 export type StoreName = (typeof STORES)[number];
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
 function open(): Promise<IDBDatabase> {
   dbPromise ??= new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
+    const req = indexedDB.open(DB_NAME, VERSION);
     req.onupgradeneeded = () => {
       for (const s of STORES)
         if (!req.result.objectStoreNames.contains(s)) req.result.createObjectStore(s);
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      // Another tab upgrading the schema: let it, and reopen on next use.
+      req.result.onversionchange = () => {
+        req.result.close();
+        dbPromise = null;
+      };
+      resolve(req.result);
+    };
+    req.onblocked = () => {
+      dbPromise = null;
+      reject(new Error("Close the app's other tabs once to finish a storage upgrade."));
+    };
     req.onerror = () => {
       dbPromise = null;
       reject(req.error ?? new Error("IndexedDB unavailable"));

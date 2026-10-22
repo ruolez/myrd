@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "./icons";
+import type { IconName } from "./icons";
 
 export function Spinner({ size = 20, label = "Loading" }: { size?: number; label?: string }) {
   return (
@@ -111,7 +112,7 @@ export function PageHeader({
   subtitle,
   actions,
 }: {
-  title: string;
+  title: ReactNode;
   subtitle?: ReactNode;
   actions?: ReactNode;
 }) {
@@ -216,19 +217,86 @@ export function Modal({
 type ConfirmOpts = { title: string; message: ReactNode; confirm?: string; danger?: boolean };
 type ConfirmFn = (o: ConfirmOpts) => Promise<boolean>;
 type ToastFn = (message: string, tone?: "success" | "error" | "neutral") => void;
+type PromptOpts = {
+  title: string;
+  label: string;
+  initial?: string;
+  confirm?: string;
+  maxLength?: number;
+  hint?: ReactNode;
+};
+/** Resolves to the trimmed text, or null when cancelled. */
+type PromptFn = (o: PromptOpts) => Promise<string | null>;
 
 const ConfirmCtx = createContext<ConfirmFn>(() => Promise.resolve(false));
 const ToastCtx = createContext<ToastFn>(() => undefined);
+const PromptCtx = createContext<PromptFn>(() => Promise.resolve(null));
 
 export const useConfirm = () => useContext(ConfirmCtx);
 export const useToast = () => useContext(ToastCtx);
+export const usePrompt = () => useContext(PromptCtx);
+
+function PromptModal({ opts, onDone }: { opts: PromptOpts; onDone: (v: string | null) => void }) {
+  const [value, setValue] = useState(opts.initial ?? "");
+  const cancel = useCallback(() => onDone(null), [onDone]);
+  return (
+    <Modal
+      title={opts.title}
+      onClose={cancel}
+      footer={
+        <>
+          <button className="btn-text" onClick={cancel}>
+            Cancel
+          </button>
+          <button className="btn-primary" type="submit" form="prompt-form" disabled={!value.trim()}>
+            {opts.confirm ?? "Save"}
+          </button>
+        </>
+      }
+    >
+      <form
+        id="prompt-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (value.trim()) onDone(value.trim());
+        }}
+      >
+        <Field label={opts.label} hint={opts.hint}>
+          <input
+            className="input"
+            value={value}
+            maxLength={opts.maxLength}
+            onChange={(e) => setValue(e.target.value)}
+            onFocus={(e) => e.target.select()}
+          />
+        </Field>
+      </form>
+    </Modal>
+  );
+}
 
 export function FeedbackProvider({ children }: { children: ReactNode }) {
   const [pending, setPending] = useState<(ConfirmOpts & { resolve: (v: boolean) => void }) | null>(
     null,
   );
   const [toasts, setToasts] = useState<{ id: number; message: string; tone: string }[]>([]);
+  const [asking, setAsking] = useState<
+    (PromptOpts & { resolve: (v: string | null) => void }) | null
+  >(null);
   const nextId = useRef(1);
+
+  const prompt = useCallback<PromptFn>(
+    (o) => new Promise((resolve) => setAsking({ ...o, resolve })),
+    [],
+  );
+  const answer = useCallback(
+    (v: string | null) =>
+      setAsking((a) => {
+        a?.resolve(v);
+        return null;
+      }),
+    [],
+  );
 
   const confirm = useCallback<ConfirmFn>(
     (o) => new Promise((resolve) => setPending({ ...o, resolve })),
@@ -248,47 +316,50 @@ export function FeedbackProvider({ children }: { children: ReactNode }) {
   return (
     <ConfirmCtx.Provider value={confirm}>
       <ToastCtx.Provider value={toast}>
-        {children}
-        {pending && (
-          <Modal
-            title={pending.title}
-            onClose={() => close(false)}
-            footer={
-              <>
-                <button className="btn-text" onClick={() => close(false)}>
-                  Cancel
-                </button>
-                <button
-                  className={pending.danger ? "btn-danger" : "btn-primary"}
-                  onClick={() => close(true)}
-                >
-                  {pending.confirm ?? "Confirm"}
-                </button>
-              </>
-            }
-          >
-            <div className="text-muted">{pending.message}</div>
-          </Modal>
-        )}
-        <div
-          className="pointer-events-none fixed bottom-4 left-1/2 z-[60] flex -translate-x-1/2 flex-col items-center gap-2"
-          aria-live="polite"
-        >
-          {toasts.map((t) => (
-            <div
-              key={t.id}
-              className={`pointer-events-auto rounded-lg px-4 py-3 text-sm shadow-lg ${
-                t.tone === "error"
-                  ? "bg-error text-white"
-                  : t.tone === "success"
-                    ? "bg-success text-white"
-                    : "bg-text text-bg"
-              }`}
+        <PromptCtx.Provider value={prompt}>
+          {children}
+          {asking && <PromptModal opts={asking} onDone={answer} />}
+          {pending && (
+            <Modal
+              title={pending.title}
+              onClose={() => close(false)}
+              footer={
+                <>
+                  <button className="btn-text" onClick={() => close(false)}>
+                    Cancel
+                  </button>
+                  <button
+                    className={pending.danger ? "btn-danger" : "btn-primary"}
+                    onClick={() => close(true)}
+                  >
+                    {pending.confirm ?? "Confirm"}
+                  </button>
+                </>
+              }
             >
-              {t.message}
-            </div>
-          ))}
-        </div>
+              <div className="text-muted">{pending.message}</div>
+            </Modal>
+          )}
+          <div
+            className="pointer-events-none fixed bottom-4 left-1/2 z-[60] flex -translate-x-1/2 flex-col items-center gap-2"
+            aria-live="polite"
+          >
+            {toasts.map((t) => (
+              <div
+                key={t.id}
+                className={`pointer-events-auto rounded-lg px-4 py-3 text-sm shadow-lg ${
+                  t.tone === "error"
+                    ? "bg-error text-white"
+                    : t.tone === "success"
+                      ? "bg-success text-white"
+                      : "bg-text text-bg"
+                }`}
+              >
+                {t.message}
+              </div>
+            ))}
+          </div>
+        </PromptCtx.Provider>
       </ToastCtx.Provider>
     </ConfirmCtx.Provider>
   );
@@ -365,5 +436,147 @@ export function Brand({ size = 28, className = "text-lg" }: { size?: number; cla
         <span className="brand-accent font-semibold">Desktop</span>
       </span>
     </span>
+  );
+}
+
+export function SegmentedControl<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: { value: T; label: string; icon?: IconName }[];
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label={label}
+      className="inline-flex rounded-full border border-outline p-0.5"
+      onKeyDown={(e) => {
+        const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+        if (!step) return;
+        e.preventDefault();
+        const i = options.findIndex((o) => o.value === value);
+        const next = options[(i + step + options.length) % options.length];
+        if (next) {
+          onChange(next.value);
+          (
+            e.currentTarget.querySelector(`[data-v="${next.value}"]`) as HTMLElement | null
+          )?.focus();
+        }
+      }}
+    >
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          role="radio"
+          data-v={o.value}
+          aria-checked={o.value === value}
+          aria-label={o.icon ? o.label : undefined}
+          title={o.label}
+          tabIndex={o.value === value ? 0 : -1}
+          onClick={() => onChange(o.value)}
+          className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
+            o.value === value ? "bg-primary-soft text-primary" : "text-muted hover:text-text"
+          }`}
+        >
+          {o.icon ? <Icon name={o.icon} size={16} /> : o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Tag colors are palette slots 0..11 (index.css --c-tag-1..12). */
+export const TAG_COLORS = 12;
+export const tagStyle = (color: number) => {
+  const n = (((Math.trunc(color) % TAG_COLORS) + TAG_COLORS) % TAG_COLORS) + 1;
+  return { color: `var(--c-tag-${n})`, backgroundColor: `var(--c-tag-${n}-soft)` };
+};
+
+export function TagChip({
+  name,
+  color,
+  onRemove,
+}: {
+  name: string;
+  color: number;
+  onRemove?: () => void;
+}) {
+  return (
+    <span
+      className="inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium"
+      style={tagStyle(color)}
+    >
+      <span className="truncate">{name}</span>
+      {onRemove && (
+        <button
+          type="button"
+          className="-mr-1 rounded-full hover:brightness-90"
+          aria-label={`Remove tag ${name}`}
+          onClick={onRemove}
+        >
+          <Icon name="close" size={14} />
+        </button>
+      )}
+    </span>
+  );
+}
+
+export function TagDot({ color }: { color: number }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+      style={{ backgroundColor: tagStyle(color).color }}
+    />
+  );
+}
+
+const meterTone = { ok: "bg-primary", warning: "bg-warning", error: "bg-error" } as const;
+
+/** A labelled bar for a used share (memory, disk). */
+export function Meter({
+  label,
+  value,
+  tone = "ok",
+  detail,
+  compact,
+}: {
+  label: string;
+  /** 0..1 */
+  value: number;
+  tone?: "ok" | "warning" | "error";
+  detail?: string;
+  compact?: boolean;
+}) {
+  const pctValue = Math.round(Math.max(0, Math.min(1, value)) * 100);
+  return (
+    <div className="min-w-0" title={detail ? `${label}: ${detail}` : undefined}>
+      {!compact && (
+        <div className="mb-1 flex justify-between gap-2 text-xs">
+          <span className="truncate">{label}</span>
+          {detail && <span className="shrink-0 text-muted">{detail}</span>}
+        </div>
+      )}
+      <div
+        role="meter"
+        aria-label={label}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={pctValue}
+        aria-valuetext={detail}
+        className={`overflow-hidden rounded-full bg-surface-2 ${compact ? "h-1" : "h-1.5"}`}
+      >
+        <div
+          className={`h-full rounded-full ${meterTone[tone]}`}
+          style={{ width: `${pctValue}%` }}
+        />
+      </div>
+    </div>
   );
 }

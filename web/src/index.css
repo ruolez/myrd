@@ -25,6 +25,31 @@
   --c-brand-to: #5a3ff2;
   --c-brand-glow-1: rgb(76 141 255 / 0.14);
   --c-brand-glow-2: rgb(90 63 242 / 0.12);
+  /* Tag palette slots (Tag.color 0..11 → 1..12). */
+  --c-tag-1: #1a73e8;
+  --c-tag-1-soft: #e8f0fe;
+  --c-tag-2: #1e8e3e;
+  --c-tag-2-soft: #e6f4ea;
+  --c-tag-3: #d93025;
+  --c-tag-3-soft: #fce8e6;
+  --c-tag-4: #b06000;
+  --c-tag-4-soft: #fef7e0;
+  --c-tag-5: #9334e6;
+  --c-tag-5-soft: #f3e8fd;
+  --c-tag-6: #007b83;
+  --c-tag-6-soft: #e4f7fb;
+  --c-tag-7: #d01884;
+  --c-tag-7-soft: #fde7f3;
+  --c-tag-8: #e8710a;
+  --c-tag-8-soft: #feefe3;
+  --c-tag-9: #3f51b5;
+  --c-tag-9-soft: #e8eaf6;
+  --c-tag-10: #795548;
+  --c-tag-10-soft: #efebe9;
+  --c-tag-11: #5f7d00;
+  --c-tag-11-soft: #f1f8e0;
+  --c-tag-12: #5f6368;
+  --c-tag-12-soft: #f1f3f4;
   color-scheme: light;
 }
 
@@ -50,6 +75,30 @@
   --c-brand-to: #a99bff;
   --c-brand-glow-1: rgb(76 141 255 / 0.12);
   --c-brand-glow-2: rgb(90 63 242 / 0.14);
+  --c-tag-1: #8ab4f8;
+  --c-tag-1-soft: #1f3a5f;
+  --c-tag-2: #81c995;
+  --c-tag-2-soft: #1d3326;
+  --c-tag-3: #f28b82;
+  --c-tag-3-soft: #3c1f1d;
+  --c-tag-4: #fdd663;
+  --c-tag-4-soft: #3a3214;
+  --c-tag-5: #c58af9;
+  --c-tag-5-soft: #33204a;
+  --c-tag-6: #78d9ec;
+  --c-tag-6-soft: #13353b;
+  --c-tag-7: #ff8bcb;
+  --c-tag-7-soft: #401a31;
+  --c-tag-8: #fcad70;
+  --c-tag-8-soft: #3d2716;
+  --c-tag-9: #9fa8da;
+  --c-tag-9-soft: #252a45;
+  --c-tag-10: #bcaaa4;
+  --c-tag-10-soft: #33291f;
+  --c-tag-11: #c5e17a;
+  --c-tag-11-soft: #2b3313;
+  --c-tag-12: #bdc1c6;
+  --c-tag-12-soft: #2a2b2d;
   color-scheme: dark;
 }
 

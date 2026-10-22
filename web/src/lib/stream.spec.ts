@@ -6,7 +6,6 @@ import {
   editStreamField,
   encodeStreamRequest,
   fpsChoices,
-  isStreamMenuHotkey,
   legacyTier,
   parseStreamPrefs,
   parseStreamState,
@@ -497,26 +496,5 @@ describe("relayCapped", () => {
     ["automatic bitrate on relay", true, 6000, resolved(null), false],
   ])("%s", (_name, relay, ceil_kbps, res, capped) => {
     expect(relayCapped(state({ relay, ceil_kbps, resolved: res }))).toEqual(capped);
-  });
-});
-
-describe("isStreamMenuHotkey", () => {
-  const key = (patch: Partial<Parameters<typeof isStreamMenuHotkey>[0]>) => ({
-    code: "KeyS",
-    ctrlKey: true,
-    altKey: true,
-    shiftKey: true,
-    metaKey: false,
-    ...patch,
-  });
-  test.each([
-    ["Ctrl+Alt+Shift+S", key({}), true],
-    ["without Shift", key({ shiftKey: false }), false],
-    ["without Ctrl", key({ ctrlKey: false }), false],
-    ["without Alt", key({ altKey: false }), false],
-    ["with Meta as well", key({ metaKey: true }), false],
-    ["another key", key({ code: "KeyD" }), false],
-  ])("%s → %s", (_name, e, hit) => {
-    expect(isStreamMenuHotkey(e)).toEqual(hit);
   });
 });

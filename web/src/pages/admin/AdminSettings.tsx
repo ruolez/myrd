@@ -68,6 +68,16 @@ export function AdminSettingsPage() {
             onChange={(v) => setF({ ...f, default_auto_accept: !v })}
           />
         </Row>
+        <Row
+          title="Screen previews"
+          description="Dashboards may show a small picture of each device's screen, refreshed about once a minute while open. Devices encrypt them for their owner's approved browsers; this server only relays them. Owners can turn previews off per device, and the person at a device can turn them off there."
+        >
+          <Toggle
+            label="Screen previews"
+            checked={f.screen_previews !== false}
+            onChange={(v) => setF({ ...f, screen_previews: v })}
+          />
+        </Row>
         <Field
           label="Maximum session length (hours)"
           hint="The server ends sessions that run longer. 0 disables the limit."

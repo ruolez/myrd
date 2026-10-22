@@ -1,7 +1,9 @@
-import { useCallback, useState } from "react";
+import { Fragment, useCallback, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { api, errorMessage } from "../api/client";
-import type { Device } from "../api/types";
+import type { Device, DevicePatch } from "../api/types";
+import { useAuth } from "../app/auth";
+import { useDirectory } from "../app/directory";
 import {
   DeviceStatusBadge,
   DeviceUpdateBadge,
@@ -15,17 +17,41 @@ import {
   Badge,
   ErrorBox,
   Loading,
+  Meter,
   PageHeader,
+  TagChip,
   Toggle,
   useConfirm,
   useToast,
 } from "../components/ui";
-import { dateTime, osName, timeAgo } from "../lib/format";
-import { useAsync, usePaged } from "../lib/hooks";
+import { folderPath } from "../lib/folders";
+import { bytes, dateTime, osName, timeAgo } from "../lib/format";
+import {
+  diskLabel,
+  diskSeverity,
+  formatIdle,
+  formatUptime,
+  freeFraction,
+  infoStale,
+  memSeverity,
+} from "../lib/health";
+import { useAsync, useNow, usePaged } from "../lib/hooks";
 import { updateBadge } from "../lib/update";
+import { DeviceDialogs, NOTES_MAX, useOrgDialog } from "./devices/dialogs";
 
 export function DeviceDetail() {
+  return (
+    <DeviceDialogs>
+      <DeviceDetailPage />
+    </DeviceDialogs>
+  );
+}
+
+function DeviceDetailPage() {
   const { id = "" } = useParams();
+  const dir = useDirectory();
+  const dialog = useOrgDialog();
+  const { config } = useAuth();
   const navigate = useNavigate();
   const confirm = useConfirm();
   const toast = useToast();
@@ -53,17 +79,37 @@ export function DeviceDetail() {
   if (loading && !data) return <Loading />;
   if (error || !data)
     return <ErrorBox error={error ?? "Device not found."} onRetry={() => void reload()} />;
-  const d = data.device;
+  // Organization edits go through the shared directory (dialogs, other tabs).
+  const live = dir.devices.find((x) => x.id === data.device.id);
+  const d = live
+    ? {
+        ...data.device,
+        folder_id: live.folder_id,
+        tag_ids: live.tag_ids,
+        favorite: live.favorite,
+        notes: live.notes,
+        name: live.name,
+        info: live.info ?? data.device.info,
+        info_at: live.info_at ?? data.device.info_at,
+      }
+    : data.device;
 
-  const save = async (patch: { name?: string; auto_accept?: boolean }) => {
+  const save = async (patch: DevicePatch, quiet = false) => {
     try {
       const r = await api.devices.update(d.id, patch);
       setData({ device: r.device });
-      toast("Saved", "success");
+      dir.setDevices((list) => list.map((x) => (x.id === r.device.id ? r.device : x)));
+      if (!quiet) toast("Saved", "success");
     } catch (e) {
       toast(errorMessage(e), "error");
     }
   };
+  const path = folderPath(dir.folders, d.folder_id);
+  const previewsOffered =
+    (config?.features?.includes("previews") ?? false) && config?.screen_previews !== false;
+  const deviceTags = d.tag_ids
+    .map((t) => dir.tags.find((x) => x.id === t))
+    .filter((t): t is NonNullable<typeof t> => !!t);
 
   const remove = async () => {
     const ok = await confirm({
@@ -88,7 +134,22 @@ export function DeviceDetail() {
   return (
     <>
       <PageHeader
-        title={d.name}
+        title={
+          <span className="inline-flex items-center gap-2">
+            {d.name}
+            {dir.organization && (
+              <button
+                className={`btn-text btn-sm px-1.5 ${d.favorite ? "text-warning" : "text-muted"}`}
+                aria-pressed={d.favorite}
+                aria-label={d.favorite ? "Remove from favorites" : "Add to favorites"}
+                title={d.favorite ? "Favorite" : "Add to favorites"}
+                onClick={() => void save({ favorite: !d.favorite }, true)}
+              >
+                <Icon name={d.favorite ? "star" : "starOutline"} size={22} />
+              </button>
+            )}
+          </span>
+        }
         subtitle={
           <span className="inline-flex items-center gap-2">
             <OsIcon os={d.os} size={16} /> {osName(d.os)} · {d.arch} · {d.hostname}{" "}
@@ -163,6 +224,24 @@ export function DeviceDetail() {
               onChange={(v) => void save({ auto_accept: !v })}
             />
           </div>
+          {previewsOffered && (
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-sm font-medium">Screen previews</div>
+                <p className="text-sm text-muted">
+                  Show a small picture of this device's screen on your dashboard, refreshed about
+                  once a minute while it is open. Pictures are encrypted on the device for your
+                  approved browsers; the server cannot see them. The device can turn them off too,
+                  and sends none while “Ask every time” is on.
+                </p>
+              </div>
+              <Toggle
+                label="Screen previews"
+                checked={d.previews}
+                onChange={(v) => void save({ previews: v })}
+              />
+            </div>
+          )}
           <div>
             <div className="mb-2 text-sm font-medium">Approved browsers</div>
             {d.pinned_clients && d.pinned_clients.length > 0 ? (
@@ -188,65 +267,124 @@ export function DeviceDetail() {
           </div>
         </section>
 
-        <section className="card space-y-4 p-6">
-          <h2 className="font-medium">Agent</h2>
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-            <dt className="text-muted">Version</dt>
-            <dd>
-              {d.agent_version || "—"}
-              {d.latest_version && d.latest_version !== d.agent_version && (
-                <span className="text-muted"> · latest {d.latest_version}</span>
-              )}
-            </dd>
-            <dt className="text-muted">Updates</dt>
-            <dd className="min-w-0">
-              <DeviceUpdateBadge device={d} />
-              {!updateBadge(d) && "—"}
-              {d.update_at && (
-                <div className="text-xs text-muted">last attempt {timeAgo(d.update_at)}</div>
-              )}
-            </dd>
-            <dt className="text-muted">Encoder</dt>
-            <dd>{d.encoder ?? "—"}</dd>
-            <dt className="text-muted">Last seen</dt>
-            <dd>{d.online ? "now" : timeAgo(d.last_seen_at)}</dd>
-            <dt className="text-muted">Enrolled</dt>
-            <dd>{dateTime(d.created_at)}</dd>
-            <dt className="text-muted">Screen</dt>
-            <dd>{d.permissions ? <Perm ok={d.permissions.screen} /> : "—"}</dd>
-            <dt className="text-muted">Input</dt>
-            <dd>{d.permissions ? <Perm ok={d.permissions.input} /> : "—"}</dd>
-          </dl>
-          {d.monitors && d.monitors.length > 0 && (
-            <div>
-              <div className="mb-2 text-sm font-medium">Monitors</div>
-              <ul className="space-y-1 text-sm">
-                {d.monitors.map((m) => (
-                  <li key={m.id} className="flex justify-between gap-2">
-                    <span className="truncate">
-                      {m.name || `Display ${m.id}`}{" "}
-                      {m.primary && <Badge tone="primary">primary</Badge>}
-                    </span>
-                    <span className="text-muted">
-                      {m.width}×{m.height}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
+        <div className="space-y-6">
+          {dir.organization && (
+            <section className="card space-y-4 p-6" aria-labelledby="organize">
+              <h2 id="organize" className="font-medium">
+                Organize
+              </h2>
+              <div>
+                <div className="label">Folder</div>
+                <div className="flex items-center justify-between gap-2">
+                  <span
+                    className={`flex min-w-0 items-center gap-2 text-sm ${path.length ? "" : "text-muted"}`}
+                  >
+                    <Icon
+                      name={path.length ? "folder" : "inbox"}
+                      size={18}
+                      className="shrink-0 text-muted"
+                    />
+                    <span className="truncate">{path.length ? path.join(" / ") : "No folder"}</span>
+                  </span>
+                  <button
+                    className="btn-text btn-sm"
+                    onClick={() => dialog({ kind: "move", ids: [d.id] })}
+                  >
+                    Move…
+                  </button>
+                </div>
+              </div>
+              <div>
+                <div className="label">Tags</div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {deviceTags.map((t) => (
+                    <TagChip
+                      key={t.id}
+                      name={t.name}
+                      color={t.color}
+                      onRemove={() =>
+                        void save({ tag_ids: d.tag_ids.filter((x) => x !== t.id) }, true)
+                      }
+                    />
+                  ))}
+                  <button
+                    className="btn-text btn-sm"
+                    onClick={() => dialog({ kind: "tags", ids: [d.id] })}
+                  >
+                    <Icon name="tag" size={16} />
+                    {deviceTags.length ? "Edit" : "Add tags"}
+                  </button>
+                </div>
+              </div>
+              <NotesField
+                key={d.notes}
+                notes={d.notes}
+                onSave={(notes) => void save({ notes }, true)}
+              />
+            </section>
           )}
-          <UpdateButton
-            device={d}
-            request={(force) => api.devices.requestUpdate(d.id, force)}
-            onRequested={kick}
-            className="btn-tonal w-full"
-            label={d.latest_version ? `Update to ${d.latest_version}` : "Update now"}
-          />
-          <button className="btn-outline w-full text-error" onClick={() => void remove()}>
-            Remove device
-          </button>
-        </section>
+          <section className="card space-y-4 p-6">
+            <h2 className="font-medium">Agent</h2>
+            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+              <dt className="text-muted">Version</dt>
+              <dd>
+                {d.agent_version || "—"}
+                {d.latest_version && d.latest_version !== d.agent_version && (
+                  <span className="text-muted"> · latest {d.latest_version}</span>
+                )}
+              </dd>
+              <dt className="text-muted">Updates</dt>
+              <dd className="min-w-0">
+                <DeviceUpdateBadge device={d} />
+                {!updateBadge(d) && "—"}
+                {d.update_at && (
+                  <div className="text-xs text-muted">last attempt {timeAgo(d.update_at)}</div>
+                )}
+              </dd>
+              <dt className="text-muted">Encoder</dt>
+              <dd>{d.encoder ?? "—"}</dd>
+              <dt className="text-muted">Last seen</dt>
+              <dd>{d.online ? "now" : timeAgo(d.last_seen_at)}</dd>
+              <dt className="text-muted">Enrolled</dt>
+              <dd>{dateTime(d.created_at)}</dd>
+              <dt className="text-muted">Screen</dt>
+              <dd>{d.permissions ? <Perm ok={d.permissions.screen} /> : "—"}</dd>
+              <dt className="text-muted">Input</dt>
+              <dd>{d.permissions ? <Perm ok={d.permissions.input} /> : "—"}</dd>
+            </dl>
+            {d.monitors && d.monitors.length > 0 && (
+              <div>
+                <div className="mb-2 text-sm font-medium">Monitors</div>
+                <ul className="space-y-1 text-sm">
+                  {d.monitors.map((m) => (
+                    <li key={m.id} className="flex justify-between gap-2">
+                      <span className="truncate">
+                        {m.name || `Display ${m.id}`}{" "}
+                        {m.primary && <Badge tone="primary">primary</Badge>}
+                      </span>
+                      <span className="text-muted">
+                        {m.width}×{m.height}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <UpdateButton
+              device={d}
+              request={(force) => api.devices.requestUpdate(d.id, force)}
+              onRequested={kick}
+              className="btn-tonal w-full"
+              label={d.latest_version ? `Update to ${d.latest_version}` : "Update now"}
+            />
+            <button className="btn-outline w-full text-error" onClick={() => void remove()}>
+              Remove device
+            </button>
+          </section>
+        </div>
       </div>
+
+      {d.info && <HealthCard device={d} />}
 
       <section className="card mt-6">
         <div className="flex gap-1 border-b border-outline px-3 pt-3" role="tablist">
@@ -273,6 +411,99 @@ export function DeviceDetail() {
         )}
       </section>
     </>
+  );
+}
+
+function HealthCard({ device: d }: { device: Device }) {
+  const now = useNow(15_000);
+  const info = d.info;
+  if (!info) return null;
+  const stale = infoStale(d.info_at, d.online, now);
+  const mem = info.mem_total > 0 ? info.mem_used / info.mem_total : 0;
+  const rows: [string, string][] = [
+    [
+      "System",
+      [info.os_name, info.os_version, info.os_build && `(${info.os_build})`]
+        .filter(Boolean)
+        .join(" "),
+    ],
+    ["Signed in", info.user === null ? "—" : info.user === "" ? "Nobody" : info.user],
+    ["Activity", info.locked ? "Locked" : formatIdle(info.idle_s) || "—"],
+    ["Up for", formatUptime(info.uptime_s)],
+    [
+      "CPU",
+      `${info.cpu_pct === null ? "—" : `${Math.round(info.cpu_pct)}%`} · ${info.cpu_count} cores`,
+    ],
+  ];
+  return (
+    <section className="card mt-6 p-6" aria-labelledby="health">
+      <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+        <h2 id="health" className="font-medium">
+          Health
+        </h2>
+        <span className={`text-xs ${stale ? "text-warning" : "text-muted"}`}>
+          {stale ? `Last report ${timeAgo(d.info_at, now)}` : `Updated ${timeAgo(d.info_at, now)}`}
+        </span>
+      </div>
+      <div className={`grid gap-6 md:grid-cols-2 ${stale ? "opacity-70" : ""}`}>
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+          {rows.map(([k, v]) => (
+            <Fragment key={k}>
+              <dt className="text-muted">{k}</dt>
+              <dd className="min-w-0 truncate" title={v}>
+                {v}
+              </dd>
+            </Fragment>
+          ))}
+        </dl>
+        <div className="space-y-4">
+          {info.mem_total > 0 && (
+            <Meter
+              label="Memory"
+              value={mem}
+              tone={memSeverity(info)}
+              detail={`${bytes(info.mem_used)} used of ${bytes(info.mem_total)}`}
+            />
+          )}
+          {info.disks.map((k) => (
+            <Meter
+              key={k.mount}
+              label={`${diskLabel(k)}${k.fs ? ` · ${k.fs}` : ""}`}
+              value={1 - freeFraction(k)}
+              tone={diskSeverity(k)}
+              detail={`${bytes(k.free)} free of ${bytes(k.total)}`}
+            />
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** Notes edited in place, saved when the field loses focus or on Ctrl/Cmd+Enter. */
+function NotesField({ notes, onSave }: { notes: string; onSave: (notes: string) => void }) {
+  const [draft, setDraft] = useState(notes);
+  const commit = () => {
+    if (draft.trim() !== notes) onSave(draft.trim());
+  };
+  return (
+    <label className="block">
+      <span className="label">Notes</span>
+      <textarea
+        className="input min-h-24"
+        value={draft}
+        maxLength={NOTES_MAX}
+        placeholder="Who uses it, where it is, what to watch out for…"
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) e.currentTarget.blur();
+        }}
+      />
+      <span className="mt-1 block text-xs text-muted">
+        Saved when you leave the field. Searchable from the dashboard.
+      </span>
+    </label>
   );
 }
 

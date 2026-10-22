@@ -4,9 +4,13 @@ import type {
   AdminSettings,
   AppConfig,
   AuditEvent,
+  BulkPatch,
   ClientKey,
   Device,
+  DevicePatch,
   DownloadOS,
+  Folder,
+  FolderId,
   LoginSession,
   Page,
   Passkey,
@@ -14,8 +18,12 @@ import type {
   ReleaseId,
   ReleaseOS,
   Session,
+  Tag,
+  TagId,
   User,
 } from "./types";
+
+import type { SealedPreview } from "../lib/previewCrypto";
 
 export class ApiError extends Error {
   constructor(
@@ -121,6 +129,25 @@ const qs = (params: Record<string, string | number | null | undefined>) => {
 
 export type PageQuery = { limit?: number; before?: string | null };
 
+/** Fills fields that servers without the newer features leave out. */
+export function normalizeDevice(d: Device): Device {
+  return {
+    ...d,
+    folder_id: d.folder_id ?? null,
+    tag_ids: d.tag_ids ?? [],
+    favorite: d.favorite ?? false,
+    notes: d.notes ?? "",
+    last_connected_at: d.last_connected_at ?? null,
+    info: d.info ?? null,
+    info_at: d.info_at ?? null,
+    features: d.features ?? [],
+    previews: d.previews ?? true,
+  };
+}
+
+const devicesOf = (r: { items: Device[] }) => ({ items: r.items.map(normalizeDevice) });
+const deviceOf = (r: { device: Device }) => ({ device: normalizeDevice(r.device) });
+
 type LoginResult = { user: User } | { totp_required: true; ticket: string };
 
 export const api = {
@@ -171,18 +198,53 @@ export const api = {
     register: (public_key: string, label: string) =>
       request<{ client_key: ClientKey }>("POST", "/v1/client-keys", { public_key, label }),
     revoke: (id: string) => request<object>("DELETE", `/v1/client-keys/${id}`),
+    setPreviewKey: (id: string, public_key: string, signature: string) =>
+      request<{ client_key: ClientKey }>("PUT", `/v1/client-keys/${id}/preview-key`, {
+        public_key,
+        signature,
+      }),
   },
 
+  previews: (client_key_id: string, device_ids: string[]) =>
+    request<{ items: SealedPreview[] }>(
+      "GET",
+      `/v1/previews${qs({ client_key_id, device_ids: device_ids.join(",") })}`,
+    ),
+
   devices: {
-    list: () => request<{ items: Device[] }>("GET", "/v1/devices"),
-    get: (id: string) => request<{ device: Device }>("GET", `/v1/devices/${id}`),
-    update: (id: string, patch: { name?: string; auto_accept?: boolean }) =>
-      request<{ device: Device }>("PATCH", `/v1/devices/${id}`, patch),
+    list: () => request<{ items: Device[] }>("GET", "/v1/devices").then(devicesOf),
+    get: (id: string) => request<{ device: Device }>("GET", `/v1/devices/${id}`).then(deviceOf),
+    update: (id: string, patch: DevicePatch) =>
+      request<{ device: Device }>("PATCH", `/v1/devices/${id}`, patch).then(deviceOf),
+    bulk: (device_ids: string[], patch: BulkPatch) =>
+      request<{ items: Device[] }>("POST", "/v1/devices/bulk", { device_ids, ...patch }).then(
+        devicesOf,
+      ),
     remove: (id: string) => request<object>("DELETE", `/v1/devices/${id}`),
     requestUpdate: (id: string, force: boolean) =>
       request<{ version: string }>("POST", `/v1/devices/${id}/update`, { force }),
     enrollToken: () =>
       request<{ token: string; expires_at: string }>("POST", "/v1/enroll-tokens", {}),
+  },
+
+  folders: {
+    list: () => request<{ items: Folder[] }>("GET", "/v1/folders"),
+    create: (name: string, parent_id: FolderId | null) =>
+      request<{ folder: Folder }>("POST", "/v1/folders", { name, parent_id }),
+    update: (
+      id: FolderId,
+      patch: { name?: string; parent_id?: FolderId | null; position?: number },
+    ) => request<{ folder: Folder }>("PATCH", `/v1/folders/${id}`, patch),
+    remove: (id: FolderId) => request<object>("DELETE", `/v1/folders/${id}`),
+  },
+
+  tags: {
+    list: () => request<{ items: Tag[] }>("GET", "/v1/tags"),
+    create: (name: string, color: number) =>
+      request<{ tag: Tag }>("POST", "/v1/tags", { name, color }),
+    update: (id: TagId, patch: { name?: string; color?: number }) =>
+      request<{ tag: Tag }>("PATCH", `/v1/tags/${id}`, patch),
+    remove: (id: TagId) => request<object>("DELETE", `/v1/tags/${id}`),
   },
 
   sessions: (q: PageQuery & { device_id?: string }) =>

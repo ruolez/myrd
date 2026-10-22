@@ -31,7 +31,19 @@ export async function verifyDeviceSignature(
   sessionId: string,
   fingerprint: string,
 ): Promise<boolean> {
-  const msg = new TextEncoder().encode(fingerprintMessage(sessionId, "answer", fingerprint));
+  return verifyEd25519(
+    publicKeyB64,
+    sigB64,
+    new TextEncoder().encode(fingerprintMessage(sessionId, "answer", fingerprint)),
+  );
+}
+
+/** Ed25519 verification of msg by a raw 32-byte key (base64). */
+export async function verifyEd25519(
+  publicKeyB64: string,
+  sigB64: string,
+  msg: Uint8Array<ArrayBuffer>,
+): Promise<boolean> {
   let pub: Uint8Array<ArrayBuffer>;
   let sig: Uint8Array<ArrayBuffer>;
   try {

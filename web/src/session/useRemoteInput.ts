@@ -13,11 +13,10 @@ import {
   encodeMouseWheel,
   encodeText,
 } from "../lib/input";
-import { isStreamMenuHotkey } from "../lib/stream";
+import { workspaceHotkey } from "../lib/shortcuts";
+import type { Hotkey } from "../lib/shortcuts";
 import type { RemoteSession } from "./RemoteSession";
 import { videoBox } from "./videoBox";
-
-export type LocalHotkey = "streamMenu";
 
 // DOM MouseEvent.button → protocol button.
 const domButton: Record<number, number> = {
@@ -45,13 +44,16 @@ export function useRemoteInput(
   { session, surface, video, keyboard }: Refs,
   enabled: boolean,
   monitor: number,
-  onHotkey?: (hotkey: LocalHotkey) => void,
+  onHotkey?: (hotkey: Hotkey) => void,
+  keyboardLocked = false,
 ) {
   const keys = useRef(new KeyState());
   const monitorRef = useRef(monitor);
   monitorRef.current = monitor;
   const hotkeyRef = useRef(onHotkey);
   hotkeyRef.current = onHotkey;
+  const lockedRef = useRef(keyboardLocked);
+  lockedRef.current = keyboardLocked;
 
   useEffect(() => {
     const el = surface.current;
@@ -123,9 +125,11 @@ export function useRemoteInput(
       const usage = hidUsage(e.code);
       e.preventDefault();
       e.stopPropagation();
-      // Local shortcuts never reach the remote; the S keyup is dropped below (S never went down).
-      if (down && hotkeyRef.current && isStreamMenuHotkey(e)) {
-        hotkeyRef.current("streamMenu");
+      // Workspace shortcuts never reach the remote; their keyups are dropped
+      // below (the key never went down there).
+      const hotkey = down && hotkeyRef.current ? workspaceHotkey(e, lockedRef.current) : null;
+      if (hotkey) {
+        hotkeyRef.current?.(hotkey);
         return;
       }
       if (usage === undefined) {

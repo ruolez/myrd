@@ -92,6 +92,8 @@ export type Snapshot = {
   permissions: { screen: boolean; input: boolean } | null;
   /** The device shows its unlock screen (hello `locked`, then `screen`). */
   locked: boolean;
+  /** Not the session in view: streams at background quality (setBackground). */
+  background: boolean;
   streamPrefs: StreamPrefs;
   streamState: StreamState | null;
   /** null until `hello`; false for agents without the `stream` feature. */
@@ -134,6 +136,11 @@ const emptyStats: HudStats = {
 };
 
 const STREAM_DEBOUNCE_MS = 200;
+// Stats in the background feed only thumbnails and the HUD of a hidden pane.
+const BACKGROUND_STATS_EVERY = 5;
+// Cursor shapes kept to replay to a newly mounted cursor layer (the agent
+// sends each shape once, then only refers to it by id).
+const SHAPE_CACHE = 32;
 // Each new view size restarts capture on the device (a keyframe): let a
 // window drag finish first.
 const VIEW_DEBOUNCE_MS = 400;
@@ -221,6 +228,12 @@ export class RemoteSession {
   private clipboard = new ClipboardAssembler();
   private clipXfer = 1;
   private ended = false;
+  private background = false;
+  private pendingClip: string | null = null;
+  private ticks = 0;
+  private shapes = new Map<number, CursorMessage>();
+  private shapeId: number | null = null;
+  private lastPos: CursorMessage | null = null;
 
   constructor(private readonly opts: Options) {
     this.snap = {
@@ -238,6 +251,7 @@ export class RemoteSession {
       agentVersion: null,
       permissions: null,
       locked: false,
+      background: false,
       streamPrefs: loadStreamPrefs(opts.deviceId),
       streamState: null,
       streamFeature: null,
@@ -260,9 +274,53 @@ export class RemoteSession {
     return () => this.listeners.delete(fn);
   }
 
+  get deviceId() {
+    return this.opts.deviceId;
+  }
+
+  /** Replays the current cursor shape and position, then every new message. */
   onCursor(fn: (m: CursorMessage) => void): () => void {
     this.cursorListeners.add(fn);
+    for (const m of this.shapes.values()) fn(m);
+    const current = this.shapeId === null ? undefined : this.shapes.get(this.shapeId);
+    if (current) fn(current);
+    if (this.lastPos) fn(this.lastPos);
     return () => this.cursorListeners.delete(fn);
+  }
+
+  /**
+   * A session that is open but not in view streams at background quality,
+   * as when its tab is hidden, and holds remote clipboard text until it is
+   * in view again (so a background session cannot overwrite the clipboard).
+   */
+  setBackground(background: boolean) {
+    if (background === this.background) return;
+    this.background = background;
+    this.update({ background });
+    this.applyStream();
+    this.flushClipboard();
+  }
+
+  private flushClipboard() {
+    if (this.background || document.hidden || this.pendingClip === null) return;
+    const text = this.pendingClip;
+    this.pendingClip = null;
+    void navigator.clipboard?.writeText(text).catch(() => undefined);
+  }
+
+  private remember(msg: CursorMessage) {
+    if (msg.type === "pos") {
+      this.lastPos = msg;
+      return;
+    }
+    this.shapeId = msg.id;
+    if (msg.png.length === 0) return;
+    this.shapes.delete(msg.id);
+    this.shapes.set(msg.id, msg);
+    if (this.shapes.size > SHAPE_CACHE) {
+      const oldest = this.shapes.keys().next().value;
+      if (oldest !== undefined) this.shapes.delete(oldest);
+    }
   }
 
   private update(patch: Partial<Snapshot>) {
@@ -371,7 +429,9 @@ export class RemoteSession {
     cursor.onmessage = (ev) => {
       if (!(ev.data instanceof ArrayBuffer)) return;
       const msg = decodeCursor(new Uint8Array(ev.data));
-      if (msg) for (const l of this.cursorListeners) l(msg);
+      if (!msg) return;
+      this.remember(msg);
+      for (const l of this.cursorListeners) l(msg);
     };
     this.control.onmessage = (ev) => this.onControl(ev.data);
 
@@ -401,7 +461,10 @@ export class RemoteSession {
     pc.oniceconnectionstatechange = () => this.onConnState();
 
     this.timers.push(setInterval(() => void this.tick(), 1000));
-    const onVis = () => this.applyStream();
+    const onVis = () => {
+      this.applyStream();
+      this.flushClipboard();
+    };
     document.addEventListener("visibilitychange", onVis);
     this.offs.push(() => document.removeEventListener("visibilitychange", onVis));
   }
@@ -500,6 +563,7 @@ export class RemoteSession {
       if (this.pings.size > 10) this.pings.delete(Math.min(...this.pings.keys()));
     }
 
+    if (this.background && this.ticks++ % BACKGROUND_STATS_EVERY !== 0) return;
     const stats = await pc.getStats().catch(() => null);
     if (!stats) return;
     const next: HudStats = { ...this.snap.stats };
@@ -571,7 +635,8 @@ export class RemoteSession {
       const done = this.clipboard.push(new Uint8Array(data));
       if (done && done.mime === Mime.Text) {
         const text = new TextDecoder().decode(done.bytes);
-        void navigator.clipboard?.writeText(text).catch(() => undefined);
+        if (this.background || document.hidden) this.pendingClip = text;
+        else void navigator.clipboard?.writeText(text).catch(() => undefined);
       }
       return;
     }
@@ -732,7 +797,7 @@ export class RemoteSession {
 
   /** `stream` on control for agents with the feature, legacy `0x20 op 3` otherwise. */
   private applyStream() {
-    const hidden = document.hidden;
+    const hidden = document.hidden || this.background;
     const prefs = this.snap.streamPrefs;
     if (this.snap.streamFeature === true) {
       if (this.control?.readyState !== "open") return;

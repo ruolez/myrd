@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { NavLink, Outlet, useLocation } from "react-router";
+import { NavLink, Outlet, useLocation, useMatches } from "react-router";
 import { Icon } from "../components/icons";
 import type { IconName } from "../components/icons";
 import { Brand, ErrorBox } from "../components/ui";
 import { signaling } from "../lib/signaling";
 import type { ConnState } from "../lib/signaling";
 import { useAuth, useUser } from "./auth";
+import { SessionCount, SessionDock } from "./SessionDock";
 import { useTheme } from "./theme";
 
 type NavItem = { to: string; label: string; icon: IconName; end?: boolean };
@@ -63,6 +64,7 @@ export function Layout() {
   const [open, setOpen] = useState(false);
   const sig = useSignalState();
   const loc = useLocation();
+  const wide = useMatches().some((m) => (m.handle as { wide?: boolean } | undefined)?.wide);
 
   useEffect(() => setOpen(false), [loc.pathname]);
 
@@ -71,11 +73,12 @@ export function Layout() {
     (theme === "system" && !!window.matchMedia?.("(prefers-color-scheme: dark)").matches);
 
   const sidebar = (
-    <nav className="flex h-full flex-col gap-6 p-3" aria-label="Main">
+    <nav className="flex h-full flex-col gap-6 overflow-y-auto p-3" aria-label="Main">
       <div className="px-3 pt-2">
         <Brand size={30} />
       </div>
       <NavList items={mainNav} onNavigate={() => setOpen(false)} />
+      <SessionDock />
       {user.is_admin && (
         <div>
           <div className="mb-1 px-4 text-xs font-medium tracking-wide text-muted uppercase">
@@ -139,8 +142,11 @@ export function Layout() {
             <Icon name="menu" />
           </button>
           <Brand size={24} className="text-base" />
+          <SessionCount />
         </header>
-        <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6 lg:py-8">
+        <main
+          className={`mx-auto w-full flex-1 px-4 py-6 sm:px-6 lg:py-8 ${wide ? "max-w-[110rem]" : "max-w-6xl"}`}
+        >
           {keyError && (
             <div className="mb-4">
               <ErrorBox error={keyError} />

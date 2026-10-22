@@ -57,3 +57,28 @@ export function normalizePoint(px: number, py: number, box: Rect): { x: number; 
 export function denormalizePoint(nx: number, ny: number, box: Rect): { x: number; y: number } {
   return { x: box.left + (nx / 65535) * box.width, y: box.top + (ny / 65535) * box.height };
 }
+
+/**
+ * Where a popover of the given size goes next to its anchor (viewport
+ * coordinates): below it, or above when it does not fit below and fits
+ * better above; aligned to the anchor's start or end edge; kept inside the
+ * viewport with a margin.
+ */
+export function placePopover(
+  anchor: Rect,
+  size: { width: number; height: number },
+  viewport: { width: number; height: number },
+  align: "start" | "end",
+  gap = 4,
+  margin = 8,
+): { left: number; top: number } {
+  const below = anchor.top + anchor.height + gap;
+  const spaceBelow = viewport.height - margin - below;
+  const spaceAbove = anchor.top - gap - margin;
+  let top = below;
+  if (size.height > spaceBelow && spaceAbove > spaceBelow) top = anchor.top - gap - size.height;
+  top = Math.max(margin, Math.min(top, viewport.height - margin - size.height));
+  let left = align === "start" ? anchor.left : anchor.left + anchor.width - size.width;
+  left = Math.max(margin, Math.min(left, viewport.width - margin - size.width));
+  return { left, top };
+}

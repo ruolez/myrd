@@ -309,16 +309,3 @@ export function relayCapped(state: StreamState | null): boolean {
   if (!state?.relay || state.ceil_kbps === null || state.resolved.max_kbps === null) return false;
   return state.ceil_kbps < state.resolved.max_kbps;
 }
-
-type HotkeyEvent = {
-  code: string;
-  ctrlKey: boolean;
-  altKey: boolean;
-  shiftKey: boolean;
-  metaKey: boolean;
-};
-
-/** Ctrl+Alt+Shift+S opens the stream menu instead of reaching the remote. */
-export function isStreamMenuHotkey(e: HotkeyEvent): boolean {
-  return e.code === "KeyS" && e.ctrlKey && e.altKey && e.shiftKey && !e.metaKey;
-}

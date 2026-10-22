@@ -1,5 +1,11 @@
 import { describe, expect, test } from "vitest";
-import { denormalizePoint, displayRect, normalizePoint, relativeRect } from "./geometry";
+import {
+  denormalizePoint,
+  displayRect,
+  normalizePoint,
+  placePopover,
+  relativeRect,
+} from "./geometry";
 
 describe("displayRect", () => {
   test("pillarboxes a 16:9 stream in a 4:3 stage", () => {
@@ -118,5 +124,27 @@ describe("normalizePoint", () => {
     const { x, y } = normalizePoint(123, 456, box);
     const back = denormalizePoint(x, y, box);
     expect([Math.round(back.x), Math.round(back.y)]).toEqual([123, 456]);
+  });
+});
+
+describe("placePopover", () => {
+  const viewport = { width: 1000, height: 800 };
+  const size = { width: 200, height: 300 };
+  const anchor = (left: number, top: number) => ({ left, top, width: 40, height: 30 });
+
+  test.each([
+    ["below, start-aligned", anchor(100, 100), "start", { left: 100, top: 134 }],
+    ["below, end-aligned", anchor(500, 100), "end", { left: 340, top: 134 }],
+    ["above when there is no room below", anchor(100, 700), "start", { left: 100, top: 396 }],
+    ["clamped at the right edge", anchor(950, 100), "start", { left: 792, top: 134 }],
+    ["clamped at the left edge", anchor(10, 100), "end", { left: 8, top: 134 }],
+  ] as const)("%s", (_name, a, align, want) => {
+    expect(placePopover(a, size, viewport, align)).toEqual(want);
+  });
+
+  test("taller than the viewport sticks to the top margin", () => {
+    expect(placePopover(anchor(100, 400), { width: 200, height: 900 }, viewport, "start").top).toBe(
+      8,
+    );
   });
 });

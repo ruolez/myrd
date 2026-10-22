@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { api, ApiError, errorMessage } from "../api/client";
 import type { AppConfig, User } from "../api/types";
 import { ensureClientKey, forgetClientKeyCache } from "../lib/clientKey";
+import { forgetPreviewKeyCache } from "../lib/previewKey";
 import { signaling } from "../lib/signaling";
 
 type AuthState = {
@@ -37,6 +38,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } else {
       signaling.stop();
       forgetClientKeyCache();
+      forgetPreviewKeyCache();
     }
   }, []);
 
