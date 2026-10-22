@@ -42,7 +42,7 @@ AuditEvent{ "id":int,"ts","actor":"user|agent|admin|system","event","user_id","u
 ClientKey { "id","label","public_key":"<b64 SPKI>","created_at","last_used_at","revoked_at" }
 Passkey   { "id","name","created_at","last_used_at","transports":[string] }
 LoginSession { "id","ip","user_agent","created_at","last_seen_at","expires_at","current":bool }
-Release   { "id","version","os":"darwin|windows","arch":"amd64|arm64|universal","url":"/v1/releases/<id>/file",
+Release   { "id","version","os":"darwin|windows","arch":"amd64|arm64|universal|amd64-win7","url":"/v1/releases/<id>/file",
             "filename","size","sha256","signature","key_id","rollout_pct":0..100,"published_at":ts|null,"created_at",
             "installer":bool,                 // also served as the Add-device download for its os
             "devices":int }                   // devices currently reporting this version
@@ -132,7 +132,7 @@ Rate limit: 10 failed attempts / 15 min per IP and per email → 429.
 | GET | `/v1/admin/audit?user_id=&device_id=&event=&actor=&limit=&before=` | paged `AuditEvent` |
 | GET | `/v1/admin/releases` | `{items:[Release]}`, newest version first |
 | POST | `/v1/admin/releases` | `multipart/form-data`: part `sig` (the `.sig` sidecar, ≤ 4 KB) **before** part `file` (the installer, ≤ 512 MB); optional field `rollout_pct` (default 100) before `file`. The sidecar must verify against the server's release key and match the uploaded bytes (sha256, size, filename extension). → `{release}` (unpublished). 400 `bad_signature` \| `mismatch` \| `bad_request`, 409 `conflict` (same version/os/arch), 413 `too_large`. Audited `release.uploaded` |
-| PATCH | `/v1/admin/releases/{id}` | `{rollout_pct?, published?:bool}` → `{release}`; publishing or raising `rollout_pct` pushes `update.check` to the online devices it now applies to (spread over up to 10 min). A release that reaches 100% published (darwin `universal` or windows `amd64`) also becomes the Add-device download, unless that is already a release at least as new; audited `release.installer_set` with `auto: true` |
+| PATCH | `/v1/admin/releases/{id}` | `{rollout_pct?, published?:bool}` → `{release}`; publishing or raising `rollout_pct` pushes `update.check` to the online devices it now applies to (spread over up to 10 min). A release that reaches 100% published (darwin `universal`, windows `amd64` or `amd64-win7`) also becomes the Add-device download (`macos`, `windows`, `windows7`), unless that is already a release at least as new; audited `release.installer_set` with `auto: true` |
 | POST | `/v1/admin/releases/{id}/installer` | → `{release}`; the release's file becomes the Add-device download for its os (`/v1/downloads/{macos\|windows}`). Audited `release.installer_set` |
 | DELETE | `/v1/admin/releases/{id}` | → `{}`; removes the file |
 | POST | `/v1/admin/devices/{id}/update` | `{force?:bool}` → 202 `{version}`; as `/v1/devices/{id}/update` for any device |
@@ -392,7 +392,7 @@ Releases are signed offline; the server stores and serves them but cannot forge 
 ```
 "remotectl-release-v2\n" + version + "\n" + os + "\n" + arch + "\n" + lower(sha256hex)
 ```
-The URL is not signed; the SHA-256 pins the bytes. `os` ∈ `darwin|windows`, `arch` ∈ `amd64|arm64|universal`; installers are `.pkg` (darwin) and `.msi` (windows).
+The URL is not signed; the SHA-256 pins the bytes. `os` ∈ `darwin|windows`, `arch` ∈ `amd64|arm64|universal|amd64-win7`; installers are `.pkg` (darwin) and `.msi` (windows). `amd64-win7` is the Windows 7 build of the windows/amd64 agent (since 0.3.11: Go patched for Windows 7, GDI capture, CPU colour conversion, the software Media Foundation encoder): only with `os` windows, and that build enrolls and checks for updates as arch `amd64-win7`, so selection by exact arch keeps it and the normal Windows build apart. Its Add-device slot is `windows7`.
 
 **Sidecar** `<installer>.sig`, written by `remotectl-release sign`:
 ```jsonc
