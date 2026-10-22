@@ -10,8 +10,12 @@ import (
 // encoder plan derived from it. Everything here is pure; mediaPipe applies it.
 
 const (
-	speedKbps     = 4000
-	balancedKbps  = 8000
+	speedKbps    = 4000
+	balancedKbps = 8000
+	// autoFPS is Auto's frame rate unless the user picks one: at desktop work
+	// 60 fps is barely visible (the browser draws the pointer itself), and at
+	// the same budget each 30 fps frame gets the bits of two.
+	autoFPS       = 30
 	qualityKbps   = proto.StreamMaxKbps
 	backgroundFPS = 5
 )
@@ -115,8 +119,10 @@ func ResolveSettings(s StreamSettings, maxFPS int) Resolved {
 		r = Resolved{min(30, maxFPS), proto.Res1080p, balancedKbps}
 	case proto.PresetQuality:
 		r = Resolved{min(30, maxFPS), fullRes(s), qualityKbps}
-	default: // auto, custom
+	case proto.PresetCustom:
 		r = Resolved{maxFPS, fullRes(s), 0}
+	default: // auto
+		r = Resolved{min(autoFPS, maxFPS), fullRes(s), 0}
 	}
 	if s.FPS > 0 {
 		r.FPS = s.FPS
@@ -259,7 +265,11 @@ func PlanStream(in StreamInput) StreamPlan {
 			p.CeilKbps = min(p.CeilKbps, relayCeilKbps)
 		}
 	} else {
-		p.CeilKbps = CeilingKbps(p.W, p.H, p.FPS, in.Relay)
+		ceilFPS := p.FPS
+		if in.Settings.Preset == proto.PresetAuto && in.Settings.FPS == 0 && p.FPS == r.FPS {
+			ceilFPS = in.MaxFPS // the budget of the encoder's top rate, spent on sharper frames
+		}
+		p.CeilKbps = CeilingKbps(p.W, p.H, ceilFPS, in.Relay)
 		if p.Codec == platform.CodecVP9 && !in.Relay {
 			p.CeilKbps = min(int(float64(p.CeilKbps)*fullColorCost), autoCeilKbps)
 		}

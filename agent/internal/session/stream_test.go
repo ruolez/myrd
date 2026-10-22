@@ -30,7 +30,8 @@ func TestResolveSettings(t *testing.T) {
 		maxFPS int
 		want   Resolved
 	}{
-		{"auto", StreamSettings{Preset: proto.PresetAuto}, 60, Resolved{60, proto.ResNative, 0}},
+		{"auto", StreamSettings{Preset: proto.PresetAuto}, 60, Resolved{30, proto.ResNative, 0}},
+		{"auto 60 fps when chosen", StreamSettings{Preset: proto.PresetAuto, FPS: 60}, 60, Resolved{60, proto.ResNative, 0}},
 		{"auto software", StreamSettings{Preset: proto.PresetAuto}, 30, Resolved{30, proto.ResNative, 0}},
 		{"auto ceilings", StreamSettings{Preset: proto.PresetAuto, FPS: 30, Res: proto.Res1080p, MaxKbps: 5000}, 60,
 			Resolved{30, proto.Res1080p, 5000}},
@@ -41,7 +42,7 @@ func TestResolveSettings(t *testing.T) {
 		{"quality", StreamSettings{Preset: proto.PresetQuality}, 60, Resolved{30, proto.ResNative, 50000}},
 		{"quality fps override", StreamSettings{Preset: proto.PresetQuality, FPS: 60}, 60, Resolved{60, proto.ResNative, 50000}},
 		{"auto with a view fits the window", StreamSettings{Preset: proto.PresetAuto, View: View{1600, 900}}, 60,
-			Resolved{60, proto.ResWindow, 0}},
+			Resolved{30, proto.ResWindow, 0}},
 		{"quality with a view fits the window", StreamSettings{Preset: proto.PresetQuality, View: View{1600, 900}}, 60,
 			Resolved{30, proto.ResWindow, 50000}},
 		{"speed keeps its size with a view", StreamSettings{Preset: proto.PresetSpeed, View: View{1600, 900}}, 60,
@@ -52,7 +53,7 @@ func TestResolveSettings(t *testing.T) {
 		{"custom all", StreamSettings{Preset: proto.PresetCustom, FPS: 15, Res: proto.Res720p, MaxKbps: 5000}, 60,
 			Resolved{15, proto.Res720p, 5000}},
 		{"custom fps above encoder cap", StreamSettings{Preset: proto.PresetCustom, FPS: 60}, 30, Resolved{30, proto.ResNative, 0}},
-		{"unknown preset behaves as auto", StreamSettings{Preset: "turbo"}, 60, Resolved{60, proto.ResNative, 0}},
+		{"unknown preset behaves as auto", StreamSettings{Preset: "turbo"}, 60, Resolved{30, proto.ResNative, 0}},
 	}
 	for _, c := range cases {
 		if got := ResolveSettings(c.s, c.maxFPS); got != c.want {
@@ -225,7 +226,7 @@ func TestSettingsFromRequestVectors(t *testing.T) {
 }
 
 func TestPlanStream(t *testing.T) {
-	top := &Rung{FPS: 60, Res: proto.ResNative, W: 1920, H: 1080}
+	top := &Rung{FPS: 30, Res: proto.ResNative, W: 1920, H: 1080}
 	low := &Rung{FPS: 15, Res: proto.Res720p, W: 1280, H: 720}
 	base := StreamInput{Settings: StreamSettings{Preset: proto.PresetAuto}, MaxFPS: 60, NativeW: 1920, NativeH: 1080, BweKbps: 5000, Rung: top}
 	with := func(f func(*StreamInput)) StreamInput { in := base; f(&in); return in }
@@ -234,20 +235,28 @@ func TestPlanStream(t *testing.T) {
 		in   StreamInput
 		want StreamPlan
 	}{
+		// 12125 = the 60 fps ceiling: Auto spends it on 30 fps frames.
 		{"auto top rung", base,
-			StreamPlan{Resolved{60, proto.ResNative, 0}, 60, 5000, 12125, 1920, 1080, 0, 0, 0}},
+			StreamPlan{Resolved{30, proto.ResNative, 0}, 30, 5000, 12125, 1920, 1080, 0, 0, 0}},
+		{"auto with 30 fps chosen keeps the 30 fps ceiling", with(func(in *StreamInput) { in.Settings.FPS = 30 }),
+			StreamPlan{Resolved{30, proto.ResNative, 0}, 30, 5000, 8000, 1920, 1080, 0, 0, 0}},
+		{"auto on a 30 fps encoder", with(func(in *StreamInput) { in.MaxFPS = 30 }),
+			StreamPlan{Resolved{30, proto.ResNative, 0}, 30, 5000, 8000, 1920, 1080, 0, 0, 0}},
+		{"auto 60 fps when chosen", with(func(in *StreamInput) {
+			in.Settings.FPS, in.Rung = 60, &Rung{FPS: 60, Res: proto.ResNative, W: 1920, H: 1080}
+		}), StreamPlan{Resolved{60, proto.ResNative, 0}, 60, 5000, 12125, 1920, 1080, 0, 0, 0}},
 		{"auto lower rung restarts smaller", with(func(in *StreamInput) { in.Rung = low }),
-			StreamPlan{Resolved{60, proto.ResNative, 0}, 15, 2345, 2345, 1280, 720, 0, 720, 0}},
+			StreamPlan{Resolved{30, proto.ResNative, 0}, 15, 2345, 2345, 1280, 720, 0, 720, 0}},
 		{"auto without a rung uses the ceilings", with(func(in *StreamInput) { in.Rung = nil }),
-			StreamPlan{Resolved{60, proto.ResNative, 0}, 60, 5000, 12125, 1920, 1080, 0, 0, 0}},
+			StreamPlan{Resolved{30, proto.ResNative, 0}, 30, 5000, 12125, 1920, 1080, 0, 0, 0}},
 		{"auto sized to the window", with(func(in *StreamInput) {
 			in.Settings.View, in.NativeW, in.NativeH = View{1600, 1000}, 2560, 1440
-			in.Rung = &Rung{FPS: 60, Res: proto.ResWindow, W: 1600, H: 900}
-		}), StreamPlan{Resolved{60, proto.ResWindow, 0}, 60, 5000, 8420, 1600, 900, 1600, 1000, 0}},
+			in.Rung = &Rung{FPS: 30, Res: proto.ResWindow, W: 1600, H: 900}
+		}), StreamPlan{Resolved{30, proto.ResWindow, 0}, 30, 5000, 8420, 1600, 900, 1600, 1000, 0}},
 		{"auto relay ceiling", with(func(in *StreamInput) { in.Relay, in.BweKbps = true, 12000 }),
-			StreamPlan{Resolved{60, proto.ResNative, 0}, 60, 6000, 6000, 1920, 1080, 0, 0, 0}},
+			StreamPlan{Resolved{30, proto.ResNative, 0}, 30, 6000, 6000, 1920, 1080, 0, 0, 0}},
 		{"estimate below the floor", with(func(in *StreamInput) { in.BweKbps = 200 }),
-			StreamPlan{Resolved{60, proto.ResNative, 0}, 60, 1000, 12125, 1920, 1080, 0, 0, 0}},
+			StreamPlan{Resolved{30, proto.ResNative, 0}, 30, 1000, 12125, 1920, 1080, 0, 0, 0}},
 		{"quality manual cap", with(func(in *StreamInput) { in.Settings, in.BweKbps = StreamSettings{Preset: proto.PresetQuality}, 25000 }),
 			StreamPlan{Resolved{30, proto.ResNative, 50000}, 30, 25000, 50000, 1920, 1080, 0, 0, 0}},
 		{"manual cap clamped on relay", with(func(in *StreamInput) {
@@ -261,18 +270,18 @@ func TestPlanStream(t *testing.T) {
 		{"background keeps the size", with(func(in *StreamInput) { in.Settings, in.Background = StreamSettings{Preset: proto.PresetQuality}, true }),
 			StreamPlan{Resolved{30, proto.ResNative, 50000}, 5, 1000, 50000, 1920, 1080, 0, 0, 0}},
 		{"background keeps auto's rung size", with(func(in *StreamInput) { in.Rung, in.Background = low, true }),
-			StreamPlan{Resolved{60, proto.ResNative, 0}, 5, 1000, 2345, 1280, 720, 0, 720, 0}},
+			StreamPlan{Resolved{30, proto.ResNative, 0}, 5, 1000, 2345, 1280, 720, 0, 720, 0}},
 		{"background never raises fps", with(func(in *StreamInput) {
 			in.Settings, in.Background = StreamSettings{Preset: proto.PresetCustom, FPS: 3}, true
 		}), StreamPlan{Resolved{3, proto.ResNative, 0}, 3, 1000, 2009, 1920, 1080, 0, 0, 0}},
 		{"full color raises the automatic ceiling", with(func(in *StreamInput) {
 			in.Settings.Color, in.FullColor, in.BweKbps = proto.ColorFull, true, 20000
-		}), StreamPlan{Resolved{60, proto.ResNative, 0}, 60, 15156, 15156, 1920, 1080, 0, 0, platform.CodecVP9}},
+		}), StreamPlan{Resolved{30, proto.ResNative, 0}, 30, 15156, 15156, 1920, 1080, 0, 0, platform.CodecVP9}},
 		{"full color asked for but not negotiated", with(func(in *StreamInput) { in.Settings.Color = proto.ColorFull }),
-			StreamPlan{Resolved{60, proto.ResNative, 0}, 60, 5000, 12125, 1920, 1080, 0, 0, platform.CodecH264}},
+			StreamPlan{Resolved{30, proto.ResNative, 0}, 30, 5000, 12125, 1920, 1080, 0, 0, platform.CodecH264}},
 		{"full color keeps the relay ceiling", with(func(in *StreamInput) {
 			in.Settings.Color, in.FullColor, in.Relay, in.BweKbps = proto.ColorFull, true, true, 20000
-		}), StreamPlan{Resolved{60, proto.ResNative, 0}, 60, 6000, 6000, 1920, 1080, 0, 0, platform.CodecVP9}},
+		}), StreamPlan{Resolved{30, proto.ResNative, 0}, 30, 6000, 6000, 1920, 1080, 0, 0, platform.CodecVP9}},
 		{"full color keeps a manual cap", with(func(in *StreamInput) {
 			in.Settings = StreamSettings{Preset: proto.PresetCustom, MaxKbps: 9000, Color: proto.ColorFull}
 			in.FullColor, in.BweKbps = true, 20000

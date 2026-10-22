@@ -304,7 +304,7 @@ B→A, the full desired state each time (idempotent; the latest wins). The brows
 |---|---|---|
 | `id` | u32, optional | echoed in the reply |
 | `preset` | `auto` \| `speed` \| `balanced` \| `quality` \| `custom` | required |
-| `fps` | null \| 1..60 | null = preset default; clamped to `max_fps`. In `auto` a ceiling |
+| `fps` | null \| 1..60 | null = preset default; clamped to `max_fps`. In `auto` a ceiling; null there is 30 fps (since 0.3.10) with the automatic bitrate ceiling of `max_fps`, so each frame gets the bits 60 fps would spread over two |
 | `res` | null \| `window` \| `native` \| `1440p` \| `1080p` \| `720p` \| `half` | null = preset default. `window` fits `view` (one edge exactly, so the browser draws the stream pixel for pixel; native without a `view`). Named sizes cap the **short edge** (1080p on 3440×1440 → 2580×1080), `half` halves both edges, nothing upscales. In `auto` a ceiling |
 | `max_kbps` | null \| 1000..50000 | null = automatic ceiling; otherwise a cap (sent bitrate = min(estimate, cap)); relay paths are capped at 6000 |
 | `background` | bool | hidden tab: 5 fps / 1 Mbps at the current size, Auto frozen |

@@ -72,7 +72,7 @@ func TestLoopbackStreamSettings(t *testing.T) {
 	st := h.waitControl(t, "stream")
 	expectFields(t, "initial state", st, map[string]any{"ok": true, "preset": "auto", "fps": nil, "width": 1920, "height": 1080,
 		"native_width": 1920, "native_height": 1080, "max_fps": 60, "background": false})
-	if auto, ok := st["auto"].(map[string]any); !ok || auto["rungs"] != float64(6) {
+	if auto, ok := st["auto"].(map[string]any); !ok || auto["rungs"] != float64(5) {
 		t.Fatalf("auto = %v", st["auto"])
 	}
 	waitFor(t, "capture", func() bool { return len(h.backend.Starts()) == 1 })
