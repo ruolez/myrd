@@ -129,7 +129,12 @@ func restrictACL(path string, dir bool) error {
 }
 
 func currentUserSID() (string, error) {
-	tok := windows.GetCurrentProcessToken()
+	// Not GetCurrentProcessToken: its pseudo-handle needs Windows 8.
+	tok, err := windows.OpenCurrentProcessToken()
+	if err != nil {
+		return "", err
+	}
+	defer tok.Close()
 	u, err := tok.GetTokenUser()
 	if err != nil {
 		return "", err

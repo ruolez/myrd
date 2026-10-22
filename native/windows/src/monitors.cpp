@@ -15,7 +15,7 @@ static float monitor_scale(HMONITOR hmon) {
     static bool loaded = false;
     if (!loaded) {
         loaded = true;
-        HMODULE shcore = LoadLibraryW(L"shcore.dll");
+        HMODULE shcore = load_system_dll(L"shcore.dll"); // Windows 8.1+; absent on 7
         if (shcore) fn = (GetDpiForMonitorFn)(void *)GetProcAddress(shcore, "GetDpiForMonitor");
     }
     UINT dx = 96, dy = 96;

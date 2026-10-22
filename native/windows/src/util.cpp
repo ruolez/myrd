@@ -44,6 +44,32 @@ void wide_to_utf8(const wchar_t *w, char *out, int cap) {
     if (n <= 0) out[cap - 1] = 0;
 }
 
+bool os_before_win8() {
+    static int before = -1;
+    if (before < 0) {
+        // RtlGetVersion, unlike GetVersionEx, is not shimmed to the manifest's version.
+        typedef LONG(WINAPI * RtlGetVersionFn)(OSVERSIONINFOW *);
+        OSVERSIONINFOW v = {};
+        v.dwOSVersionInfoSize = sizeof(v);
+        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        RtlGetVersionFn fn = ntdll ? (RtlGetVersionFn)(void *)GetProcAddress(ntdll, "RtlGetVersion") : nullptr;
+        before = fn && fn(&v) == 0 && (v.dwMajorVersion < 6 || (v.dwMajorVersion == 6 && v.dwMinorVersion < 2)) ? 1 : 0;
+    }
+    return before == 1;
+}
+
+HMODULE load_system_dll(const wchar_t *name) {
+    HMODULE m = LoadLibraryExW(name, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (m || GetLastError() != ERROR_INVALID_PARAMETER) return m;
+    // Windows 7 without KB2533623 has no LOAD_LIBRARY_SEARCH_*: use the full path.
+    wchar_t path[MAX_PATH];
+    UINT n = GetSystemDirectoryW(path, MAX_PATH);
+    if (n == 0 || n + 1 + wcslen(name) >= MAX_PATH) return nullptr;
+    path[n] = L'\\';
+    wcscpy(path + n + 1, name);
+    return LoadLibraryW(path);
+}
+
 int64_t now_us() {
     static LARGE_INTEGER freq = {};
     if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);

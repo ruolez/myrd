@@ -18,17 +18,17 @@ static bool sym(HMODULE m, const char *name, T *out) {
 }
 
 static BOOL CALLBACK load_mf(PINIT_ONCE, PVOID, PVOID *) {
-    HMODULE m = LoadLibraryExW(L"mfplat.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    HMODULE m = load_system_dll(L"mfplat.dll");
     if (!m) {
         logf("mf: mfplat.dll not available (Windows N without Media Feature Pack?)");
         return TRUE;
     }
     g_mf.ok = sym(m, "MFStartup", &g_mf.Startup) && sym(m, "MFShutdown", &g_mf.Shutdown) &&
               sym(m, "MFCreateMediaType", &g_mf.CreateMediaType) && sym(m, "MFCreateSample", &g_mf.CreateSample) &&
-              sym(m, "MFCreateMemoryBuffer", &g_mf.CreateMemoryBuffer) &&
-              sym(m, "MFCreateDXGISurfaceBuffer", &g_mf.CreateDXGISurfaceBuffer) &&
-              sym(m, "MFCreateDXGIDeviceManager", &g_mf.CreateDXGIDeviceManager) &&
-              sym(m, "MFTEnumEx", &g_mf.TEnumEx);
+              sym(m, "MFCreateMemoryBuffer", &g_mf.CreateMemoryBuffer) && sym(m, "MFTEnumEx", &g_mf.TEnumEx);
+    // Windows 8+: without them (Windows 7) only the software encoder on CPU frames is usable.
+    sym(m, "MFCreateDXGISurfaceBuffer", &g_mf.CreateDXGISurfaceBuffer);
+    sym(m, "MFCreateDXGIDeviceManager", &g_mf.CreateDXGIDeviceManager);
     if (!g_mf.ok) logf("mf: mfplat.dll is missing exports");
     return TRUE;
 }

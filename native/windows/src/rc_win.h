@@ -82,6 +82,13 @@ void wide_to_utf8(const wchar_t *w, char *out, int cap);
 // ---- time ----
 int64_t now_us();
 
+// ---- OS ----
+// True before Windows 8: no Desktop Duplication, no D3D11 video processor and
+// a software H.264 encoder limited to 1920×1088 (the GDI capture path).
+bool os_before_win8();
+// LoadLibraryEx from System32 only, also on Windows 7 without KB2533623.
+HMODULE load_system_dll(const wchar_t *name);
+
 // ---- desktops ----
 // Attaches the calling thread to the current input desktop (Default,
 // Winlogon for UAC / lock screen). Cheap when nothing changed; safe to call
@@ -113,6 +120,7 @@ struct MfApi {
     HRESULT(WINAPI *CreateMediaType)(IMFMediaType **) = nullptr;
     HRESULT(WINAPI *CreateSample)(IMFSample **) = nullptr;
     HRESULT(WINAPI *CreateMemoryBuffer)(DWORD, IMFMediaBuffer **) = nullptr;
+    // Windows 8+; null on Windows 7.
     HRESULT(WINAPI *CreateDXGISurfaceBuffer)(REFIID, IUnknown *, UINT, BOOL, IMFMediaBuffer **) = nullptr;
     HRESULT(WINAPI *CreateDXGIDeviceManager)(UINT *, IMFDXGIDeviceManager **) = nullptr;
     HRESULT(WINAPI *TEnumEx)(GUID, UINT32, const MFT_REGISTER_TYPE_INFO *, const MFT_REGISTER_TYPE_INFO *,
@@ -131,7 +139,8 @@ struct EncoderConfig {
     int profile_idc; // negotiated H.264 profile: the most the encoder may use
 };
 class Encoder;
-// Creates an encoder on dev. prefer_hw=false skips hardware MFTs.
+// Creates an encoder on dev. prefer_hw=false skips hardware MFTs. dev may be
+// null: a software encoder fed CPU frames (encoder_encode_nv12).
 Encoder *encoder_create(ID3D11Device *dev, const EncoderConfig &cfg, bool prefer_hw,
                         rc_frame_fn on_frame, void *user);
 void encoder_destroy(Encoder *e);
@@ -143,8 +152,15 @@ void encoder_destroy(Encoder *e);
 // are delivered with the encoded frame.
 bool encoder_encode(Encoder *e, ID3D11Texture2D *nv12, int64_t pts_us, bool force_key, bool *fatal, int max_qp,
                     int32_t flags);
+// Same for one frame in system memory: tightly packed NV12, width×height
+// luma then the interleaved chroma (encoders created without a device).
+bool encoder_encode_nv12(Encoder *e, const uint8_t *nv12, int64_t pts_us, bool force_key, bool *fatal, int max_qp,
+                         int32_t flags);
 // True when the encoder can bound its quantizer per frame (refinement).
 bool encoder_can_refine(Encoder *e);
+// False when force_key is ignored (Windows 7's encoder has no
+// AVEncVideoForceKeyFrame): a keyframe then needs a new encoder.
+bool encoder_can_force_key(Encoder *e);
 void encoder_set_bitrate(Encoder *e, int kbps);
 const char *encoder_name(Encoder *e);
 // Probes MF for an H.264 hardware MFT; "mf-hw" or "mf-sw".

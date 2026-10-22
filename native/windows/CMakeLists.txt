@@ -10,7 +10,7 @@
 #   cmake -S native/windows -B native/windows/build/cmake -A x64
 #   cmake --build native/windows/build/cmake --config Release
 cmake_minimum_required(VERSION 3.24)
-project(rcnative CXX)
+project(rcnative C CXX)
 
 option(RC_WGC "Enable the Windows.Graphics.Capture path (needs C++/WinRT from the Windows SDK)" ON)
 
@@ -19,9 +19,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 file(GLOB RC_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
-add_library(rcnative SHARED ${RC_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/rcnative.def)
+add_library(rcnative SHARED ${RC_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/../common/rc_nv12.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/rcnative.def)
 target_compile_definitions(rcnative PRIVATE UNICODE _UNICODE _WIN32_WINNT=0x0A00 WINVER=0x0A00 NOMINMAX WIN32_LEAN_AND_MEAN)
 target_include_directories(rcnative PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_include_directories(rcnative PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../common)
 target_link_libraries(rcnative PRIVATE d3d11 dxgi mfuuid ole32 oleaut32 user32 gdi32 winmm wtsapi32 advapi32)
 if(MSVC)
   target_compile_options(rcnative PRIVATE /W4 /permissive- /Zc:__cplusplus /EHsc /GS /guard:cf /utf-8)

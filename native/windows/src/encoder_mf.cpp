@@ -1,7 +1,8 @@
 // Media Foundation H.264 encoder: hardware async MFT on the shared D3D11
 // device when available ("mf-hw"), the synchronous software MFT otherwise
-// ("mf-sw"). Input is NV12; output is Annex-B access units with SPS/PPS
-// in front of every IDR.
+// ("mf-sw"). Input is NV12, as a texture or (no device: Windows 7) a frame in
+// system memory; output is Annex-B access units with SPS/PPS in front of
+// every IDR.
 #include "rc_win.h"
 
 #include <mfapi.h>
@@ -60,7 +61,7 @@ public:
     rc_frame_fn on_frame = nullptr;
     void *user = nullptr;
 
-    ID3D11Device *dev = nullptr; // borrowed
+    ID3D11Device *dev = nullptr; // borrowed; null: frames come from system memory
     Com<ID3D11DeviceContext> ctx;
     Com<IMFTransform> mft;
     Com<ICodecAPI> codec;
@@ -87,6 +88,7 @@ public:
     const char *name = "mf-sw";
     UINT32 profile = eAVEncH264VProfile_Base;
     bool can_refine = false;
+    bool can_force_key = false;
     bool clamped = false;                         // AVEncVideoMaxQP is below 51
     // Input sample times with RC_FRAME_* flags to deliver with their output (out_lock).
     LONGLONG tag_times[4] = {-1, -1, -1, -1};
@@ -107,9 +109,8 @@ public:
             if (SUCCEEDED(attrs->GetUINT32(MF_SA_D3D11_AWARE, &v)) && v) d3d_aware = true;
             attrs->SetUINT32(MF_LOW_LATENCY, TRUE);
         }
-        if (d3d_aware && dm) {
-            if (FAILED(mft->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, (ULONG_PTR)dm.get()))) d3d_aware = false;
-        }
+        if (d3d_aware && (!dm || FAILED(mft->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, (ULONG_PTR)dm.get()))))
+            d3d_aware = false;
 
         HRESULT hr = mft->GetStreamIDs(1, &in_id, 1, &out_id);
         if (hr == E_NOTIMPL) { in_id = 0; out_id = 0; }
@@ -141,7 +142,7 @@ public:
         }
         if (out_cb < cfg.width * cfg.height) out_cb = cfg.width * cfg.height; // generous for IDRs
 
-        if (!d3d_aware) {
+        if (!d3d_aware && dev) {
             D3D11_TEXTURE2D_DESC td = {};
             td.Width = cfg.width;
             td.Height = cfg.height;
@@ -159,6 +160,7 @@ public:
 
         can_refine = codec && codec->IsSupported(&CODECAPI_AVEncVideoMaxQP) == S_OK &&
                      codec->IsModifiable(&CODECAPI_AVEncVideoMaxQP) == S_OK;
+        can_force_key = codec && codec->IsSupported(&CODECAPI_AVEncVideoForceKeyFrame) == S_OK;
         if (async) {
             if (FAILED(mft.as(events))) return false;
         }
@@ -366,25 +368,57 @@ public:
         return true;
     }
 
+    // Copies a tightly packed NV12 frame into a new memory buffer.
+    bool make_input_nv12(const uint8_t *nv12, IMFMediaBuffer **out) {
+        DWORD size = cfg.width * cfg.height * 3 / 2;
+        Com<IMFMediaBuffer> b;
+        BYTE *dst = nullptr;
+        if (FAILED(mf().CreateMemoryBuffer(size, b.put())) || FAILED(b->Lock(&dst, nullptr, nullptr))) return false;
+        memcpy(dst, nv12, size);
+        b->Unlock();
+        b->SetCurrentLength(size);
+        *out = b.get();
+        (*out)->AddRef();
+        return true;
+    }
+
     bool encode(ID3D11Texture2D *nv12, int64_t pts_us, bool force_key, bool *fatal, int max_qp, int32_t flags) {
         *fatal = false;
         if (async && need_input <= 0) return false;
-        if (base_pts < 0) base_pts = pts_us;
-
-        Com<IMFSample> sample;
         Com<IMFMediaBuffer> buf;
-        if (FAILED(mf().CreateSample(sample.put())) || !make_input(nv12, buf.put())) {
+        if (!dev || !make_input(nv12, buf.put())) {
             *fatal = true;
             return false;
         }
-        sample->AddBuffer(buf.get());
+        return submit(buf.get(), pts_us, force_key, fatal, max_qp, flags);
+    }
+
+    bool encode_nv12(const uint8_t *nv12, int64_t pts_us, bool force_key, bool *fatal, int max_qp, int32_t flags) {
+        *fatal = false;
+        if (async && need_input <= 0) return false;
+        Com<IMFMediaBuffer> buf;
+        if (!make_input_nv12(nv12, buf.put())) {
+            *fatal = true;
+            return false;
+        }
+        return submit(buf.get(), pts_us, force_key, fatal, max_qp, flags);
+    }
+
+    bool submit(IMFMediaBuffer *buf, int64_t pts_us, bool force_key, bool *fatal, int max_qp, int32_t flags) {
+        if (base_pts < 0) base_pts = pts_us;
+        Com<IMFSample> sample;
+        if (FAILED(mf().CreateSample(sample.put()))) {
+            *fatal = true;
+            return false;
+        }
+        sample->AddBuffer(buf);
         sample->SetSampleTime((pts_us - base_pts) * 10);
         // Frames are damage-driven: the duration is the real gap, not 1/fps.
         int64_t dur = 10000000LL / (cfg.fps > 0 ? cfg.fps : 30);
         if (last_in_pts >= 0 && pts_us > last_in_pts && pts_us - last_in_pts < 1000000) dur = (pts_us - last_in_pts) * 10;
         last_in_pts = pts_us;
         sample->SetSampleDuration(dur);
-        if (force_key) codec_ui4(codec.get(), CODECAPI_AVEncVideoForceKeyFrame, 1);
+        if (force_key && can_force_key) codec_ui4(codec.get(), CODECAPI_AVEncVideoForceKeyFrame, 1);
         if (can_refine && (max_qp > 0 || clamped)) {
             codec_ui4(codec.get(), CODECAPI_AVEncVideoMaxQP, (ULONG)(max_qp > 0 ? max_qp : 51));
             clamped = max_qp > 0;
@@ -507,12 +541,12 @@ Encoder *encoder_create(ID3D11Device *dev, const EncoderConfig &cfg, bool prefer
     e->on_frame = on_frame;
     e->user = user;
     e->dev = dev;
-    dev->GetImmediateContext(e->ctx.put());
+    if (dev) dev->GetImmediateContext(e->ctx.put());
     UINT token = 0;
-    if (SUCCEEDED(mf().CreateDXGIDeviceManager(&token, e->dm.put()))) {
+    if (dev && mf().CreateDXGIDeviceManager && SUCCEEDED(mf().CreateDXGIDeviceManager(&token, e->dm.put()))) {
         if (FAILED(e->dm->ResetDevice(dev, token))) e->dm.reset();
     }
-    if (prefer_hw && open_from_enum(e, MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER)) {
+    if (prefer_hw && dev && open_from_enum(e, MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER)) {
         e->name = "mf-hw";
         return e;
     }
@@ -531,7 +565,14 @@ bool encoder_encode(Encoder *e, ID3D11Texture2D *nv12, int64_t pts_us, bool forc
     return e->encode(nv12, pts_us, force_key, fatal, max_qp, flags);
 }
 
+bool encoder_encode_nv12(Encoder *e, const uint8_t *nv12, int64_t pts_us, bool force_key, bool *fatal, int max_qp,
+                         int32_t flags) {
+    return e->encode_nv12(nv12, pts_us, force_key, fatal, max_qp, flags);
+}
+
 bool encoder_can_refine(Encoder *e) { return e && e->can_refine; }
+
+bool encoder_can_force_key(Encoder *e) { return e && e->can_force_key; }
 
 void encoder_set_bitrate(Encoder *e, int kbps) { e->set_bitrate(kbps); }
 

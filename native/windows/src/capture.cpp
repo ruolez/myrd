@@ -2,19 +2,23 @@
 // desktop when built with RC_HAVE_WGC, DXGI Desktop Duplication otherwise and
 // always on secure desktops), converts BGRA → NV12 with the D3D11 video
 // processor, and feeds the MF encoder. Full color (RC_CODEC_VP9) scales to
-// BGRA instead, reads it back and encodes with rc_vpx on this thread. One
-// capture at a time.
+// BGRA instead, reads it back and encodes with rc_vpx on this thread.
+// Before Windows 8 (no Desktop Duplication, no video processor) frames come
+// from GDI into system memory, are converted on the CPU and go to the
+// software MFT (run_loop_cpu). One capture at a time.
 #include "rc_win.h"
 
 #ifdef RC_HAVE_VPX
 #include "rc_vpx.h"
 #endif
+#include "rc_nv12.h"
 
 #include <d3d10.h>
 #include <dxgi1_5.h>
 #include <mfapi.h>
 #include <mmsystem.h>
 
+#include <stdlib.h>
 #include <vector>
 
 #ifdef RC_HAVE_WGC
@@ -239,6 +243,102 @@ private:
 };
 #endif
 
+// ---------------------------------------------------------------- GDI
+
+// Copies (and scales) the monitor into a 32-bit DIB on every grab. GDI reports
+// no damage, so each copy is compared with the previous one row by row.
+class GdiGrabber {
+public:
+    ~GdiGrabber() { close(); }
+
+    bool open(const RECT &src, UINT w, UINT h) {
+        close();
+        src_ = src;
+        w_ = w;
+        h_ = h;
+        mem_ = CreateCompatibleDC(nullptr);
+        if (!mem_) return false;
+        BITMAPINFO bi = {};
+        bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+        bi.bmiHeader.biWidth = (LONG)w;
+        bi.bmiHeader.biHeight = -(LONG)h; // top-down
+        bi.bmiHeader.biPlanes = 1;
+        bi.bmiHeader.biBitCount = 32;
+        bi.bmiHeader.biCompression = BI_RGB;
+        for (int i = 0; i < 2; i++) {
+            bmp_[i] = CreateDIBSection(nullptr, &bi, DIB_RGB_COLORS, &bits_[i], nullptr, 0);
+            if (!bmp_[i]) {
+                logf("capture: CreateDIBSection %ux%u failed", w, h);
+                close();
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Copies the screen. *changed is the fraction of rows that differ from the
+    // previous copy (1 for the first). False when the copy failed.
+    bool grab(float *changed) {
+        *changed = 0;
+        attach_input_desktop(); // UAC and the lock screen are other desktops
+        HDC screen = GetDC(nullptr);
+        if (!screen) return false;
+        int next = have_ ? cur_ ^ 1 : cur_;
+        HGDIOBJ old = SelectObject(mem_, bmp_[next]);
+        int sw = src_.right - src_.left, sh = src_.bottom - src_.top;
+        BOOL ok;
+        if (sw == (int)w_ && sh == (int)h_) {
+            ok = BitBlt(mem_, 0, 0, (int)w_, (int)h_, screen, src_.left, src_.top, SRCCOPY);
+        } else {
+            SetStretchBltMode(mem_, HALFTONE);
+            SetBrushOrgEx(mem_, 0, 0, nullptr);
+            ok = StretchBlt(mem_, 0, 0, (int)w_, (int)h_, screen, src_.left, src_.top, sw, sh, SRCCOPY);
+        }
+        SelectObject(mem_, old);
+        ReleaseDC(nullptr, screen);
+        if (!ok) return false;
+        GdiFlush();
+        if (!have_) {
+            have_ = true;
+            *changed = 1;
+            return true;
+        }
+        size_t stride = (size_t)w_ * 4;
+        const uint8_t *a = (const uint8_t *)bits_[next], *b = (const uint8_t *)bits_[cur_];
+        UINT rows = 0;
+        for (UINT y = 0; y < h_; y++)
+            if (memcmp(a + y * stride, b + y * stride, stride) != 0) rows++;
+        if (rows > 0) cur_ = next;
+        *changed = (float)rows / (float)h_;
+        return true;
+    }
+
+    bool have() const { return have_; }
+    const uint8_t *pixels() const { return (const uint8_t *)bits_[cur_]; }
+    int stride() const { return (int)w_ * 4; }
+
+private:
+    void close() {
+        for (int i = 0; i < 2; i++) {
+            if (bmp_[i]) DeleteObject(bmp_[i]);
+            bmp_[i] = nullptr;
+            bits_[i] = nullptr;
+        }
+        if (mem_) DeleteDC(mem_);
+        mem_ = nullptr;
+        have_ = false;
+        cur_ = 0;
+    }
+
+    RECT src_{};
+    UINT w_ = 0, h_ = 0;
+    HDC mem_ = nullptr;
+    HBITMAP bmp_[2] = {};
+    void *bits_[2] = {};
+    int cur_ = 0; // the newest copy
+    bool have_ = false;
+};
+
 // ---------------------------------------------------------------- state
 
 static const int kRing = 4;
@@ -280,6 +380,9 @@ struct Capture {
     Encoder *enc = nullptr;
     Source *src = nullptr;
     bool full_color = false; // cfg.codec == RC_CODEC_VP9: ring is BGRA, read back through staging
+    bool cpu = false;        // GDI capture, CPU conversion, software MFT (run_loop_cpu)
+    GdiGrabber *gdi = nullptr;
+    std::vector<uint8_t> nv12; // cpu: the frame handed to the encoder
 #ifdef RC_HAVE_VPX
     rc_vpx *vpx = nullptr;
 #endif
@@ -429,6 +532,18 @@ static bool encode_full_color(Capture *c, int idx, int64_t now, bool key, int ma
 }
 #endif
 
+// (Re)creates the H.264 encoder at the current rate; false when none is left.
+static bool make_encoder(Capture *c, bool prefer_hw) {
+    if (c->enc) encoder_destroy(c->enc);
+    EncoderConfig ec = {c->dst_w, c->dst_h, (int)c->fps, (int)c->bitrate_kbps, c->cfg.keyframe_interval_ms,
+                        c->cfg.profile_idc};
+    c->enc = encoder_create(c->cpu ? nullptr : c->dev.get(), ec, prefer_hw && !c->cpu, c->on_frame, c->user);
+    if (!c->enc) return false;
+    c->encoder = encoder_name(c->enc);
+    InterlockedExchange(&c->refine_ok, encoder_can_refine(c->enc) ? 1 : 0);
+    return true;
+}
+
 static Source *open_source(Capture *c) {
 #ifdef RC_HAVE_WGC
     if (input_desktop_is_default()) {
@@ -552,19 +667,150 @@ static void run_loop(Capture *c) {
         if (fatal) {
             // Hardware encoders can fail mid-session (driver reset); fall back to software.
             logf("capture: encoder failed, recreating with the software MFT");
-            encoder_destroy(c->enc);
-            EncoderConfig ec = {c->dst_w, c->dst_h, (int)c->fps, (int)c->bitrate_kbps, c->cfg.keyframe_interval_ms,
-                              c->cfg.profile_idc};
-            c->enc = encoder_create(c->dev.get(), ec, false, c->on_frame, c->user);
-            if (!c->enc) {
+            if (!make_encoder(c, false)) {
                 logf("capture: no encoder available, stopping");
                 return;
             }
-            c->encoder = encoder_name(c->enc);
-            InterlockedExchange(&c->refine_ok, encoder_can_refine(c->enc) ? 1 : 0);
             sent_any = false;
         }
     }
+}
+
+// The GDI pipeline: poll the screen at the frame rate while it changes (every
+// 100 ms once it has been still for a second), convert on the CPU, encode.
+static void run_loop_cpu(Capture *c) {
+    int64_t last_encode = 0, last_content = 0, last_poll = 0;
+    LONG applied_bitrate = c->bitrate_kbps, applied_fps = c->fps;
+    bool dirty = false, sent_any = false;
+    float changed = 0; // fraction of rows changed since the last encode
+    int failures = 0;
+
+    while (!c->stop) {
+        LONG br = c->bitrate_kbps;
+        LONG f = c->fps;
+        if (br != applied_bitrate && c->enc) {
+            encoder_set_bitrate(c->enc, br);
+            applied_bitrate = br;
+        }
+#ifdef RC_HAVE_VPX
+        if (c->vpx && (br != applied_bitrate || f != applied_fps)) {
+            rc_vpx_rate(c->vpx, br, f);
+            applied_bitrate = br;
+            applied_fps = f;
+        }
+#endif
+        int64_t interval = 1000000 / (f > 0 ? f : 30);
+        int64_t now = now_us();
+        int64_t poll = now - last_content < 1000000 || interval > 100000 ? interval : 100000;
+        if (now - last_poll >= poll) {
+            last_poll = now;
+            float part = 0;
+            if (c->gdi->grab(&part)) {
+                failures = 0;
+                if (part > 0) {
+                    changed = dirty ? (changed + part > 1 ? 1 : changed + part) : part;
+                    dirty = true;
+                    last_content = now_us();
+                }
+            } else if (++failures > 3) {
+                Sleep(50);
+            }
+        }
+
+        now = now_us();
+        bool key = InterlockedExchange(&c->keyframe_req, 0) != 0;
+        if (key && c->gdi->have()) dirty = true;
+        LONG refine = InterlockedExchange(&c->refine_qp, 0);
+        if (dirty || !sent_any || now - last_content < 100000) refine = 0;
+        if ((!dirty && !refine) || !c->gdi->have() || now - last_encode < interval - 1000) {
+            if (key) InterlockedExchange(&c->keyframe_req, 1);
+            if (refine) InterlockedCompareExchange(&c->refine_qp, refine, 0);
+            int64_t wake = last_poll + poll;
+            if (dirty && last_encode + interval < wake) wake = last_encode + interval;
+            int64_t ms = (wake - now_us()) / 1000;
+            Sleep((DWORD)(ms < 1 ? 1 : ms > 20 ? 20 : ms));
+            continue;
+        }
+
+        bool force = key || !sent_any;
+        bool fatal = false;
+        bool accepted;
+        int32_t flags = refine ? RC_FRAME_STATIC : (dirty && changed <= 0.02f) ? RC_FRAME_MINOR : 0;
+#ifdef RC_HAVE_VPX
+        if (c->vpx) {
+            rc_vpx_from_bgra(c->vpx, c->gdi->pixels(), c->gdi->stride());
+            accepted = rc_vpx_encode(c->vpx, now, force, refine > 0 ? (int)refine : 0, flags, c->on_frame, c->user) ==
+                       RC_OK;
+        } else
+#endif
+        {
+            // Windows 7's encoder cannot be told to send an IDR: a new one starts with one.
+            if (force && sent_any && !encoder_can_force_key(c->enc) && !make_encoder(c, false)) {
+                logf("capture: no encoder available, stopping");
+                return;
+            }
+            uint8_t *y = c->nv12.data();
+            rc_bgra_to_nv12(c->gdi->pixels(), c->gdi->stride(), (int)c->dst_w, (int)c->dst_h, y, (int)c->dst_w,
+                            y + (size_t)c->dst_w * c->dst_h, (int)c->dst_w);
+            accepted = encoder_encode_nv12(c->enc, y, now, force, &fatal, refine > 0 ? (int)refine : 0, flags);
+        }
+        if (accepted) {
+            last_encode = now;
+            dirty = false;
+            changed = 0;
+            sent_any = true;
+        } else if (force) {
+            InterlockedExchange(&c->keyframe_req, 1);
+        }
+        if (fatal) {
+            logf("capture: software encoder failed, recreating it");
+            if (!make_encoder(c, false)) {
+                logf("capture: no encoder available, stopping");
+                return;
+            }
+            sent_any = false;
+        }
+    }
+}
+
+// GDI instead of the D3D11 pipeline: before Windows 8, or when RC_CAPTURE=gdi
+// (to try this path on a newer system).
+static bool use_cpu_pipeline() {
+    char v[8] = {0};
+    DWORD n = GetEnvironmentVariableA("RC_CAPTURE", v, sizeof(v));
+    return os_before_win8() || (n > 0 && n < sizeof(v) && _stricmp(v, "gdi") == 0);
+}
+
+// Starts the GDI pipeline; an RC_* result.
+static int start_cpu(Capture *c, bool have_mf) {
+    rc_capture_config cfg = c->cfg;
+    if (!c->full_color && os_before_win8()) {
+        // Windows 7's H.264 encoder takes at most 1920×1088.
+        cfg.max_width = cfg.max_width > 0 && cfg.max_width < 1920 ? cfg.max_width : 1920;
+        cfg.max_height = cfg.max_height > 0 && cfg.max_height < 1088 ? cfg.max_height : 1088;
+    }
+    target_size(cfg, c->mon.pub.width, c->mon.pub.height, &c->dst_w, &c->dst_h);
+    c->gdi = new GdiGrabber();
+    if (!c->gdi->open(c->mon.rect, c->dst_w, c->dst_h)) return RC_ERR;
+    if (c->full_color) {
+#ifdef RC_HAVE_VPX
+        c->vpx = rc_vpx_open((int)c->dst_w, (int)c->dst_h, c->cfg.fps, c->cfg.bitrate_kbps);
+        if (c->vpx) {
+            c->encoder = "libvpx-vp9";
+            InterlockedExchange(&c->refine_ok, 1);
+            return RC_OK;
+        }
+#endif
+        logf("capture: no full-color encoder");
+        return RC_ERR_UNSUPPORTED;
+    }
+    c->nv12.resize((size_t)c->dst_w * c->dst_h * 3 / 2);
+    if (!make_encoder(c, false)) {
+        logf("capture: no H.264 encoder");
+        return have_mf ? RC_ERR : RC_ERR_UNSUPPORTED;
+    }
+    logf("capture: GDI %ux%u -> %ux%u, %s", c->mon.pub.width, c->mon.pub.height, c->dst_w, c->dst_h, c->encoder);
+    return RC_OK;
 }
 
 static DWORD WINAPI capture_thread(void *p) {
@@ -575,7 +821,12 @@ static DWORD WINAPI capture_thread(void *p) {
     attach_input_desktop();
 
     int result = RC_ERR;
+    c->cpu = use_cpu_pipeline();
     do {
+        if (c->cpu) {
+            result = start_cpu(c, have_mf);
+            break;
+        }
         if (!create_device(c)) break;
         target_size(c->cfg, c->mon.pub.width, c->mon.pub.height, &c->dst_w, &c->dst_h);
         if (!setup_processor(c, c->mon.pub.width, c->mon.pub.height, DXGI_FORMAT_B8G8R8A8_UNORM)) {
@@ -596,17 +847,10 @@ static DWORD WINAPI capture_thread(void *p) {
             }
             c->encoder = "libvpx-vp9";
             InterlockedExchange(&c->refine_ok, 1);
-        } else {
-            EncoderConfig ec = {c->dst_w, c->dst_h, c->cfg.fps, c->cfg.bitrate_kbps, c->cfg.keyframe_interval_ms,
-                                c->cfg.profile_idc};
-            c->enc = encoder_create(c->dev.get(), ec, true, c->on_frame, c->user);
-            if (!c->enc) {
-                logf("capture: no H.264 encoder");
-                result = have_mf ? RC_ERR : RC_ERR_UNSUPPORTED;
-                break;
-            }
-            c->encoder = encoder_name(c->enc);
-            InterlockedExchange(&c->refine_ok, encoder_can_refine(c->enc) ? 1 : 0);
+        } else if (!make_encoder(c, true)) {
+            logf("capture: no H.264 encoder");
+            result = have_mf ? RC_ERR : RC_ERR_UNSUPPORTED;
+            break;
         }
         c->src = open_source(c);
         result = RC_OK;
@@ -617,12 +861,17 @@ static DWORD WINAPI capture_thread(void *p) {
     SetEvent(c->started);
 
     if (result == RC_OK) {
-        run_loop(c);
+        if (c->cpu)
+            run_loop_cpu(c);
+        else
+            run_loop(c);
         cursor_stop();
     }
 
     delete c->src;
     c->src = nullptr;
+    delete c->gdi;
+    c->gdi = nullptr;
     if (c->enc) encoder_destroy(c->enc);
     c->enc = nullptr;
 #ifdef RC_HAVE_VPX
