@@ -49,11 +49,13 @@
       <dt>Agent</dt><dd id="s-version"></dd>
     </dl>
     <label class="toggle"><input type="checkbox" id="pause"> Pause — refuse new sessions</label>
+    <label class="toggle"><input type="checkbox" id="ask-new"> Ask before new browsers connect</label>
+    <p class="muted">Off: the first connection from your account is allowed and remembered without a prompt.</p>
   </section>
 
   <section class="card hidden" id="pins-card">
     <h2>Approved browsers</h2>
-    <p class="muted">Browsers you allowed with “Allow and remember”. Removing one makes it ask again.</p>
+    <p class="muted">Browsers allowed and remembered on this device. Removing one makes it ask again while “Ask before new browsers connect” is on; otherwise its next connection is remembered again.</p>
     <ul id="pins" class="list"></ul>
   </section>
 </main>

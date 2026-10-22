@@ -74,6 +74,7 @@ type Agent struct {
 
 	autoAccept atomic.Bool
 	paused     atomic.Bool
+	askNew     atomic.Bool // config.Prefs.AskNewBrowsers
 	installing atomic.Bool // refuse new sessions while the OS installer runs (BeforeInstall)
 	prompting  atomic.Bool // the enrollment token dialog is open
 	runCtx     context.Context
@@ -101,7 +102,12 @@ func New(cfg Config) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	prefs, err := config.LoadPrefs(cfg.Settings.DataDir)
+	if err != nil {
+		cfg.Log.Warn("prefs unreadable, using defaults", "err", err)
+	}
 	a := &Agent{cfg: cfg, log: cfg.Log, ks: cfg.Keystore, pins: ps, state: st, enrolled: make(chan struct{})}
+	a.askNew.Store(prefs.AskNewBrowsers)
 	a.fileFeed = tray.NewActivityFeed(a.setActivity, tray.Notify)
 	if st.Enrolled() {
 		close(a.enrolled)
@@ -194,6 +200,7 @@ func (a *Agent) Uninstall(ctx context.Context) error {
 	}
 	_ = a.ks.Delete()
 	_ = os.Remove(filepath.Join(a.cfg.Settings.DataDir, "pinned-clients.json"))
+	_ = os.Remove(config.PrefsPath(a.cfg.Settings.DataDir))
 	return config.Remove(a.cfg.Settings.DataDir)
 }
 
@@ -212,6 +219,16 @@ func (a *Agent) SetPaused(p bool) {
 	a.pushTray()
 }
 
+// SetAskNewBrowsers is the local "Ask before new browsers connect" switch.
+func (a *Agent) SetAskNewBrowsers(ask bool) {
+	a.askNew.Store(ask)
+	if err := config.SavePrefs(a.cfg.Settings.DataDir, config.Prefs{AskNewBrowsers: ask}); err != nil {
+		a.log.Error("saving prefs failed", "err", err)
+	}
+	a.log.Info("ask before new browsers connect", "on", ask)
+	a.pushTray()
+}
+
 func (a *Agent) currentHandler() session.Handler {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -223,6 +240,7 @@ func (a *Agent) TrayHooks(quit func()) tray.Hooks {
 	return tray.Hooks{
 		OnEndSession: a.EndSession,
 		OnPause:      a.SetPaused,
+		OnAskNew:     a.SetAskNewBrowsers,
 		OnQuit:       quit,
 		OnUninstall:  uninstallAction,
 		OnEnroll:     a.enrollAction(),
@@ -271,7 +289,7 @@ func (a *Agent) pushTray() {
 	a.mu.Lock()
 	up := a.trayUp
 	st := tray.State{Enrolled: a.state.Enrolled(), Online: a.sigState.Online, Paused: a.paused.Load(), Activity: a.activity,
-		Update: a.updLine}
+		Update: a.updLine, AskNew: a.askNew.Load()}
 	mgr := a.mgr
 	sigState := a.sigState
 	a.mu.Unlock()
@@ -309,7 +327,7 @@ func (a *Agent) consoleStatus() devconsole.Status {
 	a.mu.Unlock()
 	out := devconsole.Status{Enrolled: st.Enrolled(), DeviceID: st.DeviceID, Name: st.Name, ServerURL: st.ServerURL,
 		Hostname: a.cfg.Settings.Hostname, Version: a.cfg.Version, Online: ss.Online, LastError: ss.LastError,
-		Fatal: ss.Fatal, Paused: a.paused.Load(), Encoder: a.cfg.Backend.EncoderName(), Transfers: a.transfers.List()}
+		Fatal: ss.Fatal, Paused: a.paused.Load(), AskNewBrowsers: a.askNew.Load(), Encoder: a.cfg.Backend.EncoderName(), Transfers: a.transfers.List()}
 	if mgr != nil {
 		out.Session = mgr.Current()
 	}
@@ -405,7 +423,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.cfg.Settings.ConsoleAddr != "" {
 		a.console = devconsole.New(devconsole.Options{Addr: a.cfg.Settings.ConsoleAddr, Log: a.log, Pins: a.pins,
 			Status: a.consoleStatus, Enroll: a.Enroll, EndSession: a.EndSession, SetPaused: a.SetPaused,
-			OnPinsChanged: a.syncPins})
+			SetAskNewBrowsers: a.SetAskNewBrowsers, OnPinsChanged: a.syncPins})
 		go func() {
 			if err := a.console.Run(ctx); err != nil {
 				a.log.Error("device console failed", "err", err)
@@ -513,7 +531,7 @@ func (a *Agent) runConnected(ctx context.Context) error {
 		}
 		mgr, err = session.NewManager(session.Options{
 			Backend: a.cfg.Backend, DeviceKey: key, Pins: a.pins, Send: a.send, Prompter: prompter,
-			AutoAccept: a.autoAccept.Load, Paused: func() bool { return a.paused.Load() || a.installing.Load() },
+			AutoAccept: a.autoAccept.Load, AskNewBrowsers: a.askNew.Load, Paused: func() bool { return a.paused.Load() || a.installing.Load() },
 			OnPinsChanged:   a.syncPins,
 			OnSessionChange: func(*session.Info) { a.pushTray() },
 			UDPPort:         a.cfg.Settings.UDPPort, NAT1To1IPs: a.cfg.Settings.NAT1To1IPs,

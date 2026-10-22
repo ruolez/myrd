@@ -32,30 +32,34 @@ var staticFS embed.FS
 
 // Status is the device state the page renders.
 type Status struct {
-	Enrolled  bool             `json:"enrolled"`
-	DeviceID  string           `json:"device_id"`
-	Name      string           `json:"name"`
-	ServerURL string           `json:"server_url"`
-	Hostname  string           `json:"hostname"`
-	Version   string           `json:"version"`
-	Online    bool             `json:"online"`
-	LastError string           `json:"last_error"`
-	Fatal     string           `json:"fatal"`
-	Paused    bool             `json:"paused"`
-	Encoder   string           `json:"encoder"`
-	Session   *session.Info    `json:"session"`
-	Transfers []files.Activity `json:"transfers"` // newest first, see TransferLog
+	Enrolled  bool   `json:"enrolled"`
+	DeviceID  string `json:"device_id"`
+	Name      string `json:"name"`
+	ServerURL string `json:"server_url"`
+	Hostname  string `json:"hostname"`
+	Version   string `json:"version"`
+	Online    bool   `json:"online"`
+	LastError string `json:"last_error"`
+	Fatal     string `json:"fatal"`
+	Paused    bool   `json:"paused"`
+	// AskNewBrowsers: "Ask before new browsers connect" (config.Prefs).
+	AskNewBrowsers bool             `json:"ask_new_browsers"`
+	Encoder        string           `json:"encoder"`
+	Session        *session.Info    `json:"session"`
+	Transfers      []files.Activity `json:"transfers"` // newest first, see TransferLog
 }
 
 type Options struct {
-	Addr          string
-	Log           *slog.Logger
-	Pins          *pins.Store
-	Status        func() Status
-	Enroll        func(ctx context.Context, serverURL, token string) error
-	EndSession    func()
-	SetPaused     func(bool)
-	OnPinsChanged func()
+	Addr       string
+	Log        *slog.Logger
+	Pins       *pins.Store
+	Status     func() Status
+	Enroll     func(ctx context.Context, serverURL, token string) error
+	EndSession func()
+	SetPaused  func(bool)
+	// SetAskNewBrowsers is the "Ask before new browsers connect" switch.
+	SetAskNewBrowsers func(bool)
+	OnPinsChanged     func()
 }
 
 type prompt struct {
@@ -140,6 +144,19 @@ func (c *Console) Handler() http.Handler {
 		}
 		if c.o.SetPaused != nil {
 			c.o.SetPaused(in.Paused)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{})
+	}))
+	mux.HandleFunc("POST /api/prefs", c.guard(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			AskNewBrowsers bool `json:"ask_new_browsers"`
+		}
+		if json.NewDecoder(r.Body).Decode(&in) != nil {
+			writeErr(w, http.StatusBadRequest, "bad json")
+			return
+		}
+		if c.o.SetAskNewBrowsers != nil {
+			c.o.SetAskNewBrowsers(in.AskNewBrowsers)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{})
 	}))

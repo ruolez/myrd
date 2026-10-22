@@ -100,16 +100,18 @@ func Load(dataDir string) (State, error) {
 	return st, json.Unmarshal(b, &st)
 }
 
-func Save(dataDir string, st State) error {
+func Save(dataDir string, st State) error { return writeJSON(dataDir, statePath(dataDir), st) }
+
+func writeJSON(dataDir, path string, v any) error {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return err
 	}
-	b, _ := json.MarshalIndent(st, "", "  ")
-	tmp := statePath(dataDir) + ".tmp"
+	b, _ := json.MarshalIndent(v, "", "  ")
+	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, statePath(dataDir))
+	return os.Rename(tmp, path)
 }
 
 func Remove(dataDir string) error {
@@ -119,3 +121,30 @@ func Remove(dataDir string) error {
 	}
 	return err
 }
+
+// Prefs are choices made on the device itself (tray, device console),
+// persisted as prefs.json in the data dir. The zero value is the default.
+type Prefs struct {
+	// AskNewBrowsers prompts on the device before a browser it has not
+	// approved connects. Off: the first session from a browser is approved
+	// and remembered for its account, as "Allow and remember" would.
+	AskNewBrowsers bool `json:"ask_new_browsers"`
+}
+
+// PrefsPath is prefs.json in the data dir.
+func PrefsPath(dataDir string) string { return filepath.Join(dataDir, "prefs.json") }
+
+// LoadPrefs returns the defaults when none are stored.
+func LoadPrefs(dataDir string) (Prefs, error) {
+	var p Prefs
+	b, err := os.ReadFile(PrefsPath(dataDir))
+	if errors.Is(err, fs.ErrNotExist) {
+		return p, nil
+	}
+	if err != nil {
+		return p, err
+	}
+	return p, json.Unmarshal(b, &p)
+}
+
+func SavePrefs(dataDir string, p Prefs) error { return writeJSON(dataDir, PrefsPath(dataDir), p) }

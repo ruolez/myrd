@@ -715,8 +715,7 @@ export function SessionView() {
             <div className="text-lg">{phaseText[phase]}</div>
             {phase === "awaiting_approval" && (
               <p className="max-w-sm text-center text-sm text-white/70">
-                Someone at <b>{name}</b> must allow this browser on the device's own screen. New
-                browsers always need approval there.
+                Someone at <b>{name}</b> must allow this session on the device's own screen.
               </p>
             )}
             <button

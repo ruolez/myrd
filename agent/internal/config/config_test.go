@@ -31,3 +31,16 @@ func TestFromEnvParsesList(t *testing.T) {
 		t.Fatalf("got %+v", s)
 	}
 }
+
+func TestPrefsDefaultToNotAskingAndRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	if p, err := LoadPrefs(dir); err != nil || p.AskNewBrowsers {
+		t.Fatalf("fresh dir: %+v %v", p, err)
+	}
+	if err := SavePrefs(dir, Prefs{AskNewBrowsers: true}); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := LoadPrefs(dir); err != nil || !p.AskNewBrowsers {
+		t.Fatalf("got %+v %v", p, err)
+	}
+}

@@ -60,6 +60,11 @@ func onReady(h Hooks, ready func(update func(State))) {
 	}
 	systray.AddSeparator()
 	pause := systray.AddMenuItemCheckbox("Pause new sessions", "Refuse incoming sessions until unpaused", false)
+	var askNew *systray.MenuItem
+	if h.OnAskNew != nil {
+		askNew = systray.AddMenuItemCheckbox("Ask before new browsers connect",
+			"Show a prompt on this computer before a browser it has not approved connects. Off: the first connection from your account is allowed and remembered.", false)
+	}
 	end := systray.AddMenuItem("End session", "Disconnect the controlling browser now")
 	end.Disable()
 	systray.AddSeparator()
@@ -151,10 +156,20 @@ func onReady(h Hooks, ready func(update func(State))) {
 		} else {
 			pause.Uncheck()
 		}
+		if askNew != nil {
+			if s.AskNew {
+				askNew.Check()
+			} else {
+				askNew.Uncheck()
+			}
+		}
 	}
 
 	go func() {
-		var uninstallCh, enrollCh chan struct{}
+		var uninstallCh, enrollCh, askNewCh chan struct{}
+		if askNew != nil {
+			askNewCh = askNew.ClickedCh
+		}
 		if uninstall != nil {
 			uninstallCh = uninstall.ClickedCh
 		}
@@ -175,6 +190,16 @@ func onReady(h Hooks, ready func(update func(State))) {
 				if h.OnPause != nil {
 					h.OnPause(paused)
 				}
+			case <-askNewCh:
+				mu.Lock()
+				ask := !last.AskNew
+				mu.Unlock()
+				if ask {
+					askNew.Check()
+				} else {
+					askNew.Uncheck()
+				}
+				h.OnAskNew(ask)
 			case <-end.ClickedCh:
 				if h.OnEndSession != nil {
 					h.OnEndSession()

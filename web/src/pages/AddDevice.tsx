@@ -204,7 +204,10 @@ export function AddDevice() {
                   Paste the token above and press Enroll. The device appears online here within
                   seconds.
                 </li>
-                <li>Session approval prompts for new browsers also appear in that console.</li>
+                <li>
+                  Session prompts appear in that console too, such as for new browsers when “Ask
+                  before new browsers connect” is on.
+                </li>
               </ol>
               <Snippet
                 code={`DEMO_ENROLL_TOKEN=${t} docker compose --profile demo up -d demo-device`}

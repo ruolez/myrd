@@ -81,3 +81,26 @@ func TestIndexServed(t *testing.T) {
 		t.Fatalf("index: %v %v", err, resp.StatusCode)
 	}
 }
+
+func TestAskNewBrowsersSwitchedFromPage(t *testing.T) {
+	ps, _ := pins.Open(filepath.Join(t.TempDir(), "p.json"))
+	got := make(chan bool, 2)
+	c := New(Options{Pins: ps, Status: func() Status { return Status{} }, SetAskNewBrowsers: func(v bool) { got <- v }})
+	srv := httptest.NewServer(c.Handler())
+	t.Cleanup(srv.Close)
+	for _, want := range []bool{true, false} {
+		body := `{"ask_new_browsers":false}`
+		if want {
+			body = `{"ask_new_browsers":true}`
+		}
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/prefs", strings.NewReader(body))
+		req.Header.Set("X-Device-Console", "1")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil || resp.StatusCode != 200 {
+			t.Fatalf("prefs: %v %v", err, resp.StatusCode)
+		}
+		if v := <-got; v != want {
+			t.Fatalf("SetAskNewBrowsers(%v), want %v", v, want)
+		}
+	}
+}

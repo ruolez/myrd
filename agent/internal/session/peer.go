@@ -139,7 +139,9 @@ func (s *sess) run(o proto.SessionOffer) {
 		return
 	}
 
-	mode := decideConsent(m.o.Pins.Trusted(s.clientKey.PublicKey, s.userID), m.o.AutoAccept())
+	trusted := m.o.Pins.Trusted(s.clientKey.PublicKey, s.userID)
+	remember := !trusted && !m.o.AskNewBrowsers()
+	mode := decideConsent(trusted || remember, m.o.AutoAccept())
 	if mode != consentAuto {
 		s.setState(stateAwaiting)
 		s.send(proto.TypeSessionStatus, proto.SessionStatus{SessionID: s.id, Status: proto.StatusAwaitingApproval})
@@ -158,12 +160,13 @@ func (s *sess) run(o proto.SessionOffer) {
 			s.end(proto.EndNotApproved, true)
 			return
 		}
-		if c == platform.ConsentRemember {
-			if err := m.o.Pins.Pin(s.clientKey.PublicKey, s.clientKey.Label, s.userID, time.Now()); err != nil {
-				s.log.Error("pin failed", "err", err)
-			} else if m.o.OnPinsChanged != nil {
-				m.o.OnPinsChanged()
-			}
+		remember = remember || c == platform.ConsentRemember
+	}
+	if remember {
+		if err := m.o.Pins.Pin(s.clientKey.PublicKey, s.clientKey.Label, s.userID, time.Now()); err != nil {
+			s.log.Error("pin failed", "err", err)
+		} else if m.o.OnPinsChanged != nil {
+			m.o.OnPinsChanged()
 		}
 	}
 	s.send(proto.TypeSessionStatus, proto.SessionStatus{SessionID: s.id, Status: proto.StatusApproved})

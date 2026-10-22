@@ -362,10 +362,15 @@ func RunHelper(o Options) error {
 		return fmt.Errorf("pins: %w", err)
 	}
 
-	var autoAccept, paused atomic.Bool
+	var autoAccept, paused, askNew atomic.Bool
+	prefs, err := config.LoadPrefs(o.Settings.DataDir)
+	if err != nil {
+		o.Log.Warn("winsvc: prefs unreadable, using defaults", "err", err)
+	}
+	askNew.Store(prefs.AskNewBrowsers)
 	var trayUpdate atomic.Pointer[func(tray.State)]
 	var trayMu sync.Mutex
-	trayState := tray.State{Enrolled: true, Status: "Connecting…"}
+	trayState := tray.State{Enrolled: true, Status: "Connecting…", AskNew: prefs.AskNewBrowsers}
 	pushTray := func(f func(*tray.State)) {
 		trayMu.Lock()
 		f(&trayState)
@@ -384,12 +389,13 @@ func RunHelper(o Options) error {
 
 	var mgr *session.Manager
 	mgr, err = session.NewManager(session.Options{
-		Backend:    backend,
-		DeviceKey:  key,
-		Pins:       ps,
-		Send:       link.Send,
-		AutoAccept: autoAccept.Load,
-		Paused:     paused.Load,
+		Backend:        backend,
+		DeviceKey:      key,
+		Pins:           ps,
+		Send:           link.Send,
+		AutoAccept:     autoAccept.Load,
+		AskNewBrowsers: askNew.Load,
+		Paused:         paused.Load,
 		OnPinsChanged: func() {
 			link.Send(proto.TypePinsSync, proto.PinsSync{PinnedClientKeys: ps.List()})
 		},
@@ -459,6 +465,13 @@ func RunHelper(o Options) error {
 		OnPause: func(p bool) {
 			paused.Store(p)
 			pushTray(func(s *tray.State) { s.Paused = p })
+		},
+		OnAskNew: func(ask bool) {
+			askNew.Store(ask)
+			if err := config.SavePrefs(o.Settings.DataDir, config.Prefs{AskNewBrowsers: ask}); err != nil {
+				o.Log.Error("winsvc: saving prefs failed", "err", err)
+			}
+			pushTray(func(s *tray.State) { s.AskNew = ask })
 		},
 		OnQuit: func() {
 			link.Quit()

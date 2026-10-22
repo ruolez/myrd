@@ -33,6 +33,10 @@ type Options struct {
 
 	AutoAccept func() bool // device auto_accept from the server (hello_ack / device.update)
 	Paused     func() bool // tray/console "Pause": refuse new sessions
+	// AskNewBrowsers is the device-local "Ask before new browsers connect"
+	// (config.Prefs). Off (and nil): a browser the device has not approved
+	// is approved and remembered as if the owner chose "Allow and remember".
+	AskNewBrowsers func() bool
 
 	OnPinsChanged   func()      // send pins.sync
 	OnSessionChange func(*Info) // nil = no session; for tray + device console
@@ -107,6 +111,9 @@ func NewManager(o Options) (*Manager, error) {
 	}
 	if o.Paused == nil {
 		o.Paused = func() bool { return false }
+	}
+	if o.AskNewBrowsers == nil {
+		o.AskNewBrowsers = func() bool { return false }
 	}
 	m := &Manager{o: o, revoked: map[string]bool{}}
 	if o.Files != nil {

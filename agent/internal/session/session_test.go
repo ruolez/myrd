@@ -77,6 +77,7 @@ type harness struct {
 	cursorMsgs  chan []byte
 	rtpPackets  chan struct{}
 	autoAccept  bool
+	askNew      bool // the device-local pref; the harness asks, like devices before 0.3.15
 	cands       []string
 	fileRecs    []proto.SessionFile
 	signalOrder []string // session.file / session.end, as sent
@@ -108,14 +109,15 @@ func newHarness(t *testing.T, answer platform.Consent, tweaks ...func(*Options))
 		t.Fatal(err)
 	}
 	h := &harness{t: t, backend: fake.New(), pins: ps, prompter: &recordingPrompter{answer: answer},
-		devPub: pub, clientK: ck, spki: base64.StdEncoding.EncodeToString(der),
+		devPub: pub, clientK: ck, spki: base64.StdEncoding.EncodeToString(der), askNew: true,
 		answerOK: make(chan error, 4), controlMsgs: make(chan map[string]any, 64),
 		cursorMsgs: make(chan []byte, 256), rtpPackets: make(chan struct{}, 1),
 		fileText: make(chan map[string]any, 256), fileData: make(chan []byte, 1024)}
 	opts := Options{
 		Backend: h.backend, DeviceKey: priv, Pins: ps, Send: h.fromAgent, Prompter: h.prompter,
-		AutoAccept: func() bool { h.mu.Lock(); defer h.mu.Unlock(); return h.autoAccept },
-		Keymap:     keymap.X11, ConsentTimeout: 5 * time.Second, AgentVersion: "test",
+		AutoAccept:     func() bool { h.mu.Lock(); defer h.mu.Unlock(); return h.autoAccept },
+		AskNewBrowsers: func() bool { h.mu.Lock(); defer h.mu.Unlock(); return h.askNew },
+		Keymap:         keymap.X11, ConsentTimeout: 5 * time.Second, AgentVersion: "test",
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	for _, tw := range tweaks {
@@ -526,6 +528,45 @@ func TestAllowAndRememberRecordsTheAccount(t *testing.T) {
 	}
 	if got := h.pins.List(); len(got) != 1 || got[0].UserID != ownerID || got[0].Label != "Test Chrome" {
 		t.Fatalf("pins = %+v", got)
+	}
+}
+
+func TestNewBrowserApprovedAndRememberedWithoutAsking(t *testing.T) {
+	h := newHarness(t, platform.ConsentDeny)
+	h.askNew = false
+	h.autoAccept = true
+	h.offer(false)
+	if err := <-h.answerOK; err != nil {
+		t.Fatal(err)
+	}
+	statuses, _, _ := h.snapshot()
+	if len(h.prompter.calls()) != 0 || strings.Join(statuses, ",") != "approved" {
+		t.Fatalf("prompts=%d statuses=%v", len(h.prompter.calls()), statuses)
+	}
+	if got := h.pins.List(); len(got) != 1 || got[0].UserID != ownerID || got[0].Label != "Test Chrome" {
+		t.Fatalf("pins = %+v", got)
+	}
+}
+
+func TestAskEveryTimeStillAsksANewBrowserWhenNotAskingForNewOnes(t *testing.T) {
+	for _, c := range []struct {
+		answer     platform.Consent
+		wantPinned bool
+	}{{platform.ConsentOnce, true}, {platform.ConsentDeny, false}} {
+		h := newHarness(t, c.answer)
+		h.askNew = false
+		h.offer(false)
+		waitFor(t, "a decision", func() bool {
+			st, _, e := h.snapshot()
+			return len(e) > 0 || len(st) > 1
+		})
+		calls := h.prompter.calls()
+		if len(calls) != 1 || calls[0].NewKey || calls[0].Title != "Remote session request" {
+			t.Fatalf("answer %v: calls = %+v", c.answer, calls)
+		}
+		if h.pins.IsPinned(h.spki) != c.wantPinned {
+			t.Fatalf("answer %v: pinned = %v, want %v", c.answer, !c.wantPinned, c.wantPinned)
+		}
 	}
 }
 

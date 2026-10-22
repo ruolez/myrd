@@ -60,7 +60,7 @@ export function AdminSettingsPage() {
         </Row>
         <Row
           title="Ask every time by default"
-          description="Initial value for newly enrolled devices: prompt on the device for every session, even for remembered browsers. Owners can change it per device; unknown browsers always need on-device approval."
+          description="Initial value for newly enrolled devices: prompt on the device for every session, even for remembered browsers. Owners can change it per device. Without it, a device allows and remembers the first connection from its owner's account, unless “Ask before new browsers connect” is on in the agent's menu on that device."
         >
           <Toggle
             label="Ask every time by default"

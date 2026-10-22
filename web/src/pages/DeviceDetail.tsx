@@ -152,8 +152,9 @@ export function DeviceDetail() {
             <div>
               <div className="text-sm font-medium">Ask every time</div>
               <p className="text-sm text-muted">
-                Show the prompt on the device for every session, even for browsers approved with
-                “Allow and remember”. New browsers always need approval on the device's own screen.
+                Show the prompt on the device for every session, even for remembered browsers.
+                Otherwise your first connection is allowed and remembered without a prompt, unless
+                “Ask before new browsers connect” is turned on in the agent's menu on the device.
               </p>
             </div>
             <Toggle
@@ -178,7 +179,7 @@ export function DeviceDetail() {
               </ul>
             ) : (
               <p className="text-sm text-muted">
-                No browsers approved yet. The device keeps the authoritative list.
+                No browsers remembered yet. The device keeps the authoritative list.
               </p>
             )}
             <p className="mt-2 text-xs text-muted">
