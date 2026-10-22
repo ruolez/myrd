@@ -24,6 +24,9 @@ import (
 	"github.com/ruolez/remotectl/server/internal/store"
 )
 
+// serverFeatures lists the optional APIs this server offers (GET /v1/config).
+var serverFeatures = []string{"organization", "device_info", "previews"}
+
 const (
 	Version     = "0.1.0"
 	agentJWTTTL = 10 * time.Minute
@@ -169,6 +172,8 @@ func (a *App) iceServers(sessionID, side string, urls []string) []proto.ICEServe
 func (a *App) Run(ctx context.Context) {
 	sweep := time.NewTicker(5 * time.Second)
 	flush := time.NewTicker(time.Minute)
+	prune := time.NewTicker(time.Hour)
+	defer prune.Stop()
 	parts := time.NewTicker(12 * time.Hour)
 	defer sweep.Stop()
 	defer flush.Stop()
@@ -179,6 +184,13 @@ func (a *App) Run(ctx context.Context) {
 			return
 		case <-sweep.C:
 			a.hub.sweep()
+			a.hub.previewTick()
+		case <-prune.C:
+			c, cancel := dbctx()
+			if err := store.PrunePreviews(c, a.pool, time.Now().Add(-previewKeep)); err != nil {
+				a.log.Error("prune previews", "err", err)
+			}
+			cancel()
 		case <-flush.C:
 			a.hub.flushSeen()
 		case <-parts.C:
@@ -249,12 +261,23 @@ func (a *App) Router() http.Handler {
 			r.Get("/client-keys", a.h(a.listClientKeys))
 			r.Post("/client-keys", a.h(a.createClientKey))
 			r.Delete("/client-keys/{id}", a.h(a.revokeClientKey))
+			r.Put("/client-keys/{id}/preview-key", a.h(a.putPreviewKey))
+			r.Get("/previews", a.h(a.getPreviews))
 
 			r.Get("/devices", a.h(a.listDevices))
 			r.Get("/devices/{id}", a.h(a.getDevice))
 			r.Patch("/devices/{id}", a.h(a.patchDevice))
 			r.Delete("/devices/{id}", a.h(a.deleteDevice))
 			r.Post("/devices/{id}/update", a.h(a.updateDevice))
+			r.Post("/devices/bulk", a.h(a.bulkDevices))
+			r.Get("/folders", a.h(a.listFolders))
+			r.Post("/folders", a.h(a.createFolder))
+			r.Patch("/folders/{id}", a.h(a.patchFolder))
+			r.Delete("/folders/{id}", a.h(a.deleteFolder))
+			r.Get("/tags", a.h(a.listTags))
+			r.Post("/tags", a.h(a.createTag))
+			r.Patch("/tags/{id}", a.h(a.patchTag))
+			r.Delete("/tags/{id}", a.h(a.deleteTag))
 			r.Post("/enroll-tokens", a.h(a.createEnrollToken))
 			r.Get("/sessions", a.h(a.listSessions))
 			r.Get("/audit", a.h(a.listAudit))
@@ -324,11 +347,13 @@ func (a *App) getConfig(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"product_name":   "my RemoteDesktop",
-		"version":        Version,
-		"signup_allowed": s.SignupAllowed,
-		"webauthn":       map[string]string{"rp_id": a.cfg.RPID, "origin": a.cfg.PublicOrigin},
-		"downloads":      downloads,
+		"product_name":    "my RemoteDesktop",
+		"version":         Version,
+		"signup_allowed":  s.SignupAllowed,
+		"webauthn":        map[string]string{"rp_id": a.cfg.RPID, "origin": a.cfg.PublicOrigin},
+		"downloads":       downloads,
+		"features":        serverFeatures,
+		"screen_previews": s.ScreenPreviews,
 	})
 	return nil
 }

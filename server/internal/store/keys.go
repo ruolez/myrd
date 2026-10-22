@@ -126,15 +126,20 @@ type ClientKey struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at"`
 	RevokedAt  *time.Time `json:"revoked_at"`
+	PreviewKey []byte     `json:"preview_key"` // ECDH P-256 SPKI for screen previews, or null
 	UserID     string     `json:"-"`
 	SHA256     string     `json:"-"`
+	PreviewSHA string     `json:"-"`
+	PreviewSig []byte     `json:"-"`
 }
 
-const clientKeyCols = `id, user_id, label, public_key, public_key_sha256, created_at, last_used_at, revoked_at`
+const clientKeyCols = `id, user_id, label, public_key, public_key_sha256, created_at, last_used_at, revoked_at,
+	preview_key, coalesce(preview_key_sha256, ''), preview_key_sig`
 
 func scanClientKey(row interface{ Scan(...any) error }) (*ClientKey, error) {
 	var k ClientKey
-	if err := row.Scan(&k.ID, &k.UserID, &k.Label, &k.PublicKey, &k.SHA256, &k.CreatedAt, &k.LastUsedAt, &k.RevokedAt); err != nil {
+	if err := row.Scan(&k.ID, &k.UserID, &k.Label, &k.PublicKey, &k.SHA256, &k.CreatedAt, &k.LastUsedAt, &k.RevokedAt,
+		&k.PreviewKey, &k.PreviewSHA, &k.PreviewSig); err != nil {
 		return nil, notFound(err)
 	}
 	return &k, nil
@@ -177,6 +182,24 @@ func ListClientKeys(ctx context.Context, q db.Querier, userID string) ([]ClientK
 func RevokeClientKey(ctx context.Context, q db.Querier, userID, id string) (*ClientKey, error) {
 	return scanClientKey(q.QueryRow(ctx, `UPDATE client_keys SET revoked_at = coalesce(revoked_at, now())
 		WHERE id = $1 AND user_id = $2 RETURNING `+clientKeyCols, id, userID))
+}
+
+// SetPreviewKey records a client key's preview key; a different key drops
+// the previews sealed to the old one.
+func SetPreviewKey(ctx context.Context, q db.Querier, id string, key []byte, sha string, sig []byte) error {
+	var old string
+	if err := q.QueryRow(ctx, `SELECT coalesce(preview_key_sha256, '') FROM client_keys WHERE id = $1`, id).Scan(&old); err != nil {
+		return notFound(err)
+	}
+	if _, err := q.Exec(ctx, `UPDATE client_keys SET preview_key = $2, preview_key_sha256 = $3, preview_key_sig = $4 WHERE id = $1`,
+		id, key, sha, sig); err != nil {
+		return err
+	}
+	if old != sha {
+		_, err := q.Exec(ctx, `DELETE FROM device_previews WHERE client_key_id = $1`, id)
+		return err
+	}
+	return nil
 }
 
 func TouchClientKey(ctx context.Context, q db.Querier, id string) error {

@@ -27,12 +27,14 @@ const (
 	TypeSessionFile   = "session.file"       // A→S, audit only, never relayed
 	TypeUpdateCheck   = "update.check"       // S→A
 	TypeUpdateStatus  = "update.status"      // A→S
+	TypeDeviceInfo    = "device.info"        // A→S (HostInfoReport), S→B (HostInfoPush)
 
 	// browser <-> server
 	TypeSessionCreate      = "session.create"       // B→S
 	TypeSessionCreated     = "session.created"      // S→B
 	TypeDeviceStatus       = "device.status"        // S→B
 	TypeDeviceUpdateStatus = "device.update_status" // S→B
+	TypeOrgChanged         = "org.changed"          // S→B
 
 	// relayed both ways
 	TypeSessionOffer  = "session.offer"  // B→S→A
@@ -69,7 +71,17 @@ type Capabilities struct {
 	Codecs   []string  `json:"codecs"`  // ["h264"]
 	MaxFPS   int       `json:"max_fps"` // 60
 	Encoder  string    `json:"encoder"` // "videotoolbox" | "mf-hw" | "x264" ...
+	// Features lists optional agent capabilities (FeatureDeviceInfo, …);
+	// absent on older agents.
+	Features []string `json:"features,omitempty"`
 }
+
+// Optional features, advertised by the agent in Capabilities.Features and
+// by the server in HelloAck.Features. Either side sends a feature's messages
+// only when the other advertised it (unknown types are errors).
+const (
+	FeatureDeviceInfo = "device_info"
+)
 
 type Permissions struct {
 	Screen bool `json:"screen"`
@@ -145,6 +157,7 @@ type HelloAck struct {
 	Device            DeviceInfo `json:"device"`
 	Update            UpdateHint `json:"update"`
 	RevokedClientKeys []string   `json:"revoked_client_keys"` // SPKI base64
+	Features          []string   `json:"features,omitempty"`  // what the server accepts from agents
 }
 
 type Token struct {
@@ -254,6 +267,16 @@ type DeviceStatus struct {
 	Online     bool    `json:"online"`
 	Status     string  `json:"status"` // online | offline | disabled | removed
 	LastSeenAt *string `json:"last_seen_at,omitempty"`
+	Busy       bool    `json:"busy"` // has a pending or active session
+}
+
+// OrgChanged tells the owner's browsers that folders, tags or the
+// organization of devices changed, so other tabs refetch.
+type OrgChanged struct {
+	V    int      `json:"v"`
+	Type string   `json:"type"`
+	Kind string   `json:"kind"` // devices | folders | tags
+	IDs  []string `json:"ids"`
 }
 
 // DeviceUpdateStatus relays a device's update progress to its owner's browsers.
@@ -425,4 +448,53 @@ type SessionFile struct {
 	Type      string       `json:"type"`
 	SessionID string       `json:"session_id"`
 	Files     []FileRecord `json:"files"`
+}
+
+// ---------- device info (feature "device_info") ----------
+
+// Limits on a HostInfo report; the server truncates or drops beyond them.
+const (
+	MaxHostDisks    = 32
+	MaxHostInfoText = 128
+)
+
+type DiskInfo struct {
+	Name  string `json:"name"`  // volume label or drive ("C:"), may be empty
+	Mount string `json:"mount"` // "/", "/Volumes/Data", "C:\\"
+	FS    string `json:"fs"`    // "apfs", "NTFS", "ext4"
+	Total uint64 `json:"total"` // bytes
+	Free  uint64 `json:"free"`  // bytes available to the user
+}
+
+// HostInfo describes the device and its health. Pointer fields are null when
+// the platform cannot tell (e.g. no console user on the Linux demo device).
+type HostInfo struct {
+	OSName    string     `json:"os_name"`    // "macOS", "Windows 11 Pro", "Debian GNU/Linux 12"
+	OSVersion string     `json:"os_version"` // "15.1", "24H2", "12"
+	OSBuild   string     `json:"os_build"`   // "24B83", "26100.2314"
+	User      *string    `json:"user"`       // console user; "" = nobody signed in
+	IdleS     *int64     `json:"idle_s"`     // seconds since the last input
+	UptimeS   int64      `json:"uptime_s"`
+	Locked    *bool      `json:"locked"`
+	CPUPct    *float64   `json:"cpu_pct"` // 0..100, average since the previous report
+	CPUCount  int        `json:"cpu_count"`
+	MemTotal  uint64     `json:"mem_total"` // bytes
+	MemUsed   uint64     `json:"mem_used"`  // bytes
+	Disks     []DiskInfo `json:"disks"`     // fixed disks / local volumes
+}
+
+// HostInfoReport is sent by the agent after hello_ack and about once a minute.
+type HostInfoReport struct {
+	V    int      `json:"v"`
+	Type string   `json:"type"`
+	Info HostInfo `json:"info"`
+}
+
+// HostInfoPush relays a report to the owner's browsers.
+type HostInfoPush struct {
+	V        int      `json:"v"`
+	Type     string   `json:"type"`
+	DeviceID string   `json:"device_id"`
+	Info     HostInfo `json:"info"`
+	At       string   `json:"at"` // RFC3339, when the server received it
 }

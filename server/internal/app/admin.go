@@ -424,14 +424,18 @@ func (a *App) adminPutSettings(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 	ctx := r.Context()
+	previewsWereOn := a.Settings().ScreenPreviews
 	if err := store.SaveSettings(ctx, a.pool, s); err != nil {
 		return err
+	}
+	if previewsWereOn && !s.ScreenPreviews {
+		a.hub.DropPreviews("")
 	}
 	if err := a.reloadSettings(ctx); err != nil {
 		return err
 	}
 	a.adminAudit(r, store.Audit{Event: "settings.updated", Meta: map[string]any{"signup_allowed": s.SignupAllowed,
-		"default_auto_accept": s.DefaultAutoAccept, "max_session_hours": s.MaxSessionHours}})
+		"default_auto_accept": s.DefaultAutoAccept, "max_session_hours": s.MaxSessionHours, "screen_previews": s.ScreenPreviews}})
 	writeJSON(w, http.StatusOK, a.Settings())
 	return nil
 }

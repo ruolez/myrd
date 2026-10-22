@@ -113,5 +113,63 @@
   ],
   "file_sha256": [
     { "name": "hello in 2 chunks", "chunks_hex": ["68656c", "6c6f"], "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" }
-  ]
+  ],
+  "preview": {
+    "note": "All keys come from sha256 of a label (see proto/preview_test.go). key_message_sig is ECDSA (randomized): verify it, do not compare it. Invalid cases change one field of the valid preview; opening must fail.",
+    "device_seed_hex": "c529d59964fa5cd97c4ac5e46a6be61efcc0d5eff8e8be41e4deb59c32879a7d",
+    "device_public_key": "JevGWykQGunpMBLF41Curus+bmmawz0ua9w1d3OPwyk=",
+    "client_d_hex": "01d2f81acbe1ca5654dcc73da281e8630f3be78ca5d07eb30653bc28cb3c0077",
+    "client_spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEhPmvXHr52sPrVDJxc7SNWoHOXg4pRIKcPCxL7WzrtQXBX6c6CV90WFry1zOx0iEBYWGoYunJsXqla6UjpdxkJQ==",
+    "ck_sha": "e97e198ad856bf63be21f25c39f84a7e8e82c9f433a3a7531927c9e59518f81a",
+    "preview_d_hex": "5d10568c67472c72a78d09b44a02925aca09e5534699753c789d313434cd6f39",
+    "preview_spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEIUL+R4K5ty1tK3cS4PzLI/fCGJ0a5RJX4/aQVmrjKTDd9tRxbtdQB2z8qsqIX3DrlwL4Zk1cFPlWfx1DT+L6eg==",
+    "pk_sha": "cf712427900755024640465f32c516a0f99ca0b63a23ec4e684424959c8396a9",
+    "key_message_utf8": "remotectl-preview-key-v1\ne97e198ad856bf63be21f25c39f84a7e8e82c9f433a3a7531927c9e59518f81a\ncf712427900755024640465f32c516a0f99ca0b63a23ec4e684424959c8396a9",
+    "key_message_sig": "EZtm3uoXJnNHsN7GlSbnfemu8rMgjqUQ8nLEgqOcS1FnFkYa/VCS3o1lYncw0UGbzFlCg2d01kKu2fb6cG5PQg==",
+    "eph_d_hex": "d0ce14ea5a79e0855b46430444b8b059efa2941717400d8f30b12ecf60c24038",
+    "eph_pub": "BJkGKqPya3vbFhgOubA4UeTHkyNsOkxnxQQvlwBks7y9gB+kHnAo3M2FXL0lBKdo1Es9IDTJsugF0m4lPZ8LvMw=",
+    "iv": "QH2qfqjXRQrNxOo3",
+    "plaintext_hex": "72656d6f746563746c2070726576696577207465737420766563746f7220706c61696e74657874",
+    "device_id": "3f0c6c1e-6c55-4c3a-9a39-0a3f8d0e2b11",
+    "captured_at_ms": 1792600000123,
+    "monitor_id": 2,
+    "width": 480,
+    "height": 300,
+    "mime": "image/jpeg",
+    "shared_hex": "65d61f3b7f81335d6fffd9fbfdd1dc7771257c8f1be5d0023864999cc44669f8",
+    "key_hex": "cd304225bb77049c655df720ed54c145c18de3c16e56d462cf30a7adfd963f53",
+    "header_utf8": "remotectl-preview-v1\n3f0c6c1e-6c55-4c3a-9a39-0a3f8d0e2b11\ne97e198ad856bf63be21f25c39f84a7e8e82c9f433a3a7531927c9e59518f81a\ncf712427900755024640465f32c516a0f99ca0b63a23ec4e684424959c8396a9\n1792600000123\n2\n480\n300\nimage/jpeg\nBJkGKqPya3vbFhgOubA4UeTHkyNsOkxnxQQvlwBks7y9gB+kHnAo3M2FXL0lBKdo1Es9IDTJsugF0m4lPZ8LvMw=\nQH2qfqjXRQrNxOo3",
+    "ciphertext": "4z7YYdBgkX33vAsnNEdHHxVWWIhORKPuOnBpiPV8tIz6GBQN7t/LmhaFgDqqwAk6k76RYQmJ6A==",
+    "sig": "SwlMNQXCzpiQo+cZUFvEeeLtC8QrTrEHiMkO5h7fMUQYjW4czJBM6PGLNNwp+qsndhnrERRYMl+MMSTazDeLCg==",
+    "invalid": [
+      {
+        "name": "another device",
+        "device_id": "3f0c6c1e-6c55-4c3a-9a39-0a3f8d0e2b12"
+      },
+      {
+        "name": "an older capture time",
+        "captured_at_ms": 1792600000122
+      },
+      {
+        "name": "another width",
+        "width": 481
+      },
+      {
+        "name": "another preview key",
+        "pk_sha": "d9298a10d1b0735837dc4bd85dac641b0f3cef27a47e5d53a54f2f3f5b2fcffa"
+      },
+      {
+        "name": "a flipped ciphertext byte",
+        "ciphertext": "4z7YIdBgkX33vAsnNEdHHxVWWIhORKPuOnBpiPV8tIz6GBQN7t/LmhaFgDqqwAk6k76RYQmJ6A=="
+      },
+      {
+        "name": "a truncated tag",
+        "ciphertext": "4z7YYdBgkX33vAsnNEdHHxVWWIhORKPuOnBpiPV8tIz6GBQN7t/LmhaFgDqqwAk6k76RYQmJ"
+      },
+      {
+        "name": "a flipped signature byte",
+        "sig": "SglMNQXCzpiQo+cZUFvEeeLtC8QrTrEHiMkO5h7fMUQYjW4czJBM6PGLNNwp+qsndhnrERRYMl+MMSTazDeLCg=="
+      }
+    ]
+  }
 }

@@ -156,6 +156,8 @@ func (a *App) patchDevice(w http.ResponseWriter, r *http.Request) error {
 	var body struct {
 		Name       *string `json:"name"`
 		AutoAccept *bool   `json:"auto_accept"`
+		Previews   *bool   `json:"previews"`
+		orgPatch
 	}
 	if err := decode(r, &body); err != nil {
 		return err
@@ -167,9 +169,28 @@ func (a *App) patchDevice(w http.ResponseWriter, r *http.Request) error {
 		}
 		body.Name = &n
 	}
+	org, err := a.deviceOrg(r, body.orgPatch)
+	if err != nil {
+		return err
+	}
 	ctx := r.Context()
 	if err := store.UpdateDevice(ctx, a.pool, d.ID, body.Name, body.AutoAccept); err != nil {
 		return err
+	}
+	if !body.orgPatch.empty() {
+		if err := store.SetDeviceOrg(ctx, a.pool, d.ID, org); err != nil {
+			return err
+		}
+	}
+	if body.Previews != nil && *body.Previews != d.Previews {
+		if err := store.SetDevicePreviews(ctx, a.pool, d.ID, *body.Previews); err != nil {
+			return err
+		}
+		if !*body.Previews {
+			a.hub.DropPreviews(d.ID)
+		}
+		a.audit(ctx, store.Audit{Actor: "user", Event: "device.updated", UserID: userFrom(r).ID, DeviceID: d.ID, IP: a.clientIP(r),
+			Meta: map[string]any{"previews": *body.Previews}})
 	}
 	u := userFrom(r)
 	if body.Name != nil && *body.Name != d.Name {
@@ -188,7 +209,10 @@ func (a *App) patchDevice(w http.ResponseWriter, r *http.Request) error {
 	if err := a.withLatest(ctx, nd); err != nil {
 		return err
 	}
-	a.hub.PushDeviceUpdate(nd.ID, nd.Name, nd.AutoAccept)
+	if body.Name != nil || body.AutoAccept != nil {
+		a.hub.PushDeviceUpdate(nd.ID, nd.Name, nd.AutoAccept)
+	}
+	a.hub.PushOrgChanged(u.ID, "devices", []string{nd.ID})
 	nd.OwnerEmail = ""
 	writeJSON(w, http.StatusOK, map[string]any{"device": nd})
 	return nil
@@ -204,6 +228,7 @@ func (a *App) removeDevice(r *http.Request, d *store.Device, actor, origin strin
 		reason = proto.EndAdmin
 	}
 	a.hub.KickDevice(ctx, d.ID, reason, origin)
+	a.hub.DropPreviews(d.ID)
 	a.hub.PushDeviceStatus(d.UserID, d.ID, "removed", nil)
 	ev := store.Audit{Actor: actor, Event: "device.removed", UserID: d.UserID, DeviceID: d.ID, IP: a.clientIP(r), Meta: map[string]any{"name": d.Name}}
 	if actor == "admin" {

@@ -42,6 +42,17 @@ type Device struct {
 	UpdateError     string     `json:"update_error"`
 	UpdateAt        *time.Time `json:"update_at"`
 
+	FolderID        *string    `json:"folder_id"`
+	TagIDs          []string   `json:"tag_ids"`
+	Favorite        bool       `json:"favorite"`
+	Notes           string     `json:"notes"`
+	LastConnectedAt *time.Time `json:"last_connected_at"` // the owner's latest connected session
+
+	Info     json.RawMessage `json:"info"`     // proto.HostInfo or null
+	InfoAt   *time.Time      `json:"info_at"`  // when the server received it
+	Features json.RawMessage `json:"features"` // the agent's optional features
+	Previews bool            `json:"previews"` // the owner allows screen previews of it
+
 	UserID   string `json:"-"`
 	Disabled bool   `json:"-"`
 	Removed  bool   `json:"-"`
@@ -53,14 +64,20 @@ const deviceCols = `d.id, d.user_id, d.name, d.hostname, d.os, d.arch, d.agent_v
 	EXISTS (SELECT 1 FROM sessions s WHERE s.device_id = d.id AND s.state IN ('pending', 'active')),
 	coalesce((SELECT json_agg(json_build_object('client_key_id', p.client_key_id, 'label', p.label, 'approved_at', p.approved_at) ORDER BY p.approved_at)
 		FROM device_pinned_clients p WHERE p.device_id = d.id), '[]'),
-	u.email, d.update_state, d.update_from, d.update_version, d.update_error, d.update_at`
+	u.email, d.update_state, d.update_from, d.update_version, d.update_error, d.update_at,
+	d.folder_id, d.favorite, d.notes,
+	coalesce((SELECT array_agg(t.tag_id::text ORDER BY t.tag_id) FROM device_tags t WHERE t.device_id = d.id), '{}'),
+	(SELECT max(s.connected_at) FROM sessions s WHERE s.device_id = d.id AND s.user_id = d.user_id),
+	d.info, d.info_at, coalesce(d.capabilities->'features', '[]'), d.previews`
 
 func scanDevice(row interface{ Scan(...any) error }) (*Device, error) {
 	var d Device
 	var pins []byte
 	err := row.Scan(&d.ID, &d.UserID, &d.Name, &d.Hostname, &d.OS, &d.Arch, &d.AgentVersion, &d.PublicKey,
 		&d.Disabled, &d.Removed, &d.AutoAccept, &d.LastSeenAt, &d.CreatedAt, &d.Monitors, &d.Permissions, &d.Encoder,
-		&d.Busy, &pins, &d.OwnerEmail, &d.UpdateState, &d.UpdateFrom, &d.UpdateVersion, &d.UpdateError, &d.UpdateAt)
+		&d.Busy, &pins, &d.OwnerEmail, &d.UpdateState, &d.UpdateFrom, &d.UpdateVersion, &d.UpdateError, &d.UpdateAt,
+		&d.FolderID, &d.Favorite, &d.Notes, &d.TagIDs, &d.LastConnectedAt,
+		&d.Info, &d.InfoAt, &d.Features, &d.Previews)
 	if err != nil {
 		return nil, notFound(err)
 	}
@@ -151,6 +168,13 @@ func SetDeviceUpdate(ctx context.Context, q db.Querier, id, state, from, version
 	var at time.Time
 	err := q.QueryRow(ctx, `UPDATE devices SET update_state = $2, update_from = $3, update_version = $4, update_error = $5,
 		update_at = now() WHERE id = $1 RETURNING update_at`, id, state, from, version, errMsg).Scan(&at)
+	return at, notFound(err)
+}
+
+// SetDeviceInfo stores a device.info report and returns when it was stored.
+func SetDeviceInfo(ctx context.Context, q db.Querier, id string, info []byte) (time.Time, error) {
+	var at time.Time
+	err := q.QueryRow(ctx, `UPDATE devices SET info = $2, info_at = now() WHERE id = $1 RETURNING info_at`, id, info).Scan(&at)
 	return at, notFound(err)
 }
 

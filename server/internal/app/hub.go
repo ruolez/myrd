@@ -158,6 +158,7 @@ type agentConn struct {
 	*wsConn
 	deviceID string
 	userID   string
+	lastInfo time.Time // last accepted device.info (read loop only)
 }
 
 type browserConn struct {
@@ -196,12 +197,15 @@ type Hub struct {
 
 	updateTimers map[string][]*time.Timer // pending update.check pushes by batch key
 	checkSpread  time.Duration            // per device in a bulk push (tests shorten it)
+
+	prev *previewHub // screen previews (previews.go), its own lock
 }
 
 func newHub(a *App) *Hub {
 	return &Hub{app: a, bootTime: time.Now(), agents: map[string]*agentConn{},
 		browsers: map[string]map[*browserConn]struct{}{}, sessions: map[string]*liveSession{},
-		creating: map[string]bool{}, seen: map[string]bool{}, updateTimers: map[string][]*time.Timer{}, checkSpread: checkSpread}
+		creating: map[string]bool{}, seen: map[string]bool{}, updateTimers: map[string][]*time.Timer{}, checkSpread: checkSpread,
+		prev: newPreviewHub()}
 }
 
 func dbctx() (context.Context, context.CancelFunc) {
@@ -313,9 +317,40 @@ func (h *Hub) PushDeviceStatus(userID, deviceID, status string, lastSeen *time.T
 		s := lastSeen.UTC().Format(time.RFC3339)
 		ls = &s
 	}
-	msg := proto.DeviceStatus{DeviceID: deviceID, Online: status == "online", Status: status, LastSeenAt: ls}
+	msg := proto.DeviceStatus{DeviceID: deviceID, Online: status == "online", Status: status, LastSeenAt: ls,
+		Busy: status == "online" && h.isBusy(deviceID)}
 	for _, b := range h.browsersOf(userID) {
 		h.sendMsg(b.wsConn, proto.TypeDeviceStatus, msg)
+	}
+}
+
+// isBusy reports a live session (or one being created) for the device.
+func (h *Hub) isBusy(deviceID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.creating[deviceID] {
+		return true
+	}
+	for _, s := range h.sessions {
+		if s.deviceID == deviceID {
+			return true
+		}
+	}
+	return false
+}
+
+// pushBusy re-sends an online device's status after its sessions changed.
+// Offline devices are reported by agentGone.
+func (h *Hub) pushBusy(userID, deviceID string) {
+	if h.IsOnline(deviceID) {
+		h.PushDeviceStatus(userID, deviceID, "online", nil)
+	}
+}
+
+func (h *Hub) PushOrgChanged(userID, kind string, ids []string) {
+	msg := proto.OrgChanged{Kind: kind, IDs: ids}
+	for _, b := range h.browsersOf(userID) {
+		h.sendMsg(b.wsConn, proto.TypeOrgChanged, msg)
 	}
 }
 
@@ -473,6 +508,7 @@ func (h *Hub) ServeBrowser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Hub) browserGone(bc *browserConn) {
+	h.previewBrowserGone(bc)
 	h.mu.Lock()
 	delete(h.browsers[bc.user.ID], bc)
 	if len(h.browsers[bc.user.ID]) == 0 {
@@ -501,6 +537,8 @@ func (h *Hub) onBrowser(bc *browserConn, typ string, raw []byte) {
 		var p proto.Ping
 		_ = json.Unmarshal(raw, &p)
 		h.sendMsg(bc.wsConn, proto.TypePong, proto.Ping{TS: p.TS})
+	case proto.TypePreviewWatch:
+		h.onPreviewWatch(bc, raw)
 	case proto.TypeSessionCreate:
 		var m proto.SessionCreate
 		if json.Unmarshal(raw, &m) != nil {
@@ -642,6 +680,7 @@ func (h *Hub) createSession(bc *browserConn, m proto.SessionCreate) {
 	h.mu.Lock()
 	h.sessions[id] = ls
 	h.mu.Unlock()
+	h.pushBusy(d.UserID, d.ID)
 
 	h.sendMsg(bc.wsConn, proto.TypeSessionCreated, proto.SessionCreated{Req: m.Req, SessionID: id,
 		ICEServers: h.app.iceServers(id, "b", h.app.cfg.TURNURLs), ForceRelay: m.ForceRelay,
@@ -921,6 +960,12 @@ func (h *Hub) onAgent(ac *agentConn, typ string, raw []byte) {
 			return
 		}
 		h.syncPins(ac, m.PinnedClientKeys)
+	case proto.TypeDeviceInfo:
+		h.onDeviceInfo(ac, raw)
+	case proto.TypePreview:
+		h.onAgentPreview(ac, raw)
+	case proto.TypePreviewUnavailable:
+		h.onAgentPreviewUnavailable(ac, raw)
 	case proto.TypeUpdateStatus:
 		var m proto.UpdateStatus
 		if json.Unmarshal(raw, &m) != nil || !slices.Contains(proto.UpdateStates, m.State) {
@@ -1028,7 +1073,7 @@ func (h *Hub) onHello(ac *agentConn, m proto.Hello) {
 	}
 	ack := proto.HelloAck{ServerTime: time.Now().UTC().Format(time.RFC3339Nano),
 		Device:            proto.DeviceInfo{ID: d.ID, Name: d.Name, AutoAccept: d.AutoAccept},
-		RevokedClientKeys: []string{}}
+		RevokedClientKeys: []string{}, Features: agentFeatures}
 	if rels, err := store.ListReleases(ctx, a.pool); err != nil {
 		a.log.Error("hello releases", "err", err)
 	} else if rel := pickRelease(rels, m.OS, m.Arch, m.AgentVersion, proto.RolloutBucket(d.ID), false); rel != nil {
@@ -1146,6 +1191,9 @@ func (h *Hub) EndSession(id, reason, origin string, sent, recv int64) {
 	}
 	if !ok && s == nil {
 		return
+	}
+	if row != nil {
+		h.pushBusy(row.UserID, row.DeviceID)
 	}
 	msg := proto.SessionEnd{SessionID: id, Reason: reason}
 	if origin != fromBrowser {

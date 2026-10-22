@@ -87,14 +87,7 @@ func ClientKeyHash(spkiB64 string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	h := sha256.Sum256(der)
-	const hexd = "0123456789abcdef"
-	out := make([]byte, 64)
-	for i, b := range h {
-		out[i*2] = hexd[b>>4]
-		out[i*2+1] = hexd[b&15]
-	}
-	return string(out), nil
+	return SPKIHash(der), nil
 }
 
 // AuthChallengeMessage is what the agent signs to authenticate:

@@ -273,6 +273,45 @@ func (w *wsClient) expect(typ string, out any) {
 	}
 }
 
+// expectBefore reads until a message of type want arrives and fails if one
+// of type not comes first.
+func (w *wsClient) expectBefore(want, not, why string) {
+	w.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		_, data, err := w.c.Read(ctx)
+		if err != nil {
+			w.t.Fatalf("waiting for %s: %v", want, err)
+		}
+		var env proto.Envelope
+		_ = json.Unmarshal(data, &env)
+		switch env.Type {
+		case want:
+			return
+		case not:
+			w.t.Fatalf("%s: got %s", why, data)
+		}
+	}
+}
+
+// deviceEvents lists the audit events of a device, oldest first.
+func (e *env) deviceEvents(deviceID string) []string {
+	e.t.Helper()
+	rows, err := e.pool.Query(context.Background(), `SELECT event FROM audit_events WHERE device_id = $1 ORDER BY id`, deviceID)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		_ = rows.Scan(&s)
+		out = append(out, s)
+	}
+	return out
+}
+
 func (e *env) registerClientKey(c *http.Client) string {
 	e.t.Helper()
 	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
