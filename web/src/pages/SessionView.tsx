@@ -225,7 +225,7 @@ export function SessionView() {
     if (which === "stream") setStreamOpen(false);
     else setFilesOpen(false);
     if (!other) {
-      if (relockOnClose.current && fullscreen) setRelative(true);
+      if (relockOnClose.current) setRelative(true);
       relockOnClose.current = false;
       kbRef.current?.focus({ preventScroll: true });
     }
@@ -343,7 +343,10 @@ export function SessionView() {
     return () => window.removeEventListener("focus", sync);
   }, [live]);
 
-  // Fullscreen ⇒ Keyboard Lock (so Cmd+W, Alt+Tab, Esc reach the remote) + Pointer Lock.
+  // Fullscreen ⇒ Keyboard Lock (so Cmd+W, Alt+Tab, Esc reach the remote). Pointer Lock
+  // stays opt-in: under it the cursor can only be drawn where the device reports
+  // it, a network round trip behind the hand, while without it the browser's own
+  // cursor follows the mouse with no delay.
   useEffect(() => {
     const onFs = () => {
       const fs = document.fullscreenElement === stageRef.current && !!stageRef.current;
@@ -352,7 +355,6 @@ export function SessionView() {
         void keyboardApi()
           ?.lock?.()
           .catch(() => undefined);
-        setRelative(true);
       } else {
         keyboardApi()?.unlock?.();
         setRelative(false);
@@ -607,6 +609,16 @@ export function SessionView() {
               active={filesOpen}
               onClick={() => openPanel("files")}
               disabled={!files}
+            />
+            <ToolButton
+              label={
+                relative
+                  ? "Absolute mouse"
+                  : "Relative mouse (pointer lock) for games and 3D apps; the cursor follows a round trip behind"
+              }
+              icon="lock"
+              active={relative}
+              onClick={() => setRelative((r) => !r)}
             />
             <ToolButton
               label="Exit fullscreen"
