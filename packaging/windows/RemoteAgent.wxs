@@ -14,10 +14,11 @@
     msiexec /i RemoteAgent.msi ENROLL_TOKEN=XXXX-XXXX SERVER_URL=https://remote.example.com /qn
 
   -d Win7=yes builds the Windows 7 installer around the Windows 7 exe
-  (packaging/windows/win7): it needs only Windows Installer 5.0, so the
-  service restart policy uses the built-in MsiServiceConfigFailureActions
-  instead of WiX's custom-action DLL, and it does not remove the data dir on
-  uninstall (`remote-agent uninstall` still clears the device's identity).
+  (packaging/windows/win7) without WiX's custom-action DLL: the service sets
+  its own restart policy when it starts (Windows Installer on Windows 7 fails
+  the install with error 1939 on MsiServiceConfigFailureActions), and the
+  data dir is not removed on uninstall (`remote-agent uninstall` still clears
+  the device's identity).
   The normal installer refuses Windows 7.
 
   The product name is still an open decision (docs plan); everything that
@@ -90,13 +91,7 @@
                           ErrorControl="normal"
                           Arguments="service"
                           Vital="yes">
-            <?if $(Win7) = "yes" ?>
-            <ServiceConfigFailureActions OnInstall="yes" OnReinstall="yes" ResetPeriod="86400">
-              <Failure Action="restart" Delay="5000" />
-              <Failure Action="restart" Delay="5000" />
-              <Failure Action="restart" Delay="5000" />
-            </ServiceConfigFailureActions>
-            <?else?>
+            <?if $(Win7) != "yes" ?>
             <util:ServiceConfig FirstFailureActionType="restart"
                                 SecondFailureActionType="restart"
                                 ThirdFailureActionType="restart"

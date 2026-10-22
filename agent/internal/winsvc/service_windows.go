@@ -48,6 +48,9 @@ func (h *handler) Execute(args []string, req <-chan svc.ChangeRequest, status ch
 		h.log.Error("winsvc: executable path", "err", err)
 		return true, 1
 	}
+	if err := ensureRecovery(); err != nil {
+		h.log.Warn("winsvc: restart-on-failure policy not set", "err", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -237,11 +240,35 @@ func Install(exe string) error {
 		return err
 	}
 	defer s.Close()
-	restart := mgr.RecoveryAction{Type: mgr.ServiceRestart, Delay: 5 * time.Second}
-	if err := s.SetRecoveryActions([]mgr.RecoveryAction{restart, restart, restart}, 86400); err != nil {
+	if err := setRecovery(s); err != nil {
 		return err
 	}
 	return s.Start()
+}
+
+// setRecovery restarts the service 5 s after each of its first three
+// failures in a day.
+func setRecovery(s *mgr.Service) error {
+	restart := mgr.RecoveryAction{Type: mgr.ServiceRestart, Delay: 5 * time.Second}
+	return s.SetRecoveryActions([]mgr.RecoveryAction{restart, restart, restart}, 86400)
+}
+
+// ensureRecovery applies setRecovery to the installed service on every start:
+// the Windows 7 MSI cannot (Windows Installer there fails the install with
+// error 1939 on MsiServiceConfigFailureActions), and the policy then also
+// survives anyone resetting it.
+func ensureRecovery() error {
+	m, err := mgr.Connect()
+	if err != nil {
+		return err
+	}
+	defer m.Disconnect()
+	s, err := m.OpenService(ServiceName)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	return setRecovery(s)
 }
 
 // Uninstall stops and deletes the service.
