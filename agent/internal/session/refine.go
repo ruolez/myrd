@@ -29,14 +29,28 @@ const (
 	// finished refinement sends its finest pass again.
 	refineSmall = 4096
 
-	refineRepeatMax = 24   // repeat passes at most
-	refineSettled   = 1500 // a repeat pass this small changed next to nothing: converged
+	refineRepeatMax  = 24   // repeat passes at most
+	refineRepeatRedo = 3    // repeat passes a small change can win back
+	refineSettled    = 1500 // a repeat pass this small changed next to nothing: converged
 )
+
+// refineCap bounds the passes sent since the last real content frame (new
+// content or a keyframe, neither a pass's output): a full ladder plus as many
+// again for the passes small changes redo. Whatever the flags an encoder
+// reports, a still screen then stops costing frames.
+func refineCap(repeat bool) int {
+	if repeat {
+		return 2 * refineRepeatMax
+	}
+	return 2 * len(refineQPs)
+}
 
 type refiner struct {
 	pass    int  // next index into refineQPs, or repeat passes sent
 	repeat  bool // repeat passes (quantizer 0) instead of refineQPs
-	pending bool
+	pending bool // a pass is out and may still come back (until refineLost)
+	await   bool // a pass was requested and no frame has arrived since
+	sent    int  // passes since the last real content frame (refineCap)
 	sentAt  time.Time
 	next    time.Time // earliest next pass; zero until the first frame
 }
@@ -45,7 +59,15 @@ type refiner struct {
 // refinement starts over: on new content, or a keyframe, which the rate
 // control encodes coarsely again. A small change waits for a quiet screen
 // (never sooner than the pacing allows) and redoes at most the finest pass.
+// The first frame after a pass was requested is that pass, whatever its
+// flags: an encoder may lose the static flag (Windows matches it back by
+// sample time) or answer with a keyframe, and either must not look like new
+// content, or a still screen would restart its passes forever.
 func (r *refiner) onFrame(now time.Time, size int, f platform.FrameFlags, kbps int) bool {
+	if r.await {
+		f = platform.FrameStatic
+	}
+	r.await = false
 	static := f&platform.FrameStatic != 0
 	minor := f&platform.FrameMinor != 0 || size < refineSmall
 	switch {
@@ -55,7 +77,9 @@ func (r *refiner) onFrame(now time.Time, size int, f platform.FrameFlags, kbps i
 	case !static:
 		r.pending = false
 		if r.repeat {
-			r.pass = 0 // repeats converge on the changed area and stop when small
+			// Repeats converge on the changed area and stop when small; a
+			// caret blinking forever wins back only the last few each time.
+			r.pass = min(r.pass, refineRepeatMax-refineRepeatRedo)
 		} else {
 			r.pass = min(r.pass, len(refineQPs)-1)
 		}
@@ -89,7 +113,7 @@ func (r *refiner) due(now time.Time) (int, bool) {
 	if r.repeat {
 		passes = refineRepeatMax
 	}
-	if r.pending || r.next.IsZero() || now.Before(r.next) || r.pass >= passes {
+	if r.pending || r.next.IsZero() || now.Before(r.next) || r.pass >= passes || r.sent >= refineCap(r.repeat) {
 		return 0, false
 	}
 	qp := 0
@@ -97,6 +121,7 @@ func (r *refiner) due(now time.Time) (int, bool) {
 		qp = refineQPs[r.pass]
 	}
 	r.pass++
-	r.pending, r.sentAt = true, now
+	r.sent++
+	r.pending, r.await, r.sentAt = true, true, now
 	return qp, true
 }

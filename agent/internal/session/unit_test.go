@@ -303,3 +303,52 @@ func TestFrameLeavesKeyframesToTheBrowser(t *testing.T) {
 		t.Fatalf("%d keyframe requests, want 0 (keyframes come from PLI)", got)
 	}
 }
+
+// The periodic tick heals a lost shape on the lossy cursor channel with a
+// few full copies, then repeats only the id: the browser has the picture.
+func TestCursorShapeResendSendsTheFullShapeOnlyAfterAChange(t *testing.T) {
+	p := &mediaPipe{sentShape: map[uint32]bool{}}
+	if p.shapeResendMsg() != nil {
+		t.Fatal("resent a shape before there was one")
+	}
+	rgba := make([]byte, 4*4*4)
+	shape := func(id uint32) { p.CursorShape(id, 4, 4, 1, 2, rgba) } // no cursor channel: sends are dropped
+	full, short := encodeShape(7, 4, 4, 1, 2, rgba), inputproto.EncodeCursorShape(7, 4, 4, 1, 2, nil)
+	resends := func(n int) (fulls, shorts int) {
+		for range n {
+			switch m := p.shapeResendMsg(); string(m) {
+			case string(full):
+				fulls++
+			case string(short):
+				shorts++
+			default:
+				t.Fatalf("resent %x", m)
+			}
+		}
+		return
+	}
+	shape(7)
+	if f, s := resends(10); f != shapeFullResends || s != 10-shapeFullResends {
+		t.Fatalf("after a change: %d full, %d by id; want %d full", f, s, shapeFullResends)
+	}
+	shape(7) // the backend reporting the same shape again is no change
+	if f, _ := resends(5); f != 0 {
+		t.Fatalf("%d full resends without a change", f)
+	}
+	shape(8)
+	shape(7) // back to a known shape: heal it again
+	if f, s := resends(10); f != shapeFullResends || s != 10-shapeFullResends {
+		t.Fatalf("after changing back: %d full, %d by id", f, s)
+	}
+}
+
+func TestCursorShapeIDSetIsBounded(t *testing.T) {
+	p := &mediaPipe{sentShape: map[uint32]bool{}}
+	rgba := make([]byte, 2*2*4)
+	for id := uint32(1); id <= 1000; id++ {
+		p.CursorShape(id, 2, 2, 0, 0, rgba)
+		if len(p.sentShape) > shapeCacheMax {
+			t.Fatalf("%d shape ids remembered, max %d", len(p.sentShape), shapeCacheMax)
+		}
+	}
+}

@@ -198,6 +198,9 @@ export function SessionPane({
     if (!v) return;
     if (v.srcObject !== (snap?.stream ?? null)) v.srcObject = snap?.stream ?? null;
     if (snap?.stream) void v.play().catch(() => undefined);
+    return () => {
+      v.srcObject = null;
+    };
   }, [snap?.stream]);
 
   const live = snap?.phase === "connected" || snap?.phase === "reconnecting";
@@ -393,7 +396,7 @@ export function SessionPane({
   const nativeWidth = snap?.streamState?.native_width || monitor?.width || 0;
   // The agent's relay address can reach the browser as a peer-reflexive
   // candidate, so trust the agent when it reports a relayed path.
-  const path = snap?.streamState?.relay ? "relay" : snap?.stats.path;
+  const path = snap?.streamState?.relay ? "relay" : snap?.path;
   const filesLabel =
     snap?.filesState === "unsupported" ? "Files (not supported by this device's agent)" : "Files";
 
@@ -599,7 +602,7 @@ export function SessionPane({
         )}
         {hud && live && snap && (
           <Hud
-            stats={snap.stats}
+            session={session}
             encoder={snap.encoder}
             video={videoRef}
             stream={snap.streamState}

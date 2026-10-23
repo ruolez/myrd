@@ -13,6 +13,11 @@ describe("niceTicks", () => {
     expect(niceTicks(max)).toEqual(ticks);
   });
 
+  // A missing field makes the caller's max NaN; looping on it froze the tab.
+  test.each([NaN, Infinity, -3])("max %d falls back to one step", (max) => {
+    expect(niceTicks(max)).toEqual([0, 1]);
+  });
+
   test("the last tick always covers the maximum", () => {
     for (const max of [1, 3, 7, 13, 99, 101, 555, 1234]) {
       expect(niceTicks(max).at(-1)).toBeGreaterThanOrEqual(max);

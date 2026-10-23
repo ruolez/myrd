@@ -63,13 +63,27 @@ export function usePaged<T>(
   };
 }
 
+/** Calls fn every ms while the tab is visible (and once when it becomes visible again). */
 export function useInterval(fn: () => void, ms: number | null) {
   const ref = useRef(fn);
   ref.current = fn;
   useEffect(() => {
     if (ms === null) return;
-    const t = setInterval(() => ref.current(), ms);
-    return () => clearInterval(t);
+    let missed = false;
+    const t = setInterval(() => {
+      if (document.hidden) missed = true;
+      else ref.current();
+    }, ms);
+    const onVisible = () => {
+      if (document.hidden || !missed) return;
+      missed = false;
+      ref.current();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [ms]);
 }
 

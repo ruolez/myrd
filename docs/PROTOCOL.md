@@ -193,9 +193,9 @@ Browser                         Server                              Agent
  ── session.create{req,device_id,client_key_id,force_relay} ─▶
                                 checks owner / online / not busy / key not revoked
                                 inserts sessions(state=pending), audit session.created
- ◀─ session.created{req,session_id,ice_servers,device{id,name,public_key}}
+ ◀─ session.created{req,session_id,ice_servers,ice_ttl,device{id,name,public_key}}
  ── session.offer{session_id,sdp,fp_sig} ─▶
-                                adds client_key, user, ice_servers(agent creds)
+                                adds client_key, user, ice_servers(agent creds, minted per offer)
                                 ─────────── session.offer{...} ────────────────▶
                                                                      verify fp_sig over offer fingerprint
                                                                      pinned? auto_accept? else prompt on device
@@ -214,13 +214,23 @@ Browser                         Server                              Agent
 Rules:
 - One pending/active session per device (`device_busy` otherwise).
 - Pending sessions not active within 90 s → `failed` / `timeout`, `session.end` to both.
-- A second `session.offer` for an **active** session is an ICE restart; the server forwards it, the agent renegotiates on the existing peer connection (same fingerprint checks).
+- A second `session.offer` for an **active** session is an ICE restart; the server forwards it, the agent renegotiates on the existing peer connection (same fingerprint checks). The agent first applies the offer's `ice_servers` to that peer connection (`SetConfiguration`, every other setting kept), so the restart gathers relay candidates with the fresh credentials.
 - Browser socket closes → its pending/active sessions get `session.end{peer_disconnected}` to the agent **only for pending** sessions; active P2P sessions continue (the media path does not need the server). The agent ends the session itself when ICE fails.
 - Agent socket closes → pending sessions fail (`device_offline`). Active sessions are kept; on reconnect the agent's `hello.active_sessions` reconciles: any active row for that device not listed is ended `peer_disconnected`.
 - Server boot: every `pending` row → `failed/server_restart`; `active` rows survive until reconciled by the agent's next `hello` (or ended after 2 min if the device never returns).
 - Session `max_session_hours` (admin setting) enforced by the server sending `session.end{timeout}`.
 - Server writes audit: `session.created`, `session.connected` (meta: path, client_ip, agent_ip, local/remote candidate), `session.ended` (meta: reason, duration_s, bytes), `session.failed`, `input.rejected` (when reason = `input_abuse`), and one event per file transfer reported by the agent: `file.uploaded`, `file.downloaded`, `file.upload_failed`, `file.download_failed` (meta: name, dir, size, bytes, sha256, result, error, duration_ms, xfer).
-- Server→agent `session.offer` carries `ice_servers` minted for the agent (separate TURN username), `client_key` and `user{id,email}`.
+- Server→agent `session.offer` carries `ice_servers` minted for the agent (separate TURN username) for **every** offer, renegotiations included, plus `client_key` and `user{id,email}`.
+- TURN credential renewal: `session.created.ice_ttl` is the credential lifetime in seconds (`TURN_TTL`). A browser whose session may outlive it asks for fresh browser-side servers before they expire (and before an ICE restart) with `session.ice{req, session_id}`; the server checks the session is live and the user's (as for `session.offer`) and answers that socket with `session.ice_servers{req, session_id, ice_servers, ice_ttl}` (side `b` credentials, minted now), or `error{req, session_id, code}` (`not_found` for an unknown session or another user's; `bad_request` without a `session_id`). The browser applies them with `setConfiguration`; existing TURN allocations keep their credentials, so a relayed session still needs an ICE restart (which brings the agent fresh ones too) before the old ones expire.
+
+```jsonc
+// B→S
+{"v":1,"type":"session.ice","req":"r7","session_id":"<uuid>"}
+// S→B
+{"v":1,"type":"session.ice_servers","req":"r7","session_id":"<uuid>",
+ "ice_servers":[{"urls":["stun:…"]},{"urls":["turn:…"],"username":"<unix_expiry>:<uuid>:b","credential":"…"}],
+ "ice_ttl":7200}
+```
 - TURN credentials: coturn REST scheme — `username = "<unix_expiry>:<session_id>:<b|a>"`, `credential = base64(HMAC-SHA1(TURN_SECRET, username))`, TTL ≤ 2 h. URLs from `TURN_URLS` (browser) and `TURN_URLS_AGENT` (agent; defaults to `TURN_URLS`). STUN URL included as a separate entry without credentials. `force_relay` is passed back unchanged so the browser sets `iceTransportPolicy:"relay"`.
 
 ### Agent extras
@@ -321,7 +331,7 @@ A user can save a device's sign-in so that opening a session on its lock screen 
 
 The browser creates the offer with one `recvonly` video transceiver (H.264, packetization-mode=1, preferring high 640c1f/64001f, then main 4d001f, then constrained baseline 42e01f; then VP9 `profile-id=1` for full color; then the repair formats rtx, red, ulpfec, `flexfec-03`) and five data channels (exact labels).
 
-Video: the agent encodes at most the negotiated profile (high without B-frames, i.e. constrained high), stamps each frame's RTP timestamp with its capture time (90 kHz), sends a keyframe only when the browser asks (PLI/FIR, at most every 100 ms), and paces packets at 2.5× the bandwidth estimate (no packet waits more than 50 ms). The estimate is GCC (forked in `agent/internal/gcc`): it holds instead of climbing while the screen sends less than it allows, every large frame doubles as a bandwidth probe, and loss is judged over windows of at least 20 packets (up to 1 s or 100 packets), each packet counted once even when the browser reports it again. Once the screen has not changed for 200 ms the agent re-encodes the last frame in passes of falling quantizer (36 → 18, each paced to half the target bitrate) until text is sharp. An encoder that cannot bound its quantizer (some Windows hardware encoders) gets repeat passes instead: the same picture under the normal rate control, at most 24, until one comes back under 1500 bytes. A change to a small area (about 2% of the screen or less: a caret, a clock) does not restart the passes still to come, which cover it; after the last pass it sends the finest one again. Larger changes start over. A capture whose pixels did not change (an OS damage report without new content) is not new content.
+Video: the agent encodes at most the negotiated profile (high without B-frames, i.e. constrained high), stamps each frame's RTP timestamp with its capture time (90 kHz), sends a keyframe only when the browser asks (PLI/FIR, at most every 300 ms), and paces packets at 2.5× the bandwidth estimate (no packet waits more than 50 ms). The estimate is GCC (forked in `agent/internal/gcc`): it holds instead of climbing while the screen sends less than it allows, every large frame doubles as a bandwidth probe, and loss is judged over windows of at least 20 packets (up to 1 s or 100 packets), each packet counted once even when the browser reports it again. Once the screen has not changed for 200 ms the agent re-encodes the last frame in passes of falling quantizer (36 → 18, each paced to half the target bitrate) until text is sharp. An encoder that cannot bound its quantizer (some Windows hardware encoders) gets repeat passes instead: the same picture under the normal rate control, at most 24, until one comes back under 1500 bytes. A change to a small area (about 2% of the screen or less: a caret, a clock) does not restart the passes still to come, which cover it; after the last pass it sends the finest one again (repeat passes: the last 3 again). Larger changes start over. The first frame the encoder returns after a pass was requested counts as that pass whatever its flags (a Windows encoder may lose the static flag or return a keyframe), and at most twice a full ladder of passes (14, or 48 repeat passes) follows the last real content change or keyframe, so a blinking caret cannot keep passes flowing. A capture whose pixels did not change (an OS damage report without new content) is not new content.
 
 Full color: when the browser offered VP9 `profile-id=1` (Chrome, Edge) and the agent can encode it (all three platforms, software libvpx), `"color":"full"` switches the stream to VP9 4:4:4 (BT.709 limited range) on that payload type, same SSRC, sequence and clock, starting with a keyframe; `standard` switches back to H.264 4:2:0. 4:4:4 keeps 1-pixel colored text and edges sharp (4:2:0 halves the color resolution); it is software encoded, so at most 30 fps, and its automatic ceiling is 1.25× H.264's. If the full-color encoder fails to start, the agent stays on H.264 for the session and withdraws the option.
 
@@ -363,7 +373,7 @@ Validation on the agent: wrong length, unknown type, button > 4, monitor out of 
 | `0x30` | CursorShape | `id u32, w u16, h u16, hot_x u16, hot_y u16, png bytes` | 13 + png |
 | `0x31` | CursorPos | `x u16, y u16, visible u8` (normalized; up to 120 Hz) | 6 |
 
-Shapes are sent on change; the browser caches by id (re-send of a known id with zero-length png means "use cached"). Shape size and hotspot are in **native** monitor pixels, whatever the encoded stream size.
+Shapes are sent on change; the browser caches by id (re-send of a known id with zero-length png means "use cached"). Ids are a hash of the picture, size and hotspot on every platform, so a shape seen before keeps its id. Every 3 s the agent re-sends the current shape (the channel is lossy): in full on the first 3 ticks after a change, then by id only. It forgets which ids it sent after 64 distinct ones and sends those in full again. Shape size and hotspot are in **native** monitor pixels, whatever the encoded stream size.
 
 The browser shows the shape as its own CSS cursor (scaled to the stream's on-screen size, at most 128 CSS px) while the controller moves the mouse, so the cursor has no network delay. It draws it at the reported position instead under Pointer Lock, while the pointer is outside the stage, and when a report differs from the last move it sent by more than ~4 native pixels once 1 s has passed since that move (the cursor moved on the device).
 
@@ -416,7 +426,7 @@ Presets (`max` = the encoder cap, 60 on hardware, 30 on software encoders):
 
 | preset | fps | resolution | bitrate cap | adaptive |
 |---|---|---|---|---|
-| `auto` | max (ceiling) | window or native (ceiling) | automatic (8 Mbps at 1080p30, pixel-scaled and × (fps/30)^0.6, ≤ 40) | yes: the bitrate follows the estimate; a step down only when a step's floor (0.02 bit/pixel/frame) does not fit, on loss, GCC overuse or queueing delay (RTT 60 ms, or half the baseline, above the 60 s minimum): 60 → 30 fps, then resolution at 30 fps, then 15/10/5 fps; back up with hysteresis |
+| `auto` | max (ceiling) | window or native (ceiling) | automatic (8 Mbps at 1080p30, pixel-scaled and × (fps/30)^0.6, ≤ 40) | yes: the bitrate follows the estimate; a step down only when a step's floor (0.02 bit/pixel/frame) does not fit, on loss, GCC overuse or queueing delay (RTT 60 ms, or half the baseline, above the 60 s minimum): 60 → 30 fps, then resolution at 30 fps, then 15/10/5 fps; back up with hysteresis. An idle screen (sending under half the target) probes one step up after 30 s, each further probe waiting twice as long (up to 8 min) until the screen is busy again, and never probes a resolution change (that restarts capture): those wait for a busy screen with headroom |
 | `speed` | max | 720p | 4000 | no |
 | `balanced` | min(30, max) | 1080p | 8000 | no |
 | `quality` | min(30, max) | window or native | 50000 | no |

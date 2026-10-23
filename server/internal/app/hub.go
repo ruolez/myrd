@@ -176,7 +176,6 @@ type liveSession struct {
 	connectedAt time.Time
 	browser     *browserConn
 	clientKey   proto.ClientKeyInfo
-	agentICE    []proto.ICEServer
 }
 
 // Hub owns presence (device → socket), browser sockets and live sessions.
@@ -271,13 +270,18 @@ func (h *Hub) OnlineDeviceIDs() []string {
 func (h *Hub) ReconnectsPerMin() float64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	cut := time.Now().Add(-time.Minute)
+	h.trimReconnectsLocked(time.Now())
+	return float64(len(h.reconnects))
+}
+
+// trimReconnectsLocked drops reconnects older than a minute; caller holds mu.
+func (h *Hub) trimReconnectsLocked(now time.Time) {
+	cut := now.Add(-time.Minute)
 	i := 0
 	for i < len(h.reconnects) && h.reconnects[i].Before(cut) {
 		i++
 	}
 	h.reconnects = h.reconnects[i:]
-	return float64(len(h.reconnects))
 }
 
 // decorate applies presence to a device row.
@@ -553,6 +557,13 @@ func (h *Hub) onBrowser(bc *browserConn, typ string, raw []byte) {
 			return
 		}
 		h.relayOffer(bc, m)
+	case proto.TypeSessionICE:
+		var m proto.SessionICE
+		if json.Unmarshal(raw, &m) != nil || m.SessionID == "" {
+			h.sendErr(bc.wsConn, m.Req, m.SessionID, proto.ErrBadRequest, "invalid session.ice")
+			return
+		}
+		h.renewICE(bc, m)
 	case proto.TypeICECandidate:
 		var m proto.ICECandidateMsg
 		if json.Unmarshal(raw, &m) != nil {
@@ -675,15 +686,14 @@ func (h *Hub) createSession(bc *browserConn, m proto.SessionCreate) {
 	ls := &liveSession{id: id, deviceID: d.ID, userID: bc.user.ID, userEmail: bc.user.Email, state: "pending",
 		createdAt: time.Now(), browser: bc,
 		clientKey: proto.ClientKeyInfo{ID: ck.ID, PublicKey: base64.StdEncoding.EncodeToString(ck.PublicKey),
-			Label: ck.Label, CreatedAt: ck.CreatedAt.UTC().Format(time.RFC3339)},
-		agentICE: h.app.iceServers(id, "a", h.app.cfg.TURNURLsAgent)}
+			Label: ck.Label, CreatedAt: ck.CreatedAt.UTC().Format(time.RFC3339)}}
 	h.mu.Lock()
 	h.sessions[id] = ls
 	h.mu.Unlock()
 	h.pushBusy(d.UserID, d.ID)
 
 	h.sendMsg(bc.wsConn, proto.TypeSessionCreated, proto.SessionCreated{Req: m.Req, SessionID: id,
-		ICEServers: h.app.iceServers(id, "b", h.app.cfg.TURNURLs), ForceRelay: m.ForceRelay,
+		ICEServers: h.app.iceServers(id, "b", h.app.cfg.TURNURLs), ICETTL: h.iceTTL(), ForceRelay: m.ForceRelay,
 		Device: proto.SessionDevice{ID: d.ID, Name: d.Name, PublicKey: base64.StdEncoding.EncodeToString(d.PublicKey)}})
 }
 
@@ -707,9 +717,28 @@ func (h *Hub) relayOffer(bc *browserConn, m proto.SessionOffer) {
 		return
 	}
 	ck := s.clientKey
+	// Fresh agent credentials every time: a renegotiation (ICE restart) late
+	// in a long session must still be able to allocate a relay.
 	h.sendMsg(ac.wsConn, proto.TypeSessionOffer, proto.SessionOffer{SessionID: s.id, SDP: m.SDP, FPSig: m.FPSig,
-		ClientKey: &ck, User: &proto.UserInfo{ID: s.userID, Email: s.userEmail}, ICEServers: s.agentICE})
+		ClientKey: &ck, User: &proto.UserInfo{ID: s.userID, Email: s.userEmail},
+		ICEServers: h.app.iceServers(s.id, "a", h.app.cfg.TURNURLsAgent)})
 }
+
+// renewICE answers session.ice with fresh browser-side ICE servers, so a
+// session outliving TURN_TTL keeps a relay (the browser applies them with
+// setConfiguration before its credentials expire or an ICE restart).
+func (h *Hub) renewICE(bc *browserConn, m proto.SessionICE) {
+	s := h.ownedByUser(m.SessionID, bc.user.ID)
+	if s == nil {
+		h.sendErr(bc.wsConn, m.Req, m.SessionID, proto.ErrNotFound, "unknown session")
+		return
+	}
+	h.sendMsg(bc.wsConn, proto.TypeSessionICEServers, proto.SessionICEServers{Req: m.Req, SessionID: s.id,
+		ICEServers: h.app.iceServers(s.id, "b", h.app.cfg.TURNURLs), ICETTL: h.iceTTL()})
+}
+
+// iceTTL is the TURN credential lifetime in seconds.
+func (h *Hub) iceTTL() int { return int(h.app.cfg.TURNTTL / time.Second) }
 
 // toSessionBrowser sends to the browser that owns the session, or to every
 // browser of the user when that socket is gone (reconnected tab).
@@ -763,7 +792,9 @@ func (h *Hub) ServeAgent(w http.ResponseWriter, r *http.Request) {
 	old := h.agents[d.ID]
 	h.agents[d.ID] = ac
 	if h.seen[d.ID] {
-		h.reconnects = append(h.reconnects, time.Now())
+		now := time.Now()
+		h.trimReconnectsLocked(now) // also here: nothing may read the rate for a long time
+		h.reconnects = append(h.reconnects, now)
 		a.metrics.reconnects.Inc()
 	}
 	h.seen[d.ID] = true

@@ -13,6 +13,7 @@ import {
   ECHO_GRACE_MS,
   followsRemote,
   MAX_CSS_CURSOR,
+  SHAPE_CACHE,
 } from "../lib/cursor";
 import { denormalizePoint } from "../lib/geometry";
 import type { RemoteSession } from "./RemoteSession";
@@ -47,15 +48,20 @@ export function CursorLayer({
     const ctx = c.getContext("2d");
     if (!ctx) return;
     const syntax = cursorSyntax((p, v) => CSS.supports(p, v));
+    // Shape ids are content hashes: an id seen before is the same image.
     const cache = new Map<number, Shape>();
+    const decoding = new Set<number>();
+    let want: number | null = null;
     let current: Shape | null = null;
     let pos = { x: 0, y: 0, visible: false };
     let pointer: { x: number; y: number } | null = null; // over the stage, element coords
     let css: { shape: Shape; size: string; value: string | null } | null = null;
+    let painted: { shape: Shape; size: string } | null = null;
+    let shown = false;
     let applied = "";
     let raf = 0;
-    let gen = 0;
     let recheck: ReturnType<typeof setTimeout> | null = null;
+    let closed = false;
 
     const setCursor = (v: string) => {
       if (v !== applied) el.style.cursor = applied = v;
@@ -89,22 +95,45 @@ export function CursorLayer({
       return value;
     };
 
+    const hide = () => {
+      if (!shown) return;
+      shown = false;
+      c.style.visibility = "";
+    };
+
+    // The canvas is the size of the cursor and moves with a transform, so a
+    // cursor report repaints a few pixels, not the whole stage.
+    const show = (shape: Shape, scale: number, dpr: number, x: number, y: number) => {
+      const size = `${scale}@${dpr}`;
+      if (painted?.shape !== shape || painted.size !== size) {
+        const w = Math.max(1, Math.round(shape.w * scale * dpr));
+        const h = Math.max(1, Math.round(shape.h * scale * dpr));
+        if (c.width !== w || c.height !== h) {
+          c.width = w;
+          c.height = h;
+        }
+        c.style.width = `${shape.w * scale}px`;
+        c.style.height = `${shape.h * scale}px`;
+        ctx.clearRect(0, 0, w, h);
+        ctx.drawImage(shape.bmp, 0, 0, w, h);
+        painted = { shape, size };
+      }
+      c.style.transform = `translate3d(${x - shape.hotX * scale}px, ${y - shape.hotY * scale}px, 0)`;
+      if (!shown) {
+        shown = true;
+        c.style.visibility = "visible";
+      }
+    };
+
     const draw = () => {
       raf = 0;
-      const r = c.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      const w = Math.round(r.width * dpr);
-      const h = Math.round(r.height * dpr);
-      if (c.width !== w || c.height !== h) {
-        c.width = w;
-        c.height = h;
-      }
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, r.width, r.height);
       if (!current || !activeRef.current) {
+        hide();
         setCursor("");
         return;
       }
+      const r = el.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
       const v = video.current;
       const box = videoBox(r, v);
       // Shapes are in native monitor pixels; the video may be encoded smaller.
@@ -116,20 +145,37 @@ export function CursorLayer({
         followsRemote(session.lastMove, pos, performance.now(), echoTolerance(remoteW));
       const hardware = remote || !pos.visible ? null : cssCursor(current, scale, dpr);
       setCursor(hardware ?? "none");
-      if (hardware || !pos.visible) return;
+      if (hardware || !pos.visible) {
+        hide();
+        return;
+      }
       const p = !remote && pointer ? pointer : denormalizePoint(pos.x, pos.y, box);
-      ctx.drawImage(
-        current.bmp,
-        p.x - current.hotX * scale,
-        p.y - current.hotY * scale,
-        current.w * scale,
-        current.h * scale,
-      );
+      show(current, scale, dpr, p.x, p.y);
     };
     const schedule = () => {
       if (!raf) raf = requestAnimationFrame(draw);
     };
     redraw.current = schedule;
+
+    const use = (id: number): boolean => {
+      const shape = cache.get(id);
+      if (!shape) return false;
+      cache.delete(id);
+      cache.set(id, shape);
+      current = shape;
+      schedule();
+      return true;
+    };
+    const evict = () => {
+      for (const [id, shape] of cache) {
+        if (cache.size <= SHAPE_CACHE) break;
+        if (shape === current) continue;
+        cache.delete(id);
+        if (css?.shape === shape) css = null;
+        if (painted?.shape === shape) painted = null;
+        shape.bmp.close();
+      }
+    };
 
     const onPointer = (e: PointerEvent) => {
       const r = el.getBoundingClientRect();
@@ -154,39 +200,38 @@ export function CursorLayer({
         schedule();
         return;
       }
-      if (m.png.length === 0) {
-        const cached = cache.get(m.id);
-        if (cached) {
-          current = cached;
-          schedule();
-        }
-        return;
-      }
-      const my = ++gen;
+      want = m.id;
+      // The agent re-sends the current shape now and then: decode each id once.
+      if (use(m.id) || decoding.has(m.id) || m.png.length === 0) return;
+      const id = m.id;
+      decoding.add(id);
       createImageBitmap(new Blob([m.png as Uint8Array<ArrayBuffer>], { type: "image/png" }))
         .then((bmp) => {
-          const shape = {
+          decoding.delete(id);
+          if (closed) {
+            bmp.close();
+            return;
+          }
+          cache.set(id, {
             bmp,
             hotX: m.hotX,
             hotY: m.hotY,
             w: m.w || bmp.width,
             h: m.h || bmp.height,
-          };
-          cache.set(m.id, shape);
-          if (my === gen) {
-            current = shape;
-            schedule();
-          }
+          });
+          if (want === id) use(id);
+          evict();
         })
-        .catch(() => undefined);
+        .catch(() => decoding.delete(id));
     });
     el.addEventListener("pointermove", onPointer);
     el.addEventListener("pointerdown", onPointer);
     el.addEventListener("pointerleave", onPointer);
     document.addEventListener("pointerlockchange", schedule);
     const ro = new ResizeObserver(schedule);
-    ro.observe(c);
+    ro.observe(el);
     return () => {
+      closed = true;
       off();
       el.removeEventListener("pointermove", onPointer);
       el.removeEventListener("pointerdown", onPointer);
@@ -198,6 +243,7 @@ export function CursorLayer({
       el.style.cursor = "";
       redraw.current = () => undefined;
       for (const s of cache.values()) s.bmp.close();
+      cache.clear();
     };
   }, [session, video, surface]);
 
@@ -206,7 +252,7 @@ export function CursorLayer({
   return (
     <canvas
       ref={canvas}
-      className="pointer-events-none absolute inset-0 h-full w-full"
+      className="pointer-events-none invisible absolute top-0 left-0 will-change-transform"
       aria-hidden="true"
     />
   );

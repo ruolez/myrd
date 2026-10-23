@@ -25,6 +25,8 @@ const EMPTY: PreviewState = { url: null, capturedAt: null, width: 0, height: 0, 
 const WATCH_DEBOUNCE_MS = 300;
 const MAX_IMAGES = 150;
 const MAX_DECRYPTS = 4;
+const KEY_RETRY_MIN_MS = 5_000;
+const KEY_RETRY_MAX_MS = 5 * 60_000;
 
 export class PreviewManager {
   private states = new Map<string, PreviewState>();
@@ -34,6 +36,8 @@ export class PreviewManager {
   private observer: IntersectionObserver | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private key: Promise<PreviewKey> | null = null;
+  private keyRetryAt = 0;
+  private keyBackoff = KEY_RETRY_MIN_MS;
   private offs: (() => void)[] = [];
   private queue: (() => Promise<void>)[] = [];
   private running = 0;
@@ -157,6 +161,8 @@ export class PreviewManager {
   private sendWatch(ids: string[]) {
     const sig = JSON.stringify(ids);
     if (sig === this.lastSent) return;
+    // Nothing watched yet: no key is needed to say so.
+    if (ids.length === 0 && this.lastSent === "") return;
     void this.withKey(async (k) => {
       if (signaling.state !== "open") return;
       this.lastSent = sig;
@@ -165,11 +171,17 @@ export class PreviewManager {
   }
 
   private async withKey(fn: (k: PreviewKey) => Promise<void>) {
+    if (!this.key && Date.now() < this.keyRetryAt) return;
     try {
       this.key ??= ensurePreviewKey(this.userId);
-      await fn(await this.key);
+      const k = await this.key;
+      this.keyBackoff = KEY_RETRY_MIN_MS;
+      await fn(k);
     } catch {
-      this.key = null; // retried on the next change
+      // Retried on a later change, backing off: every device push is a change.
+      this.key = null;
+      this.keyRetryAt = Date.now() + this.keyBackoff;
+      this.keyBackoff = Math.min(this.keyBackoff * 2, KEY_RETRY_MAX_MS);
     }
   }
 

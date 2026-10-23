@@ -37,7 +37,11 @@ const STATES: readonly UpdateState[] = [
 ];
 // Steps the agent abandons when it disconnects; installing restarts it by design.
 const LIVE_ONLY: readonly string[] = ["checking", "downloading", "waiting_idle"];
-const IN_PROGRESS: readonly string[] = [...LIVE_ONLY, "installing"];
+// Steps worth polling for. waiting_idle lasts as long as the session in the
+// way does; its end arrives as a push.
+const POLLED: readonly string[] = ["checking", "downloading", "installing"];
+// Past this, an attempt (say, an install on a device that never came back) is left to pushes.
+const POLL_FOR_MS = 10 * 60_000;
 const MAX_ERROR_LABEL = 47;
 
 /** The attempt state still worth showing: "" once the agent runs the target or gave up offline. */
@@ -82,9 +86,11 @@ export function updateBadge(d: UpdateFields): UpdateBadge | null {
   return { label: "Up to date", tone: "success" };
 }
 
-/** An attempt is under way (the page polls while any device is in this state). */
-export function isUpdating(d: UpdateFields): boolean {
-  return IN_PROGRESS.includes(currentState(d));
+/** An attempt is under way and recent: the page polls while any device is in this state. */
+export function pollsForUpdate(d: UpdateFields, now: number): boolean {
+  if (!POLLED.includes(currentState(d))) return false;
+  const at = d.update_at ? Date.parse(d.update_at) : NaN;
+  return Number.isNaN(at) || now - at < POLL_FOR_MS;
 }
 
 /** "Update now" applies: online, self-updating, and outdated or retrying a failed attempt. */

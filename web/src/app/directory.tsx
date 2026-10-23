@@ -6,16 +6,19 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import type { ReactNode } from "react";
 import { api, errorMessage } from "../api/client";
 import type { Device, Folder, Tag } from "../api/types";
 import { useLiveDeviceStatus, useLiveUpdates } from "../components/devices";
 import { useToast } from "../components/ui";
-import { applyInfo, patchDevices } from "../lib/directory";
+import { applyInfo, deviceLabels, patchDevices, sameLabels } from "../lib/directory";
+import type { DeviceLabel } from "../lib/directory";
 import { signaling } from "../lib/signaling";
 import { useAuth } from "./auth";
 
@@ -45,6 +48,27 @@ type Directory = {
 
 const Ctx = createContext<Directory | null>(null);
 
+// The device list outside React state, for components that need a sliver of
+// it (session chrome) and must not re-render on every health report.
+type DeviceStore = { get: () => Device[]; subscribe: (fn: () => void) => () => void };
+const StoreCtx = createContext<DeviceStore | null>(null);
+
+function createDeviceStore(): DeviceStore & { set: (d: Device[]) => void } {
+  let devices: Device[] = [];
+  const listeners = new Set<() => void>();
+  return {
+    get: () => devices,
+    set: (d) => {
+      devices = d;
+      for (const l of listeners) l();
+    },
+    subscribe: (fn) => {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+  };
+}
+
 const ORG_DEBOUNCE_MS = 250;
 
 export function DirectoryProvider({ children }: { children: ReactNode }) {
@@ -57,6 +81,8 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const seq = useRef(0);
+  const [store] = useState(createDeviceStore);
+  useLayoutEffect(() => store.set(devices), [store, devices]);
 
   const setDevices = useCallback((fn: (d: Device[]) => Device[]) => setDevicesState(fn), []);
 
@@ -173,7 +199,24 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
       reloadOrg,
     ],
   );
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  return (
+    <StoreCtx.Provider value={store}>
+      <Ctx.Provider value={value}>{children}</Ctx.Provider>
+    </StoreCtx.Provider>
+  );
+}
+
+/** Name, OS and signed-in user by device id; re-renders only when one of those changes. */
+export function useDeviceLabels(): Map<string, DeviceLabel> {
+  const store = useContext(StoreCtx);
+  if (!store) throw new Error("useDeviceLabels outside DirectoryProvider");
+  const last = useRef<Map<string, DeviceLabel> | null>(null);
+  const get = () => {
+    const next = deviceLabels(store.get());
+    if (last.current && sameLabels(last.current, next)) return last.current;
+    return (last.current = next);
+  };
+  return useSyncExternalStore(store.subscribe, get);
 }
 
 export function useDirectory(): Directory {

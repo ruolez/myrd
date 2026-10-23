@@ -29,13 +29,15 @@ const (
 	ceil1080pKbps = 8000
 	// Keyframes come when the browser asks (PLI); a periodic one costs a
 	// bitrate spike and a visible blur pulse. This only bounds a lost request.
-	keyframeGOPms  = 10 * 60 * 1000
-	statsInterval  = 2 * time.Second
-	autoInterval   = time.Second
-	cursorInterval = time.Second / 120
-	clipboardPoll  = time.Second
-	lockPoll       = time.Second
-	shapeResend    = 3 * time.Second
+	keyframeGOPms    = 10 * 60 * 1000
+	statsInterval    = 2 * time.Second
+	autoInterval     = time.Second
+	cursorInterval   = time.Second / 120
+	clipboardPoll    = time.Second
+	lockPoll         = time.Second
+	shapeResend      = 3 * time.Second
+	shapeFullResends = 3  // ticks that re-send a new shape in full
+	shapeCacheMax    = 64 // shape ids remembered as sent before the set starts over
 )
 
 // Quality tiers from the input-channel Control op 3 (legacy browsers).
@@ -122,7 +124,9 @@ type mediaPipe struct {
 	control    *webrtc.DataChannel
 	cursor     *webrtc.DataChannel
 	sentShape  map[uint32]bool
-	curShape   []byte // full CursorShape message for periodic resend
+	curShape   []byte // full CursorShape message, sent again on a few ticks after a change
+	curShapeID []byte // the same shape by id only: the later ticks
+	shapeTicks int    // resend ticks since the shape changed
 	locked     bool   // last lock state the viewer heard (hello / `screen`)
 	clipSeen   string
 	clipSet    string // last value we wrote from the browser (avoid echo)
@@ -676,10 +680,7 @@ func (p *mediaPipe) loop() {
 				"fec_packets": p.s.fec.repair.Load()})
 			lastBytes, lastFrames = b, f
 		case <-shape.C:
-			p.mu.Lock()
-			msg := p.curShape
-			p.mu.Unlock()
-			if msg != nil {
+			if msg := p.shapeResendMsg(); msg != nil {
 				p.sendCursor(msg)
 			}
 		case <-clip.C:
@@ -895,16 +896,39 @@ func (p *mediaPipe) CursorShape(id uint32, w, h, hotX, hotY uint16, rgba []byte)
 	if full == nil {
 		return
 	}
+	short := inputproto.EncodeCursorShape(id, w, h, hotX, hotY, nil)
 	p.mu.Lock()
+	if len(p.sentShape) >= shapeCacheMax {
+		clear(p.sentShape) // ids the browser still has are simply sent in full again
+	}
 	known := p.sentShape[id]
 	p.sentShape[id] = true
-	p.curShape = full // re-sent periodically so a lost copy on the lossy channel heals
+	if !bytes.Equal(short, p.curShapeID) {
+		p.shapeTicks = 0
+	}
+	p.curShape, p.curShapeID = full, short
 	p.mu.Unlock()
 	if known {
-		p.sendCursor(inputproto.EncodeCursorShape(id, w, h, hotX, hotY, nil))
+		p.sendCursor(short)
 		return
 	}
 	p.sendCursor(full)
+}
+
+// shapeResendMsg is what the periodic tick re-sends on the lossy cursor
+// channel: the full shape on the first shapeFullResends ticks after a change,
+// so a lost copy heals, then only its id (a few bytes; the browser has it).
+func (p *mediaPipe) shapeResendMsg() []byte {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.curShape == nil {
+		return nil
+	}
+	p.shapeTicks++
+	if p.shapeTicks <= shapeFullResends {
+		return p.curShape
+	}
+	return p.curShapeID
 }
 
 func encodeShape(id uint32, w, h, hotX, hotY uint16, rgba []byte) []byte {

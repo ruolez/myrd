@@ -23,20 +23,21 @@ const (
 )
 
 const (
-	autoWarmup     = 10 * time.Second // after a start, restart or settings change: no starvation
-	autoMinGap     = 5 * time.Second
-	autoResGap     = 15 * time.Second // resolution changes restart capture
-	autoUpHoldMin  = 10 * time.Second
-	autoUpHoldMax  = 160 * time.Second
-	autoCalm       = 120 * time.Second // without a step down: hold back to the minimum
-	autoBounce     = 30 * time.Second  // a step down this soon after a step up doubles the hold
-	autoStarvedN   = 3
-	autoIdleProbeN = 30
-	autoMaxLoss    = 0.05
-	autoHeadroom   = 1.3
-	autoRTTWindow  = 60                    // samples the RTT baseline is the minimum of
-	autoRTTMargin  = 60 * time.Millisecond // queueing delay above the baseline that counts
-	autoLatencyN   = 3
+	autoWarmup            = 10 * time.Second // after a start, restart or settings change: no starvation
+	autoMinGap            = 5 * time.Second
+	autoResGap            = 15 * time.Second // resolution changes restart capture
+	autoUpHoldMin         = 10 * time.Second
+	autoUpHoldMax         = 160 * time.Second
+	autoCalm              = 120 * time.Second // without a step down: hold back to the minimum
+	autoBounce            = 30 * time.Second  // a step down this soon after a step up doubles the hold
+	autoStarvedN          = 3
+	autoIdleProbeN        = 30 // idle samples before the first probe; each further one waits twice as long
+	autoIdleProbeMaxShift = 4  // up to 16× (8 min)
+	autoMaxLoss           = 0.05
+	autoHeadroom          = 1.3
+	autoRTTWindow         = 60                    // samples the RTT baseline is the minimum of
+	autoRTTMargin         = 60 * time.Millisecond // queueing delay above the baseline that counts
+	autoLatencyN          = 3
 )
 
 // Rung is one ladder step. MinKbps ≈ 0.02 bit per pixel per frame: screen
@@ -99,6 +100,7 @@ type AutoState struct {
 	overuse uint8 // last three samples, bit 0 newest
 	starved int
 	idle    int
+	probes  int                          // idle probes since the screen was last busy
 	latent  int                          // consecutive samples with queueing delay
 	rtts    [autoRTTWindow]time.Duration // ring; the baseline is its minimum
 	rttN    int
@@ -151,6 +153,9 @@ func (st AutoState) moveTo(now time.Time, ladder []Rung, to int, reason string) 
 // the estimate has headroom for the next rung, or as a probe after a long idle
 // stretch. A mostly idle screen never steps down: GCC cannot estimate above
 // what is actually sent, so a low estimate then says nothing about the link.
+// For the same reason probes say little: each one waits twice as long as the
+// one before until the screen is busy again, and a probe never changes the
+// resolution (that restarts capture and the browser's decoder for nothing).
 func NextAuto(st AutoState, now time.Time, s AutoSample, ladder []Rung) AutoState {
 	if len(ladder) == 0 {
 		return st
@@ -175,7 +180,7 @@ func NextAuto(st AutoState, now time.Time, s AutoSample, ladder []Rung) AutoStat
 		st.starved = 0
 	}
 	if busy {
-		st.idle = 0
+		st.idle, st.probes = 0, 0
 	} else {
 		st.idle++
 	}
@@ -215,12 +220,16 @@ func NextAuto(st AutoState, now time.Time, s AutoSample, ladder []Rung) AutoStat
 		switch {
 		case busy && st.overuse == 0 && st.latent == 0 && float64(s.TargetKbps) >= autoHeadroom*float64(next.MinKbps):
 			reason = AutoSteady
-		case st.idle >= autoIdleProbeN:
+		case st.idle >= autoIdleProbeN<<min(st.probes, autoIdleProbeMaxShift) &&
+			next.W == cur.W && next.H == cur.H:
 			reason = AutoProbe
 		}
 		if reason != "" {
 			st = st.moveTo(now, ladder, st.Rung-1, reason)
 			st.LastUp = now
+			if reason == AutoProbe {
+				st.probes++
+			}
 			return st
 		}
 	}

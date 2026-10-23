@@ -11,21 +11,28 @@ import type { RemoteSession } from "./RemoteSession";
 export function LiveThumb({
   session,
   os,
+  live = true,
   className = "",
 }: {
   session: RemoteSession | null;
   os?: string;
+  /** false shows the OS icon (the session in view needs no second picture). */
+  live?: boolean;
   className?: string;
 }) {
   const snap = useSessionSnap(session);
   const ref = useRef<HTMLVideoElement>(null);
-  const stream = snap?.stream ?? null;
+  const stream = (live && snap?.stream) || null;
 
   useEffect(() => {
     const v = ref.current;
     if (!v) return;
     if (v.srcObject !== stream) v.srcObject = stream;
     if (stream) void v.play().catch(() => undefined);
+    // A detached element would hold its player until garbage collection.
+    return () => {
+      v.srcObject = null;
+    };
   }, [stream]);
 
   return (

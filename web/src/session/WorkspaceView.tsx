@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import type { DeviceId } from "../api/types";
-import { useDirectory } from "../app/directory";
+import { useDeviceLabels } from "../app/directory";
 import { usePalette } from "../app/palette";
 import { useWorkspace, useWorkspaceState } from "../app/workspace";
 import { Icon } from "../components/icons";
@@ -25,13 +25,13 @@ export function WorkspaceView() {
   const navigate = useNavigate();
   const ws = useWorkspace();
   const st = useWorkspaceState();
-  const { devices } = useDirectory();
+  const labels = useDeviceLabels();
   const palette = usePalette();
   const [blocked, setBlocked] = useState<DeviceId | null | false>(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [keyboardLocked, setKeyboardLocked] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
-  const nameOf = (x: DeviceId | null) => devices.find((d) => d.id === x)?.name ?? "a device";
+  const nameOf = (x: DeviceId | null) => (x && labels.get(x)?.name) || "a device";
 
   // The route decides what is in view; leaving it puts every session in the background.
   useEffect(() => {
@@ -207,7 +207,7 @@ export function WorkspaceView() {
             key={`${x}:${e.gen}`}
             session={session}
             name={nameOf(x)}
-            consoleUser={devices.find((d) => d.id === x)?.info?.user ?? null}
+            consoleUser={labels.get(x)?.user ?? null}
             focused={x === st.focused}
             forceRelay={e.forceRelay}
             fullscreen={fullscreen}

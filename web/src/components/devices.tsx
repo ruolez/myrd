@@ -8,7 +8,7 @@ import type { DeviceUpdateStatus } from "../lib/signaling";
 import {
   applyUpdateStatus,
   canUpdate,
-  isUpdating,
+  pollsForUpdate,
   updateBadge,
   updateErrorMessage,
 } from "../lib/update";
@@ -84,8 +84,8 @@ export function useLiveUpdates(
     });
   }, [setDevices]);
   useInterval(() => {
-    if (document.hidden) return;
-    if (devices.some(isUpdating) || Date.now() < kickedUntil.current) reload();
+    const now = Date.now();
+    if (devices.some((d) => pollsForUpdate(d, now)) || now < kickedUntil.current) reload();
   }, UPDATE_POLL_MS);
   return useCallback(() => {
     kickedUntil.current = Date.now() + UPDATE_KICK_MS;

@@ -87,6 +87,7 @@ type harness struct {
 	pts         []uint8 // payload types received, one entry per change
 
 	browserCodecs func(*webrtc.MediaEngine) // nil: pion's defaults
+	agentICE      []proto.ICEServer         // ice_servers the "server" adds to the offer
 }
 
 const ownerID = "0d8e5f3a-owner"
@@ -313,7 +314,8 @@ func (h *harness) offer(tamper bool) {
 	}
 	b, _ := proto.Encode(proto.TypeSessionOffer, proto.SessionOffer{SessionID: sessionID, SDP: pc.LocalDescription().SDP,
 		FPSig: h.signFP(fp), ClientKey: &proto.ClientKeyInfo{ID: "ck1", PublicKey: h.spki, Label: "Test Chrome",
-			CreatedAt: "2026-10-19T00:00:00Z"}, User: &proto.UserInfo{ID: ownerID, Email: "owner@example.com"}})
+			CreatedAt: "2026-10-19T00:00:00Z"}, User: &proto.UserInfo{ID: ownerID, Email: "owner@example.com"},
+		ICEServers: h.agentICE})
 	h.mgr.HandleSignal(proto.TypeSessionOffer, b)
 }
 

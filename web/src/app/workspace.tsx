@@ -8,7 +8,7 @@ import {
 } from "react";
 import type { ReactNode } from "react";
 import { SessionWorkspace } from "../session/workspace";
-import type { RemoteSession, Snapshot } from "../session/RemoteSession";
+import type { HudStats, RemoteSession, Snapshot } from "../session/RemoteSession";
 import type { WsState } from "../session/workspaceState";
 import { useUser } from "./auth";
 
@@ -70,4 +70,10 @@ export function useSessionSnap(session: RemoteSession | null): Snapshot | null {
     [session],
   );
   return useSyncExternalStore(session ? subscribe : noop, () => session?.snapshot ?? null);
+}
+
+/** The session's HUD stats; while mounted, they refresh every second. */
+export function useSessionStats(session: RemoteSession): HudStats {
+  const subscribe = useCallback((fn: () => void) => session.onStats(fn), [session]);
+  return useSyncExternalStore(subscribe, () => session.stats);
 }

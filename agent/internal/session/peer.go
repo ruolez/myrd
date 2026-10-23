@@ -35,6 +35,10 @@ var h264Profiles = []string{"42e01f", "4d001f", "640c1f", "64001f"}
 // next to H.264 and switched to mid-session.
 const fullColorPT = 110
 
+// keyframeGap spaces keyframes asked for by PLI/FIR: a lossy link sends a
+// burst of them, and every keyframe is a full, coarse picture.
+const keyframeGap = 300 * time.Millisecond
+
 type sess struct {
 	m          *Manager
 	id         string
@@ -76,10 +80,16 @@ func newSess(m *Manager, o proto.SessionOffer) *sess {
 	if o.User != nil {
 		s.userID, s.email = o.User.ID, o.User.Email
 	}
-	for _, is := range o.ICEServers {
-		s.iceServers = append(s.iceServers, webrtc.ICEServer{URLs: is.URLs, Username: is.Username, Credential: is.Credential})
-	}
+	s.iceServers = iceServers(o.ICEServers)
 	return s
+}
+
+func iceServers(in []proto.ICEServer) []webrtc.ICEServer {
+	var out []webrtc.ICEServer
+	for _, is := range in {
+		out = append(out, webrtc.ICEServer{URLs: is.URLs, Username: is.Username, Credential: is.Credential})
+	}
+	return out
 }
 
 func (s *sess) info() *Info {
@@ -184,7 +194,7 @@ func (s *sess) run(o proto.SessionOffer) {
 		s.end(proto.EndError, true)
 		return
 	}
-	if err := s.answer(o.SDP); err != nil {
+	if err := s.answer(o.SDP, nil); err != nil {
 		s.log.Error("answer failed", "err", err)
 		s.end(proto.EndError, true)
 	}
@@ -388,7 +398,7 @@ func (s *sess) readRTCP(sender *webrtc.RTPSender) {
 		for _, p := range pkts {
 			switch p.(type) {
 			case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
-				if time.Since(last) > 100*time.Millisecond {
+				if time.Since(last) > keyframeGap {
 					last = time.Now()
 					s.m.o.Backend.RequestKeyframe()
 				}
@@ -397,8 +407,11 @@ func (s *sess) readRTCP(sender *webrtc.RTPSender) {
 	}
 }
 
-// answer applies a remote offer and sends a signed answer.
-func (s *sess) answer(offerSDP string) error {
+// answer applies a remote offer and sends a signed answer. ice, when set,
+// replaces the ICE servers first: a renegotiation brings freshly minted TURN
+// credentials (the first ones expire after TURN_TTL), and pion hands them to
+// its ICE agent for the gathering that the offer's ICE restart starts.
+func (s *sess) answer(offerSDP string, ice []webrtc.ICEServer) error {
 	s.negMu.Lock()
 	defer s.negMu.Unlock()
 	s.mu.Lock()
@@ -406,6 +419,13 @@ func (s *sess) answer(offerSDP string) error {
 	s.mu.Unlock()
 	if pc == nil {
 		return errors.New("no peer connection")
+	}
+	if len(ice) > 0 {
+		cfg := pc.GetConfiguration()
+		cfg.ICEServers = ice
+		if err := pc.SetConfiguration(cfg); err != nil {
+			s.log.Warn("ice servers not updated", "err", err) // keep going: a direct path may still work
+		}
 	}
 	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: offerSDP}); err != nil {
 		return err
@@ -455,7 +475,7 @@ func (s *sess) renegotiate(o proto.SessionOffer) {
 	if !ready {
 		return // still in consent; the browser will retry
 	}
-	if err := s.answer(o.SDP); err != nil {
+	if err := s.answer(o.SDP, iceServers(o.ICEServers)); err != nil {
 		s.log.Error("renegotiation failed", "err", err)
 		s.end(proto.EndError, true)
 	}

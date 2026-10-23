@@ -522,6 +522,14 @@ out:
 
 /* ---------------- cursor thread ---------------- */
 
+static uint32_t fnv1a(const uint8_t *p, size_t n, uint32_t h) {
+    for (size_t i = 0; i < n; i++) {
+        h ^= p[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
 static void emit_cursor_shape(Display *d) {
     XFixesCursorImage *ci = XFixesGetCursorImage(d);
     if (!ci) return;
@@ -542,8 +550,12 @@ static void emit_cursor_shape(Display *d) {
                 rgba[i * 4 + 2] = b;
                 rgba[i * 4 + 3] = a;
             }
-            g.on_shape(g.user, (uint32_t)ci->cursor_serial, (uint16_t)w, (uint16_t)h, (uint16_t)ci->xhot,
-                       (uint16_t)ci->yhot, rgba, w * h * 4);
+            /* The id is the content, as on macOS and Windows: X's cursor_serial
+               grows with every change, so the viewer's cache never hit. */
+            uint32_t meta[3] = {(uint32_t)w, (uint32_t)h, ((uint32_t)(uint16_t)ci->xhot << 16) | (uint16_t)ci->yhot};
+            uint32_t id = fnv1a(rgba, (size_t)w * h * 4, fnv1a((const uint8_t *)meta, sizeof(meta), 2166136261u));
+            if (id == 0) id = 1;
+            g.on_shape(g.user, id, (uint16_t)w, (uint16_t)h, (uint16_t)ci->xhot, (uint16_t)ci->yhot, rgba, w * h * 4);
             free(rgba);
         }
     }

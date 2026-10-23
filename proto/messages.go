@@ -35,6 +35,8 @@ const (
 	TypeDeviceStatus       = "device.status"        // S→B
 	TypeDeviceUpdateStatus = "device.update_status" // S→B
 	TypeOrgChanged         = "org.changed"          // S→B
+	TypeSessionICE         = "session.ice"          // B→S
+	TypeSessionICEServers  = "session.ice_servers"  // S→B
 
 	// relayed both ways
 	TypeSessionOffer  = "session.offer"  // B→S→A
@@ -256,8 +258,28 @@ type SessionCreated struct {
 	Req        string        `json:"req"`
 	SessionID  string        `json:"session_id"`
 	ICEServers []ICEServer   `json:"ice_servers"`
+	ICETTL     int           `json:"ice_ttl"` // seconds the TURN credentials stay valid
 	Device     SessionDevice `json:"device"`
 	ForceRelay bool          `json:"force_relay,omitempty"` // echoed so the browser sets iceTransportPolicy:"relay"
+}
+
+// SessionICE asks for fresh browser-side ICE servers (TURN credentials) for a
+// live session, before the ones it has expire or for an ICE restart.
+type SessionICE struct {
+	V         int    `json:"v"`
+	Type      string `json:"type"`
+	Req       string `json:"req"`
+	SessionID string `json:"session_id"`
+}
+
+// SessionICEServers answers SessionICE.
+type SessionICEServers struct {
+	V          int         `json:"v"`
+	Type       string      `json:"type"`
+	Req        string      `json:"req"`
+	SessionID  string      `json:"session_id"`
+	ICEServers []ICEServer `json:"ice_servers"`
+	ICETTL     int         `json:"ice_ttl"` // seconds
 }
 
 type DeviceStatus struct {
@@ -294,7 +316,8 @@ type DeviceUpdateStatus struct {
 // ---------- relayed ----------
 
 // SessionOffer: browser sends {session_id, sdp, fp_sig}; the server adds
-// client_key, user, ice_servers and force_relay before forwarding to the agent.
+// client_key, user and ice_servers before forwarding to the agent. Every
+// offer (also a renegotiation) carries freshly minted ice_servers.
 type SessionOffer struct {
 	V          int            `json:"v"`
 	Type       string         `json:"type"`

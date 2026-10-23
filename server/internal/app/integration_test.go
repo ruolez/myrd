@@ -24,6 +24,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -968,5 +969,81 @@ func TestRememberedBrowsersSkipPromptByDefault(t *testing.T) {
 	}
 	if st := e.call(c, "GET", "/v1/devices/"+ag.id, nil, &d); st != 200 || !d.Device.AutoAccept {
 		t.Fatalf("device: %d auto_accept=%v, want true", st, d.Device.AutoAccept)
+	}
+}
+
+// turnExpiry is the expiry a coturn REST username carries.
+func turnExpiry(t *testing.T, s proto.ICEServer) time.Time {
+	t.Helper()
+	sec, err := strconv.ParseInt(strings.SplitN(s.Username, ":", 2)[0], 10, 64)
+	if err != nil {
+		t.Fatalf("TURN username %q: %v", s.Username, err)
+	}
+	return time.Unix(sec, 0)
+}
+
+// TURN credentials expire after TURN_TTL: session.created says when, the
+// browser renews its own with session.ice, and every offer the agent gets
+// (an ICE restart late in a session too) carries freshly minted ones.
+func TestSessionICECredentialsAreRenewed(t *testing.T) {
+	e := newEnv(t)
+	c := e.login(adminEmail, adminPass)
+	ag := e.enroll(c)
+	keyID := e.registerClientKey(c)
+	browser := e.dialBrowser(c)
+	agent := e.dialAgent(ag)
+	agent.send(proto.TypeHello, proto.Hello{AgentVersion: "0.1.0", OS: "darwin", Arch: "arm64", Hostname: "mac-mini",
+		Capabilities: proto.Capabilities{Codecs: []string{"h264"}, MaxFPS: 60, Encoder: "videotoolbox"},
+		Permissions:  proto.Permissions{Screen: true, Input: true}, ActiveSessions: []string{}})
+	agent.expect(proto.TypeHelloAck, nil)
+	ttl := int(e.cfg.TURNTTL / time.Second)
+
+	browser.send(proto.TypeSessionCreate, proto.SessionCreate{Req: "r1", DeviceID: ag.id, ClientKeyID: keyID})
+	var created proto.SessionCreated
+	browser.expect(proto.TypeSessionCreated, &created)
+	sid := created.SessionID
+	if created.ICETTL != ttl || ttl != 7200 {
+		t.Fatalf("session.created ice_ttl = %d, want %d (TURN_TTL 2h)", created.ICETTL, ttl)
+	}
+
+	browser.send(proto.TypeSessionICE, proto.SessionICE{Req: "i1", SessionID: sid})
+	var fresh proto.SessionICEServers
+	browser.expect(proto.TypeSessionICEServers, &fresh)
+	if fresh.Req != "i1" || fresh.SessionID != sid || fresh.ICETTL != ttl || len(fresh.ICEServers) != 2 ||
+		fresh.ICEServers[0].URLs[0] != "stun:localhost:3478" || fresh.ICEServers[1].URLs[0] != "turn:localhost:3478?transport=udp" ||
+		!strings.HasSuffix(fresh.ICEServers[1].Username, ":"+sid+":b") || fresh.ICEServers[1].Credential == "" {
+		t.Fatalf("session.ice_servers %+v", fresh)
+	}
+	if exp := turnExpiry(t, fresh.ICEServers[1]); exp.Before(time.Now().Add(e.cfg.TURNTTL - time.Minute)) {
+		t.Fatalf("renewed credentials expire at %v, want about now + %v", exp, e.cfg.TURNTTL)
+	}
+
+	// Another user, or a session that does not exist: not found, with req.
+	other := e.dialBrowser(e.createUser(c, "other@example.com"))
+	for _, id := range []string{sid, "00000000-0000-0000-0000-000000000000"} {
+		other.send(proto.TypeSessionICE, proto.SessionICE{Req: "i2", SessionID: id})
+		var nf proto.Error
+		other.expect(proto.TypeError, &nf)
+		if nf.Code != proto.ErrNotFound || nf.Req != "i2" || nf.SessionID != id {
+			t.Fatalf("session.ice for %s from another user: %+v", id, nf)
+		}
+	}
+
+	offer := func() proto.ICEServer {
+		t.Helper()
+		browser.send(proto.TypeSessionOffer, proto.SessionOffer{SessionID: sid, SDP: "v=0 offer", FPSig: "sig-b"})
+		var o proto.SessionOffer
+		agent.expect(proto.TypeSessionOffer, &o)
+		if len(o.ICEServers) != 2 || !strings.HasSuffix(o.ICEServers[1].Username, ":"+sid+":a") {
+			t.Fatalf("agent offer ice_servers %+v", o.ICEServers)
+		}
+		return o.ICEServers[1]
+	}
+	first := offer()
+	time.Sleep(1100 * time.Millisecond) // usernames carry the expiry in whole seconds
+	second := offer()
+	if second.Username == first.Username || second.Credential == first.Credential ||
+		!turnExpiry(t, second).After(turnExpiry(t, first)) {
+		t.Fatalf("renegotiation reused the agent's credentials: %+v then %+v", first, second)
 	}
 }

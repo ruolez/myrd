@@ -108,6 +108,7 @@ function Legend({ color, label }: { color: string; label: string }) {
 
 /** Evenly spaced axis ticks from 0 whose last value is the first step ≥ max. */
 export function niceTicks(max: number): number[] {
+  if (!Number.isFinite(max) || max <= 0) return [0, 1];
   let step: number;
   if (max <= 5) step = 1;
   else if (max <= 10) step = 2;

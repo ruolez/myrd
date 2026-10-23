@@ -4,7 +4,7 @@ import type { DeviceUpdateStatus } from "./signaling";
 import {
   applyUpdateStatus,
   canUpdate,
-  isUpdating,
+  pollsForUpdate,
   updateBadge,
   updateErrorMessage,
 } from "./update";
@@ -118,24 +118,31 @@ describe("updateBadge", () => {
   });
 });
 
-describe("isUpdating", () => {
+describe("pollsForUpdate", () => {
+  const now = Date.parse(AT) + 60_000;
+
   test.each<[UpdateFields["update_state"], boolean, boolean]>([
     ["checking", true, true],
     ["downloading", true, true],
-    ["waiting_idle", true, true],
     ["installing", true, true],
     ["installing", false, true],
+    ["waiting_idle", true, false],
     ["downloading", false, false],
     ["failed", true, false],
     ["rolled_back", true, false],
     ["up_to_date", true, false],
     ["", true, false],
   ])("%j, online %s → %s", (state, online, want) => {
-    expect(isUpdating(attempt(state, { online }))).toBe(want);
+    expect(pollsForUpdate(attempt(state, { online }), now)).toBe(want);
   });
 
   test("an install that already reached its version is over", () => {
-    expect(isUpdating(attempt("installing", { agent_version: LATEST }))).toBe(false);
+    expect(pollsForUpdate(attempt("installing", { agent_version: LATEST }), now)).toBe(false);
+  });
+
+  test("an attempt that started over ten minutes ago is left to pushes", () => {
+    const later = Date.parse(AT) + 10 * 60_000 + 1;
+    expect(pollsForUpdate(attempt("installing", { online: false }), later)).toBe(false);
   });
 });
 

@@ -77,6 +77,8 @@ func TestRefinerStartsOverOnNewContentOrAKeyframe(t *testing.T) {
 		r.onFrame(now, 1000, platform.FrameStatic, 4000)
 		now = now.Add(refineMinGap)
 		r.due(now)
+		r.onFrame(now, 1000, platform.FrameStatic, 4000)
+		now = now.Add(refineMinGap)
 		r.onFrame(now, 50_000, c.flags, 4000)
 		if _, ok := r.due(now.Add(refineIdle - time.Millisecond)); ok {
 			t.Fatalf("%s: refined before the screen was quiet again", c.name)
@@ -249,5 +251,157 @@ func TestRefinerRepeatsStopAtTheLimit(t *testing.T) {
 	}
 	if n != refineRepeatMax {
 		t.Fatalf("%d repeat passes on a picture that never settles, want %d", n, refineRepeatMax)
+	}
+}
+
+// refineRun drives a refiner for d: a pass's output comes back 20 ms after
+// it was requested with the flags and size out(i) gives the i-th pass, and
+// change, when set, reports a frame of screen content at that moment. It
+// returns the passes sent.
+func refineRun(r *refiner, start time.Time, d time.Duration, out func(i int) (int, platform.FrameFlags),
+	change func(at time.Duration) (int, platform.FrameFlags, bool)) int {
+	const kbps = 4000
+	n := 0
+	var back time.Time // when the pass in flight comes back; zero = none
+	for at := time.Duration(0); at < d; at += refineTick {
+		now := start.Add(at)
+		if !back.IsZero() && !now.Before(back) {
+			size, f := out(n - 1)
+			r.onFrame(now, size, f, kbps)
+			back = time.Time{}
+		}
+		if change != nil {
+			if size, f, ok := change(at); ok {
+				r.onFrame(now, size, f, kbps)
+			}
+		}
+		if _, ok := r.due(now); ok {
+			n++
+			back = now.Add(20 * time.Millisecond)
+		}
+	}
+	return n
+}
+
+func TestRefinerStillScreenFinishesAndStops(t *testing.T) {
+	for _, repeat := range []bool{false, true} {
+		t0 := time.Unix(1000, 0)
+		var r refiner
+		if repeat {
+			r.useRepeats(t0)
+		} else {
+			r.onFrame(t0, 50_000, platform.FrameKey, 4000)
+		}
+		// A picture that never converges: every pass is mid-sized.
+		n := refineRun(&r, t0, 10*time.Minute, func(int) (int, platform.FrameFlags) { return 20_000, platform.FrameStatic }, nil)
+		want := len(refineQPs)
+		if repeat {
+			want = refineRepeatMax
+		}
+		if n != want {
+			t.Fatalf("repeat=%v: %d passes on a still screen, want %d", repeat, n, want)
+		}
+	}
+}
+
+// A caret blinking every 530 ms is a minor change each time; in repeat mode
+// (an encoder without a quantizer cap) it used to drop the passes back to 0,
+// keeping ~6 extra frames a second flowing for as long as the caret blinked.
+func TestRefinerBlinkingCaretSettlesInRepeatMode(t *testing.T) {
+	const blink = 530 * time.Millisecond
+	caret := func(at time.Duration) (int, platform.FrameFlags, bool) {
+		return 900, platform.FrameMinor, at > 0 && at%blink < refineTick
+	}
+	for _, c := range []struct {
+		name string
+		size int // of every repeat pass
+	}{
+		{"passes come back small", refineSettled - 1},
+		{"passes never come back small", 20_000},
+	} {
+		t0 := time.Unix(1000, 0)
+		var r refiner
+		r.useRepeats(t0)
+		first := refineRun(&r, t0, time.Minute, func(int) (int, platform.FrameFlags) { return c.size, platform.FrameStatic }, caret)
+		if first > refineCap(true) {
+			t.Fatalf("%s: %d passes in the first minute, cap %d", c.name, first, refineCap(true))
+		}
+		later := refineRun(&r, t0.Add(time.Minute), 10*time.Minute, func(int) (int, platform.FrameFlags) { return c.size, platform.FrameStatic }, caret)
+		if later != 0 {
+			t.Fatalf("%s: %d more passes over 10 minutes of a blinking caret (after %d)", c.name, later, first)
+		}
+	}
+}
+
+// Real content restores the budget the cap took away.
+func TestRefinerCapResetsOnNewContent(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	var r refiner
+	r.useRepeats(t0)
+	caret := func(at time.Duration) (int, platform.FrameFlags, bool) {
+		return 900, platform.FrameMinor, at%(530*time.Millisecond) < refineTick
+	}
+	pass := func(int) (int, platform.FrameFlags) { return 20_000, platform.FrameStatic }
+	refineRun(&r, t0, 5*time.Minute, pass, caret)
+	now := t0.Add(5 * time.Minute)
+	r.onFrame(now, 80_000, 0, 4000)
+	if n := refineRun(&r, now, time.Minute, pass, nil); n != refineRepeatMax {
+		t.Fatalf("%d repeat passes after new content, want %d", n, refineRepeatMax)
+	}
+}
+
+// Windows matches the refinement flag back by sample time: when the MFT
+// alters it, the pass arrives as plain content (or as a keyframe). It must
+// still count as that pass, not restart refinement.
+func TestRefinerPassWithoutTheStaticFlagIsStillThePass(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		flags platform.FrameFlags
+	}{
+		{"no flags", 0},
+		{"keyframe", platform.FrameKey},
+	} {
+		t0 := time.Unix(1000, 0)
+		var r refiner
+		r.onFrame(t0, 50_000, 0, 4000)
+		n := refineRun(&r, t0, 10*time.Minute, func(int) (int, platform.FrameFlags) { return 20_000, c.flags }, nil)
+		if n != len(refineQPs) {
+			t.Fatalf("%s: %d passes on a still screen, want %d", c.name, n, len(refineQPs))
+		}
+		// The same in repeat mode.
+		r.useRepeats(t0)
+		if n := refineRun(&r, t0, 10*time.Minute, func(int) (int, platform.FrameFlags) { return 20_000, c.flags }, nil); n != refineRepeatMax {
+			t.Fatalf("%s, repeats: %d passes on a still screen, want %d", c.name, n, refineRepeatMax)
+		}
+	}
+}
+
+// Content that arrives after a pass came back still starts over.
+func TestRefinerContentAfterAPassStartsOver(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	var r refiner
+	r.onFrame(t0, 50_000, 0, 4000)
+	now := t0.Add(refineIdle)
+	r.due(now)
+	r.onFrame(now.Add(20*time.Millisecond), 20_000, platform.FrameStatic, 4000)
+	if !r.onFrame(now.Add(40*time.Millisecond), 50_000, 0, 4000) {
+		t.Fatal("new content after the pass came back did not start over")
+	}
+}
+
+// In repeat mode a small change wins back only the last few passes, not the
+// whole ladder.
+func TestRefinerRepeatMinorChangeRedoesOnlyTheLastPasses(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	var r refiner
+	r.useRepeats(t0)
+	pass := func(int) (int, platform.FrameFlags) { return 20_000, platform.FrameStatic }
+	if n := refineRun(&r, t0, time.Minute, pass, nil); n != refineRepeatMax {
+		t.Fatalf("%d repeat passes, want %d", n, refineRepeatMax)
+	}
+	now := t0.Add(time.Minute)
+	r.onFrame(now, 900, platform.FrameMinor, 4000)
+	if n := refineRun(&r, now, time.Minute, pass, nil); n != refineRepeatRedo {
+		t.Fatalf("%d repeat passes after a caret blink, want %d", n, refineRepeatRedo)
 	}
 }

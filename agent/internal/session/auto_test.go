@@ -185,10 +185,62 @@ func TestAutoStepUpNeedsHeadroom(t *testing.T) {
 
 func TestAutoIdleProbesUpward(t *testing.T) {
 	st := NewAutoState(t0)
-	st.Rung = 2
+	st.Rung = 1 // 1080p30: 60 fps is the same size
 	_, steps := runAuto(st, ladder1080p(), 70, func(int) AutoSample { return idleSample })
-	if want := []autoStep{{30, 1, AutoProbe}, {60, 0, AutoProbe}}; !reflect.DeepEqual(steps, want) {
+	if want := []autoStep{{30, 0, AutoProbe}}; !reflect.DeepEqual(steps, want) {
 		t.Fatalf("steps = %+v, want %+v", steps, want)
+	}
+}
+
+// Probes on an idle screen tell little (GCC cannot estimate above what is
+// sent): each waits twice as long as the last, and none changes the size.
+func TestAutoIdleProbesBackOffAndKeepTheResolution(t *testing.T) {
+	st := NewAutoState(t0)
+	st.Rung = 5 // 720p5; rungs 4..2 are 10, 15, 30 fps at 720p, rung 1 is 1080p30
+	_, steps := runAuto(st, ladder1080p(), 3600, func(int) AutoSample { return idleSample })
+	want := []autoStep{{30, 4, AutoProbe}, {90, 3, AutoProbe}, {210, 2, AutoProbe}}
+	if !reflect.DeepEqual(steps, want) {
+		t.Fatalf("steps = %+v, want %+v", steps, want)
+	}
+}
+
+func TestAutoIdleProbeBackoffResetsWhenBusy(t *testing.T) {
+	st := NewAutoState(t0)
+	st.Rung = 5
+	st, _ = runAuto(st, ladder1080p(), 100, func(int) AutoSample { return idleSample }) // probes at 30 and 90
+	if st.Rung != 3 || st.probes != 2 {
+		t.Fatalf("after two probes: rung %d, probes %d", st.Rung, st.probes)
+	}
+	busyShort := AutoSample{SendKbps: 200, TargetKbps: 300} // busy, no headroom to step up
+	st = NextAuto(st, t0.Add(101*time.Second), busyShort, ladder1080p())
+	if st.probes != 0 {
+		t.Fatalf("probes = %d after a busy second, want 0", st.probes)
+	}
+	var steps []autoStep
+	for sec := 102; sec <= 200 && len(steps) == 0; sec++ {
+		prev := st.Rung
+		st = NextAuto(st, t0.Add(time.Duration(sec)*time.Second), idleSample, ladder1080p())
+		if st.Rung != prev {
+			steps = append(steps, autoStep{sec, st.Rung, st.Reason})
+		}
+	}
+	if want := []autoStep{{131, 2, AutoProbe}}; !reflect.DeepEqual(steps, want) {
+		t.Fatalf("steps = %+v, want %+v (back to a 30 s wait)", steps, want)
+	}
+}
+
+// A resolution step up still happens once the screen is busy with headroom.
+func TestAutoBusyStepsUpTheResolution(t *testing.T) {
+	st := NewAutoState(t0)
+	st.Rung = 2 // 720p30 → 1080p30
+	_, steps := runAuto(st, ladder1080p(), 70, func(int) AutoSample { return idleSample })
+	if len(steps) != 0 {
+		t.Fatalf("idle screen changed the resolution: %+v", steps)
+	}
+	st.Rung = 2
+	_, steps = runAuto(st, ladder1080p(), 20, func(int) AutoSample { return healthySample })
+	if len(steps) == 0 || steps[0].rung != 1 || steps[0].reason != AutoSteady {
+		t.Fatalf("busy screen with headroom: steps %+v, want 1080p30 (steady)", steps)
 	}
 }
 

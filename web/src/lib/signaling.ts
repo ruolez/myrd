@@ -10,7 +10,18 @@ export type SessionCreated = SignalMessage & {
   req: string;
   session_id: string;
   ice_servers: ICEServer[];
+  /** TURN credential lifetime in seconds (absent on older servers). */
+  ice_ttl?: number;
   device: { id: string; name: string; public_key: string };
+};
+
+/** Fresh TURN credentials for a session's ICE restart. */
+export type SessionIceServers = SignalMessage & {
+  type: "session.ice_servers";
+  req: string;
+  session_id: string;
+  ice_servers: ICEServer[];
+  ice_ttl?: number;
 };
 
 export type SignalError = SignalMessage & {
@@ -132,11 +143,15 @@ class Signaling {
     if (this._state === "open") return Promise.resolve();
     this.start();
     return new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error("Signaling server unreachable.")), timeoutMs);
-      this.openWaiters.push(() => {
+      const waiter = () => {
         clearTimeout(t);
         resolve();
-      });
+      };
+      const t = setTimeout(() => {
+        this.openWaiters = this.openWaiters.filter((w) => w !== waiter);
+        reject(new Error("Signaling server unreachable."));
+      }, timeoutMs);
+      this.openWaiters.push(waiter);
     });
   }
 
@@ -147,6 +162,28 @@ class Signaling {
     forceRelay: boolean,
   ): Promise<SessionCreated> {
     await this.waitOpen();
+    return this.request<SessionCreated>("session.created", 15_000, {
+      type: "session.create",
+      device_id: deviceId,
+      client_key_id: clientKeyId,
+      force_relay: forceRelay,
+    });
+  }
+
+  /** Asks for fresh ICE servers (TURN credentials) for an ICE restart. */
+  iceServers(sessionId: string, timeoutMs: number): Promise<SessionIceServers> {
+    return this.request<SessionIceServers>("session.ice_servers", timeoutMs, {
+      type: "session.ice",
+      session_id: sessionId,
+    });
+  }
+
+  /** Sends msg with a fresh `req` and resolves with the reply of type `reply` (or the server error). */
+  private request<T extends SignalMessage>(
+    reply: string,
+    timeoutMs: number,
+    msg: { type: string; [k: string]: unknown },
+  ): Promise<T> {
     const req = crypto.randomUUID();
     return new Promise((resolve, reject) => {
       const cleanup = () => {
@@ -154,10 +191,10 @@ class Signaling {
         offErr();
         clearTimeout(timer);
       };
-      const offOk = this.on("session.created", (m) => {
+      const offOk = this.on(reply, (m) => {
         if (m.req !== req) return;
         cleanup();
-        resolve(m as SessionCreated);
+        resolve(m as T);
       });
       const offErr = this.on("error", (m) => {
         if (m.req !== req) return;
@@ -168,14 +205,11 @@ class Signaling {
       const timer = setTimeout(() => {
         cleanup();
         reject(Object.assign(new Error("The server did not answer."), { code: "timeout" }));
-      }, 15_000);
-      this.send({
-        type: "session.create",
-        req,
-        device_id: deviceId,
-        client_key_id: clientKeyId,
-        force_relay: forceRelay,
-      });
+      }, timeoutMs);
+      if (!this.send({ ...msg, req })) {
+        cleanup();
+        reject(Object.assign(new Error("Signaling is not connected."), { code: "timeout" }));
+      }
     });
   }
 }

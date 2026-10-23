@@ -20,6 +20,7 @@ import {
   Mime,
 } from "../lib/input";
 import type { CursorMessage } from "../lib/input";
+import { SHAPE_CACHE } from "../lib/cursor";
 import type { SentMove } from "../lib/cursor";
 import { signaling } from "../lib/signaling";
 import { powerActions } from "../lib/power";
@@ -113,7 +114,8 @@ export type Snapshot = {
   filesState: FilesAvailability;
   forceRelay: boolean;
   pinMismatch: { pinned: string; offered: string } | null;
-  stats: HudStats;
+  /** Connection path ("host", "srflx", "relay"); the rest of the stats are in `stats`. */
+  path: string | null;
 };
 
 const emptyStats: HudStats = {
@@ -150,11 +152,13 @@ const UNLOCK_TIMEOUT_MS = 30_000;
 const POWER_TIMEOUT_MS = 15_000;
 
 export type ControlResult = { ok: boolean; code: string | null };
-// Stats in the background feed only thumbnails and the HUD of a hidden pane.
-const BACKGROUND_STATS_EVERY = 5;
-// Cursor shapes kept to replay to a newly mounted cursor layer (the agent
-// sends each shape once, then only refers to it by id).
-const SHAPE_CACHE = 32;
+// Without a HUD showing them, stats feed only the path badge.
+const IDLE_STATS_EVERY = 5;
+// TURN credentials expire (ice_ttl): a relayed session restarts ICE with
+// fresh ones once this share of their lifetime has passed.
+const ICE_REFRESH_AT = 0.75;
+const ICE_RETRY_MS = 60_000;
+const ICE_SERVERS_TIMEOUT_MS = 3_000;
 // Each new view size restarts capture on the device (a keyframe): let a
 // window drag finish first.
 const VIEW_DEBOUNCE_MS = 400;
@@ -218,6 +222,8 @@ type Listener = (s: Snapshot) => void;
 export class RemoteSession {
   private snap: Snapshot;
   private listeners = new Set<Listener>();
+  private hudStats: HudStats = emptyStats;
+  private statsListeners = new Set<(s: HudStats) => void>();
   private cursorListeners = new Set<(m: CursorMessage) => void>();
   private pc: RTCPeerConnection | null = null;
   private input: RTCDataChannel | null = null;
@@ -238,6 +244,8 @@ export class RemoteSession {
   private pinIsNew = false;
   private disconnectedAt: number | null = null;
   private restartedAt = 0;
+  private iceTtlMs: number | null = null;
+  private iceDueAt = 0;
   private lastInbound: { ts: number; bytes: number; lost: number; recv: number } | null = null;
   private pingId = 0;
   private pings = new Map<number, number>();
@@ -282,7 +290,7 @@ export class RemoteSession {
       filesState: "pending",
       forceRelay: opts.forceRelay,
       pinMismatch: null,
-      stats: emptyStats,
+      path: null,
     };
   }
 
@@ -293,6 +301,23 @@ export class RemoteSession {
   subscribe(fn: Listener): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
+  }
+
+  get stats(): HudStats {
+    return this.hudStats;
+  }
+
+  /** HUD stats, refreshed every second while anyone listens (every few seconds otherwise). */
+  onStats(fn: (s: HudStats) => void): () => void {
+    this.statsListeners.add(fn);
+    return () => this.statsListeners.delete(fn);
+  }
+
+  private setStats(patch: Partial<HudStats>) {
+    this.hudStats = { ...this.hudStats, ...patch };
+    for (const l of this.statsListeners) l(this.hudStats);
+    if (patch.path !== undefined && patch.path !== this.snap.path)
+      this.update({ path: patch.path });
   }
 
   get deviceId() {
@@ -335,9 +360,10 @@ export class RemoteSession {
       return;
     }
     this.shapeId = msg.id;
-    if (msg.png.length === 0) return;
+    const known = this.shapes.get(msg.id);
+    if (!known && msg.png.length === 0) return;
     this.shapes.delete(msg.id);
-    this.shapes.set(msg.id, msg);
+    this.shapes.set(msg.id, known ?? msg);
     if (this.shapes.size > SHAPE_CACHE) {
       const oldest = this.shapes.keys().next().value;
       if (oldest !== undefined) this.shapes.delete(oldest);
@@ -367,6 +393,7 @@ export class RemoteSession {
         return;
       }
       const sid = created.session_id;
+      this.setIceTtl(created.ice_ttl);
       this.update({ sessionId: sid, deviceName: created.device.name || this.opts.deviceName });
       this.listen(sid);
 
@@ -411,9 +438,7 @@ export class RemoteSession {
         if (mine(m)) void this.onRemoteCandidate(m.candidate as RTCIceCandidateInit | null);
       }),
       signaling.on("session.state", (m) => {
-        if (mine(m) && typeof m.path === "string") {
-          this.update({ stats: { ...this.snap.stats, path: m.path } });
-        }
+        if (mine(m) && typeof m.path === "string") this.setStats({ path: m.path });
       }),
       signaling.on("session.end", (m) => {
         if (mine(m)) this.finish(String(m.reason ?? "error"), null, true, false);
@@ -572,9 +597,10 @@ export class RemoteSession {
         return;
       }
       if (down >= 3_000 && Date.now() - this.restartedAt > 5_000) {
-        this.restartedAt = Date.now();
-        void this.sendOffer(true).catch(() => undefined);
+        void this.restartIce().catch(() => undefined);
       }
+    } else if (this.iceDue() && Date.now() - this.restartedAt > 5_000) {
+      void this.restartIce().catch(() => undefined);
     }
 
     if (this.control?.readyState === "open") {
@@ -584,10 +610,11 @@ export class RemoteSession {
       if (this.pings.size > 10) this.pings.delete(Math.min(...this.pings.keys()));
     }
 
-    if (this.background && this.ticks++ % BACKGROUND_STATS_EVERY !== 0) return;
+    const watched = this.statsListeners.size > 0 && !this.background;
+    if (!watched && this.ticks++ % IDLE_STATS_EVERY !== 0) return;
     const stats = await pc.getStats().catch(() => null);
-    if (!stats) return;
-    const next: HudStats = { ...this.snap.stats };
+    if (!stats || this.ended) return;
+    const next: HudStats = { ...this.hudStats };
     let selectedPair: string | undefined;
     const byId = new Map<string, Record<string, unknown>>();
     stats.forEach((r: Record<string, unknown>) => {
@@ -648,7 +675,38 @@ export class RemoteSession {
           : null;
       }
     }
-    this.update({ stats: next });
+    this.setStats(next);
+  }
+
+  private setIceTtl(ttl: unknown) {
+    this.iceTtlMs = typeof ttl === "number" && ttl > 0 ? ttl * 1000 : null;
+    if (this.iceTtlMs) this.iceDueAt = Date.now() + this.iceTtlMs * ICE_REFRESH_AT;
+  }
+
+  /** Relayed and the TURN credentials are close to expiring (servers that report ice_ttl). */
+  private iceDue(): boolean {
+    if (!this.iceTtlMs || Date.now() < this.iceDueAt) return false;
+    return this.snap.path === "relay" || this.snap.streamState?.relay === true;
+  }
+
+  /** ICE restart, with fresh TURN credentials where the server hands them out. */
+  private async restartIce() {
+    this.restartedAt = Date.now();
+    const sid = this.snap.sessionId;
+    if (sid && this.iceTtlMs) {
+      this.iceDueAt = Date.now() + ICE_RETRY_MS;
+      const fresh = await signaling.iceServers(sid, ICE_SERVERS_TIMEOUT_MS).catch(() => null);
+      const pc = this.pc;
+      if (fresh && pc && !this.ended) {
+        try {
+          pc.setConfiguration({ ...pc.getConfiguration(), iceServers: fresh.ice_servers });
+          this.setIceTtl(fresh.ice_ttl);
+        } catch {
+          // keep the current servers
+        }
+      }
+    }
+    if (!this.ended) await this.sendOffer(true);
   }
 
   private onControl(data: unknown) {
@@ -727,30 +785,30 @@ export class RemoteSession {
         const sent = this.pings.get(m.id as number);
         if (sent !== undefined) {
           this.pings.delete(m.id as number);
-          this.update({ stats: { ...this.snap.stats, rttMs: performance.now() - sent } });
+          // Shown with the next stats tick.
+          this.hudStats = { ...this.hudStats, rttMs: performance.now() - sent };
         }
         break;
       }
-      case "stats":
-        this.update({
-          encoder: (m.encoder as string) ?? this.snap.encoder,
-          stats: {
-            ...this.snap.stats,
-            agentFps: num(m.fps),
-            agentBitrateKbps: num(m.bitrate_kbps),
-            keyframes: num(m.keyframes),
-            targetFps: num(m.target_fps),
-            targetKbps: num(m.target_kbps),
-            bweKbps: num(m.bwe_kbps),
-            agentLossPct: num(m.loss) === null ? null : (m.loss as number) * 100,
-            encodeWidth: num(m.width),
-            encodeHeight: num(m.height),
-            refineQp: num(m.refine_qp) || null,
-            refinePass: num(m.refine_pass) || null,
-            fecPct: num(m.fec_pct),
-          },
+      case "stats": {
+        const encoder = (m.encoder as string) ?? this.snap.encoder;
+        if (encoder !== this.snap.encoder) this.update({ encoder });
+        this.setStats({
+          agentFps: num(m.fps),
+          agentBitrateKbps: num(m.bitrate_kbps),
+          keyframes: num(m.keyframes),
+          targetFps: num(m.target_fps),
+          targetKbps: num(m.target_kbps),
+          bweKbps: num(m.bwe_kbps),
+          agentLossPct: num(m.loss) === null ? null : (m.loss as number) * 100,
+          encodeWidth: num(m.width),
+          encodeHeight: num(m.height),
+          refineQp: num(m.refine_qp) || null,
+          refinePass: num(m.refine_pass) || null,
+          fecPct: num(m.fec_pct),
         });
         break;
+      }
       case "error":
         this.update({
           endDetail: `${END_REASONS[m.code as string] ?? m.code}${m.detail ? ` (${String(m.detail)})` : ""}`,

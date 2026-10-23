@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { DeviceId } from "../api/types";
-import { useDirectory } from "../app/directory";
+import { useDeviceLabels } from "../app/directory";
 import { useSessionSnap, useWorkspace, useWorkspaceState } from "../app/workspace";
 import { Icon } from "../components/icons";
 import type { Phase } from "./RemoteSession";
@@ -36,10 +36,9 @@ function Tab({
   onClose: () => void;
 }) {
   const ws = useWorkspace();
-  const { devices } = useDirectory();
   const session = ws.session(id);
   const snap = useSessionSnap(session);
-  const device = devices.find((d) => d.id === id);
+  const device = useDeviceLabels().get(id);
   const name = snap?.deviceName || device?.name || "Device";
   const dot = phaseDot[snap?.phase ?? "preparing"];
   const transfers = snap?.files?.activeCount ?? 0;
@@ -75,7 +74,7 @@ function Tab({
         title={`${name}: ${dot.label}${shortcut}`}
         onClick={onSelect}
       >
-        <LiveThumb session={session} os={device?.os} className="h-9 w-16 rounded" />
+        <LiveThumb session={session} os={device?.os} live={!focused} className="h-9 w-16 rounded" />
         <span className="flex max-w-36 min-w-0 flex-col">
           <span className="truncate font-medium text-white">{name}</span>
           <span className="flex items-center gap-1.5 text-white/60">

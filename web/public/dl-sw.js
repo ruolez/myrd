@@ -4,6 +4,8 @@
 // Page side: web/src/session/downloadSinks.ts.
 
 const pending = new Map();
+// A registration whose iframe never fetched (cancelled, blocked) is dropped after this.
+const PENDING_TTL_MS = 60_000;
 
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
@@ -12,7 +14,14 @@ self.addEventListener("message", (e) => {
   const d = e.data;
   if (!d || typeof d !== "object") return;
   if (d.type === "register" && typeof d.id === "string" && e.ports[0]) {
-    pending.set(d.id, { port: e.ports[0], disposition: String(d.disposition) });
+    const now = Date.now();
+    for (const [id, p] of pending) {
+      if (now - p.at > PENDING_TTL_MS) {
+        p.port.close();
+        pending.delete(id);
+      }
+    }
+    pending.set(d.id, { port: e.ports[0], disposition: String(d.disposition), at: now });
     e.ports[0].postMessage({ type: "registered" });
   }
   // "keepalive" needs no reply: receiving it extends the worker's lifetime.

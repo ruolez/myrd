@@ -10,6 +10,9 @@ export type SentMove = { x: number; y: number; at: number };
 /** Time for our last move to reach the agent and its cursor report to come back. */
 export const ECHO_GRACE_MS = 1000;
 
+/** Decoded cursor shapes kept per session (the agent sends each once, then its id). */
+export const SHAPE_CACHE = 32;
+
 /** Browsers ignore cursor images larger than this (CSS px). */
 export const MAX_CSS_CURSOR = 128;
 

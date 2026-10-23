@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import type { RefObject } from "react";
+import { useSessionStats } from "../app/workspace";
 import { describeAuto } from "../lib/stream";
 import type { StreamState } from "../lib/stream";
-import type { HudStats } from "./RemoteSession";
+import type { HudStats, RemoteSession } from "./RemoteSession";
 
 type FrameTiming = { renderMs: number | null; processingMs: number | null };
 
@@ -91,16 +92,17 @@ function fecText(stats: HudStats): string {
 }
 
 export function Hud({
-  stats,
+  session,
   encoder,
   video,
   stream,
 }: {
-  stats: HudStats;
+  session: RemoteSession;
   encoder: string | null;
   video: RefObject<HTMLVideoElement | null>;
   stream: StreamState | null;
 }) {
+  const stats = useSessionStats(session);
   const frame = useFrameTiming(video, true);
   const rows: [string, string][] = [
     ["RTT", fmt(stats.rttMs, "ms")],
