@@ -7,7 +7,7 @@ import { useWorkspace, useWorkspaceState } from "../app/workspace";
 import { Icon } from "../components/icons";
 import { Popover } from "../components/menu";
 import { EmptyState, ErrorBox, Loading, PageHeader, SegmentedControl } from "../components/ui";
-import { applyFilter, recent } from "../lib/deviceFilters";
+import { applyFilter } from "../lib/deviceFilters";
 import type { Chip, DashView, FilterCtx, SortKey } from "../lib/deviceFilters";
 import {
   DEFAULT_PREFS,
@@ -39,13 +39,13 @@ const CHIPS: { chip: Chip; label: string }[] = [
   { chip: "attention", label: "Needs attention" },
 ];
 
-// Below this many devices Favorites and Recent rows would only repeat the grid.
+// Below this many devices a Favorites row would only repeat the grid.
 const SECTIONS_FROM = 6;
 
 const SORTS: { value: SortKey; label: string }[] = [
   { value: "status", label: "Status" },
   { value: "name", label: "Name" },
-  { value: "last_connected", label: "Last connected" },
+  { value: "last_connected", label: "Recently used" },
   { value: "last_seen", label: "Last seen" },
 ];
 
@@ -207,7 +207,6 @@ export function Devices() {
             title: "Favorites",
             items: shown.filter((d) => d.favorite),
           },
-          { key: "recent", title: "Recent", items: recent(devices, 4) },
         ].filter(
           (s): s is { key: string; title: string; items: Device[] } => !!s && s.items.length > 0,
         )
@@ -296,8 +295,6 @@ export function Devices() {
           <EmptyState title="No favorites yet">
             Star a device to keep it at the top of the dashboard.
           </EmptyState>
-        ) : view === "recent" ? (
-          <EmptyState title="Nothing recent">Devices you connect to show up here.</EmptyState>
         ) : typeof view === "object" && "folder" in view ? (
           <EmptyState title="This folder is empty">
             Drag devices onto the folder in the list, or use “Move to folder…” in a device's menu.

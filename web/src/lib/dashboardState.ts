@@ -8,7 +8,6 @@ import type { Chip, DashView, SmartView, SortKey } from "./deviceFilters";
 const SMART: readonly SmartView[] = [
   "all",
   "favorites",
-  "recent",
   "online",
   "in_session",
   "attention",
@@ -77,13 +76,17 @@ export type DashPrefs = {
 export const DEFAULT_PREFS: DashPrefs = {
   layout: "grid",
   size: "m",
-  sort: "status",
+  sort: "last_connected",
 };
+
+// Prefs saved before the default became "last_connected" carry the old
+// default as if chosen; only a sort saved with this version is kept.
+const PREFS_VERSION = 2;
 
 export const PREFS_KEY = "remotectl-dashboard";
 
 export function parseDashPrefs(raw: string | null): DashPrefs {
-  let v: Partial<Record<keyof DashPrefs, unknown>> = {};
+  let v: Partial<Record<keyof DashPrefs | "v", unknown>> = {};
   try {
     v = raw ? (JSON.parse(raw) as typeof v) : {};
   } catch {
@@ -93,11 +96,14 @@ export function parseDashPrefs(raw: string | null): DashPrefs {
   return {
     layout: v.layout === "list" ? "list" : "grid",
     size: v.size === "s" || v.size === "l" ? v.size : "m",
-    sort: (SORTS as readonly unknown[]).includes(v.sort) ? (v.sort as SortKey) : DEFAULT_PREFS.sort,
+    sort:
+      v.v === PREFS_VERSION && (SORTS as readonly unknown[]).includes(v.sort)
+        ? (v.sort as SortKey)
+        : DEFAULT_PREFS.sort,
   };
 }
 
-export const serializeDashPrefs = (p: DashPrefs) => JSON.stringify(p);
+export const serializeDashPrefs = (p: DashPrefs) => JSON.stringify({ ...p, v: PREFS_VERSION });
 
 /** Minimum tile width per size, in CSS px (Guacamole caps previews near 320). */
 export const TILE_MIN_WIDTH: Record<TileSize, number> = { s: 200, m: 264, l: 340 };

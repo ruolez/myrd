@@ -67,6 +67,14 @@ describe("parseDashPrefs", () => {
     expect(parseDashPrefs(serializeDashPrefs(p))).toEqual(p);
   });
 
+  test("sorts by recent use unless the saved sort was chosen with that default", () => {
+    expect([
+      DEFAULT_PREFS.sort,
+      parseDashPrefs('{"layout":"list","size":"m","sort":"status"}').sort,
+      parseDashPrefs(serializeDashPrefs({ ...DEFAULT_PREFS, sort: "status" })).sort,
+    ]).toEqual(["last_connected", "last_connected", "status"]);
+  });
+
   test.each([null, "", "not json", "42", '{"layout":"huge","size":9,"sort":"x"}'])(
     "falls back to defaults for %j",
     (raw) => {

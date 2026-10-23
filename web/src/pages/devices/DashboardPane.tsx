@@ -22,7 +22,6 @@ export const FOLDER_DRAG = "application/x-remotectl-folder";
 const SMART: { view: SmartView; label: string; icon: IconName; org?: boolean }[] = [
   { view: "all", label: "All devices", icon: "devices" },
   { view: "favorites", label: "Favorites", icon: "star", org: true },
-  { view: "recent", label: "Recent", icon: "history" },
   { view: "online", label: "Online", icon: "check" },
   { view: "in_session", label: "In session", icon: "sessions" },
   { view: "attention", label: "Needs attention", icon: "warning" },

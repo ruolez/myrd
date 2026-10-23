@@ -5,8 +5,7 @@ import { descendants, folderPath } from "./folders";
 import { osName } from "./format";
 import { diskSeverity } from "./health";
 
-export type SmartView =
-  "all" | "favorites" | "recent" | "online" | "in_session" | "attention" | "unfiled";
+export type SmartView = "all" | "favorites" | "online" | "in_session" | "attention" | "unfiled";
 
 export type DashView = SmartView | { folder: FolderId } | { tag: TagId };
 
@@ -116,16 +115,6 @@ function matchesChips(d: Device, chips: ReadonlySet<Chip>, now: number): boolean
   return true;
 }
 
-export const RECENT_LIMIT = 8;
-
-/** The most recently connected devices, newest first. */
-export function recent(devices: Device[], n = RECENT_LIMIT): Device[] {
-  return devices
-    .filter((d) => d.last_connected_at)
-    .sort((a, b) => Date.parse(b.last_connected_at ?? "") - Date.parse(a.last_connected_at ?? ""))
-    .slice(0, n);
-}
-
 export function inView(devices: Device[], view: DashView, ctx: FilterCtx): Device[] {
   if (typeof view === "object") {
     if ("folder" in view) {
@@ -139,8 +128,6 @@ export function inView(devices: Device[], view: DashView, ctx: FilterCtx): Devic
       return devices;
     case "favorites":
       return devices.filter((d) => d.favorite);
-    case "recent":
-      return recent(devices);
     case "online":
       return devices.filter((d) => d.online);
     case "in_session":
@@ -161,7 +148,8 @@ export function sortDevices(devices: Device[], key: SortKey): Device[] {
   const cmp: Record<SortKey, (a: Device, b: Device) => number> = {
     status: (a, b) => statusRank(a) - statusRank(b),
     name: () => 0,
-    last_connected: (a, b) => time(b.last_connected_at) - time(a.last_connected_at),
+    last_connected: (a, b) =>
+      time(b.last_connected_at) - time(a.last_connected_at) || statusRank(a) - statusRank(b),
     last_seen: (a, b) =>
       Number(b.online) - Number(a.online) || time(b.last_seen_at) - time(a.last_seen_at),
   };
@@ -172,27 +160,19 @@ export function sortDevices(devices: Device[], key: SortKey): Device[] {
 
 export type DashFilter = { view: DashView; query: string; chips: ReadonlySet<Chip>; sort: SortKey };
 
-/** The devices a dashboard state shows, in order. Recent keeps its own order. */
+/** The devices a dashboard state shows, in order. */
 export function applyFilter(devices: Device[], f: DashFilter, ctx: FilterCtx): Device[] {
   const tagNames = new Map(ctx.tags.map((t) => [t.id, t.name.toLowerCase()]));
   const q = parseQuery(f.query);
   const list = inView(devices, f.view, ctx).filter(
     (d) => matchesQuery(d, q, ctx, tagNames) && matchesChips(d, f.chips, ctx.now),
   );
-  return f.view === "recent" ? list : sortDevices(list, f.sort);
+  return sortDevices(list, f.sort);
 }
 
 /** Counts shown next to the smart views. */
 export function viewCounts(devices: Device[], ctx: FilterCtx): Record<SmartView, number> {
-  const views: SmartView[] = [
-    "all",
-    "favorites",
-    "recent",
-    "online",
-    "in_session",
-    "attention",
-    "unfiled",
-  ];
+  const views: SmartView[] = ["all", "favorites", "online", "in_session", "attention", "unfiled"];
   return Object.fromEntries(views.map((v) => [v, inView(devices, v, ctx).length])) as Record<
     SmartView,
     number

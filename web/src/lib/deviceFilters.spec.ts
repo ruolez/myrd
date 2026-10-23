@@ -5,7 +5,6 @@ import {
   attentionReasons,
   inView,
   parseQuery,
-  recent,
   sortDevices,
   viewCounts,
 } from "./deviceFilters";
@@ -158,7 +157,6 @@ describe("inView", () => {
   test.each([
     ["all", ["mac", "pc", "old", "demo"]],
     ["favorites", ["mac"]],
-    ["recent", ["pc", "mac"]],
     ["online", ["mac", "pc", "demo"]],
     ["in_session", ["pc"]],
     ["attention", ["old", "demo"]],
@@ -196,11 +194,10 @@ describe("sortDevices", () => {
   test("last connected puts never-connected devices last", () => {
     expect(ids(sortDevices(all, "last_connected"))).toEqual(["mac", "pc", "demo", "old"]);
   });
-});
 
-describe("recent", () => {
-  test("is newest first and limited", () => {
-    expect(ids(recent(all, 1))).toEqual(["pc"]);
+  test("last connected ranks never-connected devices online first, then by name", () => {
+    const never = all.map((d) => ({ ...d, favorite: false, last_connected_at: null }));
+    expect(ids(sortDevices(never, "last_connected"))).toEqual(["demo", "pc", "mac", "old"]);
   });
 });
 
@@ -236,7 +233,6 @@ describe("viewCounts", () => {
     expect(viewCounts(all, ctx)).toEqual({
       all: 4,
       favorites: 1,
-      recent: 2,
       online: 3,
       in_session: 1,
       attention: 2,
