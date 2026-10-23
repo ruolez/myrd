@@ -258,6 +258,9 @@ public:
     virtual const uint8_t *pixels() const = 0;
     virtual int stride() const = 0;
     virtual const char *kind() const = 0;
+    // True when the source stopped working for good and must be rebuilt on
+    // a fresh device and output (the session moved to another display).
+    virtual bool stale(int64_t) const { return false; }
 };
 
 // Copies (and scales) the monitor into a 32-bit DIB on every grab. GDI reports
@@ -371,18 +374,31 @@ public:
         if (FAILED(hr) || !frame) {
             if (hr != last_hr_) logf("capture: duplication failed 0x%08lx", (unsigned long)hr);
             last_hr_ = hr;
+            fails_++;
+            last_fail_ = now_us();
+            frame_since_fail_ = false;
             return false;
         }
         last_hr_ = S_OK;
+        fails_ = 0;
         bool ok = !fresh || copy(frame);
         frame->Release();
         src_.done();
         if (!ok) return false;
         if (fresh) {
+            if (!have_) logf("capture: first duplicated frame %ux%u", sw_, sh_);
             *changed = !have_ || part < 0 ? 1 : part;
             have_ = true;
+            frame_since_fail_ = true;
         }
         return true;
+    }
+
+    // Failing every time, or silent since a failure: a re-created
+    // duplication delivers the whole desktop at once, so silence means the
+    // output it was made for no longer shows this session.
+    bool stale(int64_t now) const override {
+        return fails_ >= 20 || (last_fail_ && !frame_since_fail_ && now - last_fail_ > 2000000);
     }
 
     bool have() const override { return have_; }
@@ -442,6 +458,9 @@ private:
     std::vector<uint8_t> buf_;
     bool have_ = false;
     HRESULT last_hr_ = S_OK;
+    int fails_ = 0;           // in a row
+    int64_t last_fail_ = 0;   // now_us() of the latest failure, 0 none
+    bool frame_since_fail_ = true;
 };
 
 // ---------------------------------------------------------------- state
@@ -804,11 +823,17 @@ static bool run_loop(Capture *c) {
     return false;
 }
 
+// How a capture loop ended.
+enum LoopEnd {
+    kLoopStopped, // capture_stop, or no encoder left
+    kLoopBlind,   // the source never delivered a frame
+    kLoopStale,   // the source worked, then stopped (rebuild it)
+};
+
 // The CPU pipeline: poll the source at the frame rate while the screen
 // changes (every 100 ms once it has been still for a second), convert on the
-// CPU, encode. True when a Desktop Duplication source kept failing before
-// its first frame (the caller switches to GDI).
-static bool run_loop_cpu(Capture *c) {
+// CPU, encode.
+static LoopEnd run_loop_cpu(Capture *c) {
     int64_t started = now_us();
     bool fallible = strcmp(c->grab->kind(), "gdi") != 0;
     int64_t last_encode = 0, last_content = 0, last_poll = 0;
@@ -847,9 +872,13 @@ static bool run_loop_cpu(Capture *c) {
             } else if (++failures > 3) {
                 if (fallible && !c->grab->have() && now_us() - started > kGpuGraceUs) {
                     logf("capture: %s source failing with no frame yet", c->grab->kind());
-                    return true;
+                    return kLoopBlind;
                 }
                 Sleep(50);
+            }
+            if (fallible && c->grab->have() && c->grab->stale(now_us()) && now_us() - started > kGpuGraceUs) {
+                logf("capture: %s source stopped delivering frames", c->grab->kind());
+                return kLoopStale;
             }
         }
 
@@ -883,7 +912,7 @@ static bool run_loop_cpu(Capture *c) {
             // Windows 7's encoder cannot be told to send an IDR: a new one starts with one.
             if (force && sent_any && !encoder_can_force_key(c->enc) && !make_encoder(c, false)) {
                 logf("capture: no encoder available, stopping");
-                return false;
+                return kLoopStopped;
             }
             uint8_t *y = c->nv12.data();
             rc_bgra_to_nv12(c->grab->pixels(), c->grab->stride(), (int)c->dst_w, (int)c->dst_h, y, (int)c->dst_w,
@@ -902,12 +931,12 @@ static bool run_loop_cpu(Capture *c) {
             logf("capture: software encoder failed, recreating it");
             if (!make_encoder(c, false)) {
                 logf("capture: no encoder available, stopping");
-                return false;
+                return kLoopStopped;
             }
             sent_any = false;
         }
     }
-    return false;
+    return kLoopStopped;
 }
 
 // GDI instead of the D3D11 pipeline: before Windows 8, or when RC_CAPTURE=gdi
@@ -1019,6 +1048,14 @@ static int start_gpu(Capture *c, bool have_mf) {
     return RC_OK;
 }
 
+// Re-reads the capture's monitor (the same id, else the primary): after a
+// session moved between the console and RDP its output may be another one.
+static void refresh_monitor(Capture *c) {
+    enumerate_monitors(nullptr, 0);
+    MonitorInfo m;
+    if (find_monitor(c->mon.pub.id, &m) || find_primary_monitor(&m)) c->mon = m;
+}
+
 // Moves a capture to the CPU pipeline: Desktop Duplication read back when
 // dxgi (and the monitor is a DXGI output), else or failing that GDI; an RC_*
 // result.
@@ -1063,8 +1100,22 @@ static DWORD WINAPI capture_thread(void *p) {
     SetEvent(c->started);
 
     if (result == RC_OK) {
-        bool to_gdi = c->cpu ? run_loop_cpu(c) : run_loop(c);
-        if (to_gdi && !c->stop && switch_to_cpu(c, have_mf, false) == RC_OK) run_loop_cpu(c);
+        // A failing source is rebuilt on a fresh device and output: Desktop
+        // Duplication again (twice at most while it delivers nothing), then GDI.
+        int blind = 0;
+        for (;;) {
+            LoopEnd end = c->cpu ? run_loop_cpu(c) : run_loop(c) ? kLoopBlind : kLoopStopped;
+            if (c->stop || end == kLoopStopped) break;
+            if (end == kLoopStale) blind = 0;
+            RECT before = c->mon.rect;
+            refresh_monitor(c);
+            bool dxgi = end == kLoopStale || ++blind <= 2;
+            if (switch_to_cpu(c, have_mf, dxgi) != RC_OK) break;
+            if (memcmp(&before, &c->mon.rect, sizeof before) != 0 && c->on_shape && c->on_pos) {
+                cursor_stop();
+                cursor_start(c->mon.rect, c->on_shape, c->on_pos, c->user);
+            }
+        }
         cursor_stop();
     }
     release_pipeline(c);
