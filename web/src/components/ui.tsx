@@ -174,18 +174,27 @@ export function Modal({
 }) {
   const id = useId();
   const ref = useRef<HTMLDivElement>(null);
+  // Read before children mount, so an autoFocus field does not count as "before".
+  const [prev] = useState(() => document.activeElement as HTMLElement | null);
+  const closeRef = useRef(onClose);
   useEffect(() => {
-    const prev = document.activeElement as HTMLElement | null;
-    ref.current?.querySelector<HTMLElement>("input,button,select,textarea")?.focus();
+    closeRef.current = onClose;
+  });
+  // Once per open: a parent passing a new onClose each render must not move
+  // focus while someone types.
+  useEffect(() => {
+    const root = ref.current;
+    if (!root?.contains(document.activeElement))
+      root?.querySelector<HTMLElement>("input,button,select,textarea")?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") closeRef.current();
     };
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
       prev?.focus();
     };
-  }, [onClose]);
+  }, [prev]);
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
