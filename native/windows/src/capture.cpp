@@ -246,11 +246,25 @@ private:
 
 // ---------------------------------------------------------------- GDI
 
+// A screen copy in system memory for the CPU pipeline: BGRA at the encoded
+// size, refreshed by grab().
+class CpuSource {
+public:
+    virtual ~CpuSource() {}
+    // Refreshes the copy. *changed is the fraction of the frame that differs
+    // from the previous copy (1 for the first). False when the copy failed.
+    virtual bool grab(float *changed) = 0;
+    virtual bool have() const = 0;
+    virtual const uint8_t *pixels() const = 0;
+    virtual int stride() const = 0;
+    virtual const char *kind() const = 0;
+};
+
 // Copies (and scales) the monitor into a 32-bit DIB on every grab. GDI reports
 // no damage, so each copy is compared with the previous one row by row.
-class GdiGrabber {
+class GdiGrabber : public CpuSource {
 public:
-    ~GdiGrabber() { close(); }
+    ~GdiGrabber() override { close(); }
 
     bool open(const RECT &src, UINT w, UINT h) {
         close();
@@ -277,9 +291,7 @@ public:
         return true;
     }
 
-    // Copies the screen. *changed is the fraction of rows that differ from the
-    // previous copy (1 for the first). False when the copy failed.
-    bool grab(float *changed) {
+    bool grab(float *changed) override {
         *changed = 0;
         attach_input_desktop(); // UAC and the lock screen are other desktops
         HDC screen = GetDC(nullptr);
@@ -314,9 +326,10 @@ public:
         return true;
     }
 
-    bool have() const { return have_; }
-    const uint8_t *pixels() const { return (const uint8_t *)bits_[cur_]; }
-    int stride() const { return (int)w_ * 4; }
+    bool have() const override { return have_; }
+    const uint8_t *pixels() const override { return (const uint8_t *)bits_[cur_]; }
+    int stride() const override { return (int)w_ * 4; }
+    const char *kind() const override { return "gdi"; }
 
 private:
     void close() {
@@ -338,6 +351,97 @@ private:
     void *bits_[2] = {};
     int cur_ = 0; // the newest copy
     bool have_ = false;
+};
+
+// Desktop Duplication read back to system memory: for a device that has no
+// video processor or GPU encoder (a server's display-only adapter). Sees what
+// GDI cannot (the sign-in screen, DirectComposition windows).
+class DxgiReadback : public CpuSource {
+public:
+    DxgiReadback(ID3D11Device *dev, ID3D11DeviceContext *ctx, IDXGIOutput1 *out, UINT w, UINT h)
+        : src_(dev, out), dev_(dev), ctx_(ctx), w_(w), h_(h), buf_((size_t)w * h * 4) {}
+
+    bool grab(float *changed) override {
+        *changed = 0;
+        ID3D11Texture2D *frame = nullptr;
+        bool fresh = false;
+        float part = -1;
+        HRESULT hr = src_.next(0, &frame, &fresh, &part);
+        if (hr == S_FALSE) return true; // nothing new
+        if (FAILED(hr) || !frame) {
+            if (hr != last_hr_) logf("capture: duplication failed 0x%08lx", (unsigned long)hr);
+            last_hr_ = hr;
+            return false;
+        }
+        last_hr_ = S_OK;
+        bool ok = !fresh || copy(frame);
+        frame->Release();
+        src_.done();
+        if (!ok) return false;
+        if (fresh) {
+            *changed = !have_ || part < 0 ? 1 : part;
+            have_ = true;
+        }
+        return true;
+    }
+
+    bool have() const override { return have_; }
+    const uint8_t *pixels() const override { return buf_.data(); }
+    int stride() const override { return (int)w_ * 4; }
+    const char *kind() const override { return "dxgi-readback"; }
+
+private:
+    bool copy(ID3D11Texture2D *frame) {
+        D3D11_TEXTURE2D_DESC d;
+        frame->GetDesc(&d);
+        if (d.Format != DXGI_FORMAT_B8G8R8A8_UNORM) {
+            logf("capture: duplication format %d is not BGRA", (int)d.Format);
+            return false;
+        }
+        if (!staging_ || d.Width != sw_ || d.Height != sh_) {
+            D3D11_TEXTURE2D_DESC sd = {};
+            sd.Width = d.Width;
+            sd.Height = d.Height;
+            sd.MipLevels = 1;
+            sd.ArraySize = 1;
+            sd.Format = d.Format;
+            sd.SampleDesc.Count = 1;
+            sd.Usage = D3D11_USAGE_STAGING;
+            sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            if (FAILED(dev_->CreateTexture2D(&sd, nullptr, staging_.put()))) {
+                logf("capture: staging texture %ux%u failed", d.Width, d.Height);
+                return false;
+            }
+            sw_ = d.Width;
+            sh_ = d.Height;
+        }
+        ctx_->CopyResource(staging_.get(), frame);
+        D3D11_MAPPED_SUBRESOURCE m;
+        if (FAILED(ctx_->Map(staging_.get(), 0, D3D11_MAP_READ, 0, &m))) return false;
+        const uint8_t *px = (const uint8_t *)m.pData;
+        size_t row = (size_t)w_ * 4;
+        if (sw_ == w_ && sh_ == h_) {
+            for (UINT y = 0; y < h_; y++) memcpy(&buf_[y * row], px + (size_t)y * m.RowPitch, row);
+        } else if (sw_ >= w_ && sh_ >= h_) {
+            rc_scale_bgra(px, (int32_t)sw_, (int32_t)sh_, (int32_t)m.RowPitch, buf_.data(), (int32_t)w_, (int32_t)h_);
+        } else {
+            // The mode shrank below the encoded size: top-left, black around.
+            memset(buf_.data(), 0, buf_.size());
+            for (UINT y = 0; y < sh_; y++) memcpy(&buf_[y * row], px + (size_t)y * m.RowPitch, (size_t)sw_ * 4);
+        }
+        ctx_->Unmap(staging_.get(), 0);
+        return true;
+    }
+
+    DxgiSource src_;
+    ID3D11Device *dev_;
+    ID3D11DeviceContext *ctx_;
+    UINT w_, h_;
+    UINT sw_ = 0, sh_ = 0;
+    Com<ID3D11Texture2D> staging_;
+    std::vector<uint8_t> buf_;
+    bool have_ = false;
+    HRESULT last_hr_ = S_OK;
 };
 
 // ---------------------------------------------------------------- state
@@ -381,8 +485,8 @@ struct Capture {
     Encoder *enc = nullptr;
     Source *src = nullptr;
     bool full_color = false; // cfg.codec == RC_CODEC_VP9: ring is BGRA, read back through staging
-    bool cpu = false;        // GDI capture, CPU conversion, software MFT (run_loop_cpu)
-    GdiGrabber *gdi = nullptr;
+    bool cpu = false;        // a CpuSource, CPU conversion, software encoder (run_loop_cpu)
+    CpuSource *grab = nullptr;
     std::vector<uint8_t> nv12; // cpu: the frame handed to the encoder
 #ifdef RC_HAVE_VPX
     rc_vpx *vpx = nullptr;
@@ -403,7 +507,10 @@ static void target_size(const rc_capture_config &cfg, UINT w, UINT h, UINT *ow, 
     if (*oh < 16) *oh = 16;
 }
 
-static bool create_device(Capture *c) {
+// The device for the monitor's adapter. video: the GPU pipeline (video
+// processor, GPU encoder); otherwise any feature level that can duplicate
+// the desktop, as display-only adapters offer.
+static bool create_device(Capture *c, bool video) {
     Com<IDXGIFactory1> factory;
     if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), factory.put_void()))) return false;
     Com<IDXGIAdapter1> adapter;
@@ -412,16 +519,24 @@ static bool create_device(Capture *c) {
     if (FAILED(adapter->EnumOutputs(c->mon.output_index, out.put()))) return false;
     if (FAILED(out.as(c->output))) return false;
 
-    D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
-    UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
-    HRESULT hr = D3D11CreateDevice(adapter.get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags, levels, 2,
-                                   D3D11_SDK_VERSION, c->dev.put(), nullptr, c->ctx.put());
-    if (hr == E_INVALIDARG)
-        hr = D3D11CreateDevice(adapter.get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags, levels + 1, 1,
-                               D3D11_SDK_VERSION, c->dev.put(), nullptr, c->ctx.put());
+    D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1,
+                                  D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_9_3,  D3D_FEATURE_LEVEL_9_2,
+                                  D3D_FEATURE_LEVEL_9_1};
+    UINT nlevels = video ? 2 : (UINT)(sizeof(levels) / sizeof(levels[0]));
+    UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | (video ? D3D11_CREATE_DEVICE_VIDEO_SUPPORT : 0);
+    D3D_FEATURE_LEVEL got = D3D_FEATURE_LEVEL_9_1;
+    HRESULT hr = D3D11CreateDevice(adapter.get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags, levels, nlevels,
+                                   D3D11_SDK_VERSION, c->dev.put(), &got, c->ctx.put());
+    if (hr == E_INVALIDARG) // no 11_1 before Windows 8.1
+        hr = D3D11CreateDevice(adapter.get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags, levels + 1, nlevels - 1,
+                               D3D11_SDK_VERSION, c->dev.put(), &got, c->ctx.put());
     if (FAILED(hr)) {
-        logf("capture: D3D11CreateDevice failed 0x%08lx", (unsigned long)hr);
+        logf("capture: D3D11CreateDevice%s failed 0x%08lx", video ? " (video)" : "", (unsigned long)hr);
         return false;
+    }
+    if (!video) {
+        logf("capture: D3D11 device at feature level 0x%x for readback", (unsigned)got);
+        return true;
     }
     // The MF encoder uses the device from its own threads.
     Com<ID3D10Multithread> mt;
@@ -689,9 +804,13 @@ static bool run_loop(Capture *c) {
     return false;
 }
 
-// The GDI pipeline: poll the screen at the frame rate while it changes (every
-// 100 ms once it has been still for a second), convert on the CPU, encode.
-static void run_loop_cpu(Capture *c) {
+// The CPU pipeline: poll the source at the frame rate while the screen
+// changes (every 100 ms once it has been still for a second), convert on the
+// CPU, encode. True when a Desktop Duplication source kept failing before
+// its first frame (the caller switches to GDI).
+static bool run_loop_cpu(Capture *c) {
+    int64_t started = now_us();
+    bool fallible = strcmp(c->grab->kind(), "gdi") != 0;
     int64_t last_encode = 0, last_content = 0, last_poll = 0;
     LONG applied_bitrate = c->bitrate_kbps, applied_fps = c->fps;
     bool dirty = false, sent_any = false;
@@ -718,7 +837,7 @@ static void run_loop_cpu(Capture *c) {
         if (now - last_poll >= poll) {
             last_poll = now;
             float part = 0;
-            if (c->gdi->grab(&part)) {
+            if (c->grab->grab(&part)) {
                 failures = 0;
                 if (part > 0) {
                     changed = dirty ? (changed + part > 1 ? 1 : changed + part) : part;
@@ -726,16 +845,20 @@ static void run_loop_cpu(Capture *c) {
                     last_content = now_us();
                 }
             } else if (++failures > 3) {
+                if (fallible && !c->grab->have() && now_us() - started > kGpuGraceUs) {
+                    logf("capture: %s source failing with no frame yet", c->grab->kind());
+                    return true;
+                }
                 Sleep(50);
             }
         }
 
         now = now_us();
         bool key = InterlockedExchange(&c->keyframe_req, 0) != 0;
-        if (key && c->gdi->have()) dirty = true;
+        if (key && c->grab->have()) dirty = true;
         LONG refine = InterlockedExchange(&c->refine_qp, 0);
         if (dirty || !sent_any || now - last_content < 100000) refine = 0;
-        if ((!dirty && !refine) || !c->gdi->have() || now - last_encode < interval - 1000) {
+        if ((!dirty && !refine) || !c->grab->have() || now - last_encode < interval - 1000) {
             if (key) InterlockedExchange(&c->keyframe_req, 1);
             if (refine) InterlockedCompareExchange(&c->refine_qp, refine, 0);
             int64_t wake = last_poll + poll;
@@ -751,7 +874,7 @@ static void run_loop_cpu(Capture *c) {
         int32_t flags = refine ? RC_FRAME_STATIC : (dirty && changed <= 0.02f) ? RC_FRAME_MINOR : 0;
 #ifdef RC_HAVE_VPX
         if (c->vpx) {
-            rc_vpx_from_bgra(c->vpx, c->gdi->pixels(), c->gdi->stride());
+            rc_vpx_from_bgra(c->vpx, c->grab->pixels(), c->grab->stride());
             accepted = rc_vpx_encode(c->vpx, now, force, refine > 0 ? (int)refine : 0, flags, c->on_frame, c->user) ==
                        RC_OK;
         } else
@@ -760,10 +883,10 @@ static void run_loop_cpu(Capture *c) {
             // Windows 7's encoder cannot be told to send an IDR: a new one starts with one.
             if (force && sent_any && !encoder_can_force_key(c->enc) && !make_encoder(c, false)) {
                 logf("capture: no encoder available, stopping");
-                return;
+                return false;
             }
             uint8_t *y = c->nv12.data();
-            rc_bgra_to_nv12(c->gdi->pixels(), c->gdi->stride(), (int)c->dst_w, (int)c->dst_h, y, (int)c->dst_w,
+            rc_bgra_to_nv12(c->grab->pixels(), c->grab->stride(), (int)c->dst_w, (int)c->dst_h, y, (int)c->dst_w,
                             y + (size_t)c->dst_w * c->dst_h, (int)c->dst_w);
             accepted = encoder_encode_nv12(c->enc, y, now, force, &fatal, refine > 0 ? (int)refine : 0, flags);
         }
@@ -779,11 +902,12 @@ static void run_loop_cpu(Capture *c) {
             logf("capture: software encoder failed, recreating it");
             if (!make_encoder(c, false)) {
                 logf("capture: no encoder available, stopping");
-                return;
+                return false;
             }
             sent_any = false;
         }
     }
+    return false;
 }
 
 // GDI instead of the D3D11 pipeline: before Windows 8, or when RC_CAPTURE=gdi
@@ -794,8 +918,9 @@ static bool use_cpu_pipeline() {
     return os_before_win8() || (n > 0 && n < sizeof(v) && _stricmp(v, "gdi") == 0);
 }
 
-// Starts the GDI pipeline; an RC_* result.
-static int start_cpu(Capture *c, bool have_mf) {
+// Starts the CPU pipeline on Desktop Duplication read back (dxgi) or GDI; an
+// RC_* result.
+static int start_cpu(Capture *c, bool have_mf, bool dxgi) {
     rc_capture_config cfg = c->cfg;
     if (!c->full_color && os_before_win8()) {
         // Windows 7's H.264 encoder takes at most 1920×1088.
@@ -803,8 +928,14 @@ static int start_cpu(Capture *c, bool have_mf) {
         cfg.max_height = cfg.max_height > 0 && cfg.max_height < 1088 ? cfg.max_height : 1088;
     }
     target_size(cfg, c->mon.pub.width, c->mon.pub.height, &c->dst_w, &c->dst_h);
-    c->gdi = new GdiGrabber();
-    if (!c->gdi->open(c->mon.rect, c->dst_w, c->dst_h)) return RC_ERR;
+    if (dxgi) {
+        if (!create_device(c, false)) return RC_ERR;
+        c->grab = new DxgiReadback(c->dev.get(), c->ctx.get(), c->output.get(), c->dst_w, c->dst_h);
+    } else {
+        GdiGrabber *g = new GdiGrabber();
+        c->grab = g;
+        if (!g->open(c->mon.rect, c->dst_w, c->dst_h)) return RC_ERR;
+    }
     if (c->full_color) {
 #ifdef RC_HAVE_VPX
         c->vpx = rc_vpx_open((int)c->dst_w, (int)c->dst_h, c->cfg.fps, c->cfg.bitrate_kbps);
@@ -822,7 +953,8 @@ static int start_cpu(Capture *c, bool have_mf) {
         logf("capture: no H.264 encoder");
         return have_mf ? RC_ERR : RC_ERR_UNSUPPORTED;
     }
-    logf("capture: GDI %ux%u -> %ux%u, %s", c->mon.pub.width, c->mon.pub.height, c->dst_w, c->dst_h, c->encoder);
+    logf("capture: %s %ux%u -> %ux%u, %s", c->grab->kind(), c->mon.pub.width, c->mon.pub.height, c->dst_w, c->dst_h,
+         c->encoder);
     return RC_OK;
 }
 
@@ -831,8 +963,8 @@ static int start_cpu(Capture *c, bool have_mf) {
 static void release_pipeline(Capture *c) {
     delete c->src;
     c->src = nullptr;
-    delete c->gdi;
-    c->gdi = nullptr;
+    delete c->grab;
+    c->grab = nullptr;
     if (c->enc) encoder_destroy(c->enc);
     c->enc = nullptr;
 #ifdef RC_HAVE_VPX
@@ -860,7 +992,7 @@ static void release_pipeline(Capture *c) {
 // Starts the D3D11 pipeline (Desktop Duplication / WGC, video processor,
 // GPU encoder); an RC_* result.
 static int start_gpu(Capture *c, bool have_mf) {
-    if (!create_device(c)) return RC_ERR;
+    if (!create_device(c, true)) return RC_ERR;
     target_size(c->cfg, c->mon.pub.width, c->mon.pub.height, &c->dst_w, &c->dst_h);
     if (!setup_processor(c, c->mon.pub.width, c->mon.pub.height, DXGI_FORMAT_B8G8R8A8_UNORM)) {
         logf("capture: video processor unavailable");
@@ -887,12 +1019,19 @@ static int start_gpu(Capture *c, bool have_mf) {
     return RC_OK;
 }
 
-// Moves a capture to the GDI pipeline; an RC_* result.
-static int switch_to_cpu(Capture *c, bool have_mf) {
-    release_pipeline(c);
-    c->cpu = true;
-    int r = start_cpu(c, have_mf);
-    logf("capture: GDI pipeline %s (%d)", r == RC_OK ? "started" : "failed", r);
+// Moves a capture to the CPU pipeline: Desktop Duplication read back when
+// dxgi (and the monitor is a DXGI output), else or failing that GDI; an RC_*
+// result.
+static int switch_to_cpu(Capture *c, bool have_mf, bool dxgi) {
+    int r = RC_ERR;
+    for (int pass = dxgi && !c->mon.gdi ? 0 : 1; pass < 2; pass++) {
+        release_pipeline(c);
+        c->cpu = true;
+        r = start_cpu(c, have_mf, pass == 0);
+        logf("capture: CPU pipeline on %s %s (%d)", pass == 0 ? "dxgi-readback" : "gdi",
+             r == RC_OK ? "started" : "failed", r);
+        if (r == RC_OK || r == RC_ERR_UNSUPPORTED) break; // no encoder: GDI would not help
+    }
     return r;
 }
 
@@ -903,18 +1042,19 @@ static DWORD WINAPI capture_thread(void *p) {
     timeBeginPeriod(1);
     attach_input_desktop();
 
-    // GDI where D3D11 cannot work: Windows 7, a monitor DXGI does not list,
-    // or a D3D11 pipeline that fails to start (a server's display-only adapter
-    // has no video processor or GPU encoder).
+    // GDI where D3D11 cannot work: Windows 7, a monitor DXGI does not list.
+    // A D3D11 pipeline that fails to start (a server's display-only adapter
+    // has no video processor or GPU encoder) reads Desktop Duplication back
+    // to the CPU instead, and GDI is the last resort.
     int result;
-    c->cpu = use_cpu_pipeline() || c->mon.gdi;
-    if (c->cpu) {
-        result = start_cpu(c, have_mf);
+    if (use_cpu_pipeline() || c->mon.gdi) {
+        c->cpu = true;
+        result = start_cpu(c, have_mf, false);
     } else {
         result = start_gpu(c, have_mf);
         if (result != RC_OK) {
             logf("capture: D3D11 pipeline failed to start (%d)", result);
-            result = switch_to_cpu(c, have_mf);
+            result = switch_to_cpu(c, have_mf, true);
         }
     }
 
@@ -923,7 +1063,8 @@ static DWORD WINAPI capture_thread(void *p) {
     SetEvent(c->started);
 
     if (result == RC_OK) {
-        if (c->cpu || (run_loop(c) && !c->stop && switch_to_cpu(c, have_mf) == RC_OK)) run_loop_cpu(c);
+        bool to_gdi = c->cpu ? run_loop_cpu(c) : run_loop(c);
+        if (to_gdi && !c->stop && switch_to_cpu(c, have_mf, false) == RC_OK) run_loop_cpu(c);
         cursor_stop();
     }
     release_pipeline(c);
