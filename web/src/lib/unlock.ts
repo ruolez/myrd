@@ -1,3 +1,5 @@
+import { compareVersions } from "./version";
+
 // Saved sign-in in a session: when to unlock a locked device on its own, when
 // to offer saving a password, and what a refusal from the device means.
 
@@ -30,6 +32,31 @@ export function autoUnlockAction(s: AutoUnlockInput): "unlock" | "prompt" | null
 
 /** Devices whose agent can type a saved password (macOS and Windows, agent 0.5.0 and later). */
 export const canSaveSignIn = (d: { os: string }) => d.os === "darwin" || d.os === "windows";
+
+export const UNLOCK_AGENT = "0.5.0";
+
+/** The agent predates saved sign-in. */
+export const agentTooOld = (version: string) => compareVersions(version, UNLOCK_AGENT) < 0;
+
+/**
+ * Why a session opened to fetch the device's unlock key cannot deliver it,
+ * or null while it still may.
+ */
+export function unlockKeyFailure(
+  s: {
+    phase: string;
+    features: string[] | null;
+    endDetail: string | null;
+    agentVersion: string | null;
+  },
+  name: string,
+): string | null {
+  if (s.phase === "ended" || s.phase === "pin_mismatch")
+    return s.endDetail ?? `The session to ${name} ended.`;
+  if (s.phase === "connected" && s.features !== null && !s.features.includes("unlock"))
+    return `${name}'s agent${s.agentVersion ? ` (${s.agentVersion})` : ""} did not offer saved sign-in. It needs ${UNLOCK_AGENT} or later on macOS or Windows.`;
+  return null;
+}
 
 /** The username the save form starts with: the saved one, else the device's signed-in user. */
 export function prefillUsername(

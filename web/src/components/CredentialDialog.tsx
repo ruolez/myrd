@@ -2,7 +2,7 @@
 // menu and the device page. Sealing and storing are the caller's.
 
 import { useState } from "react";
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { errorMessage } from "../api/client";
 import { ErrorBox, Field, Modal } from "./ui";
 
@@ -27,7 +27,7 @@ export function CredentialDialog({
   /** Saving also unlocks the device. */
   locked?: boolean;
   /** Why nothing can be saved from here (the form is not shown). */
-  unavailable?: string | null;
+  unavailable?: ReactNode;
   onSave: (username: string, password: string) => Promise<void>;
   onRemove: () => Promise<void>;
   onClose: () => void;
@@ -68,7 +68,7 @@ export function CredentialDialog({
         </p>
         {error && <ErrorBox error={error} />}
         {unavailable ? (
-          <p className="rounded-lg bg-surface-2 p-3">{unavailable}</p>
+          <div className="space-y-3 rounded-lg bg-surface-2 p-3">{unavailable}</div>
         ) : (
           <>
             <Field label="Username" hint="Shown for reference: the device types only the password.">

@@ -2,10 +2,12 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   askToSave,
   autoUnlockAction,
+  agentTooOld,
   canSaveSignIn,
   prefillUsername,
   setAskToSave,
   unlockFailure,
+  unlockKeyFailure,
 } from "./unlock";
 import type { AutoUnlockInput } from "./unlock";
 
@@ -55,6 +57,46 @@ describe("canSaveSignIn", () => {
     ["linux", false],
   ])("%s → %s", (os, want) => {
     expect(canSaveSignIn({ os })).toBe(want);
+  });
+});
+
+describe("agentTooOld", () => {
+  test.each([
+    ["0.4.0", true],
+    ["0.5.0-rc.1", true],
+    ["0.5.0", false],
+    ["0.10.2", false],
+  ])("%s → %s", (v, want) => {
+    expect(agentTooOld(v)).toBe(want);
+  });
+});
+
+describe("unlockKeyFailure", () => {
+  const live = {
+    phase: "connected",
+    features: ["stream", "unlock"],
+    endDetail: null,
+    agentVersion: "0.5.0",
+  };
+
+  test("keeps waiting while the session can still deliver the key", () => {
+    expect([
+      unlockKeyFailure({ ...live, phase: "awaiting_approval", features: null }, "PC"),
+      unlockKeyFailure(live, "PC"),
+    ]).toEqual([null, null]);
+  });
+
+  test("names an agent that does not offer saved sign-in", () => {
+    expect(unlockKeyFailure({ ...live, features: ["stream"], agentVersion: "0.4.0" }, "PC")).toBe(
+      "PC's agent (0.4.0) did not offer saved sign-in. It needs 0.5.0 or later on macOS or Windows.",
+    );
+  });
+
+  test("passes on why the session ended", () => {
+    expect([
+      unlockKeyFailure({ ...live, phase: "ended", endDetail: "Not approved on the device." }, "PC"),
+      unlockKeyFailure({ ...live, phase: "ended" }, "PC"),
+    ]).toEqual(["Not approved on the device.", "The session to PC ended."]);
   });
 });
 

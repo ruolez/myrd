@@ -1,11 +1,20 @@
 // Organization and sign-in dialogs shared by the dashboard and the device page.
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { ReactNode } from "react";
 import { api, errorMessage } from "../../api/client";
 import type { Device, Folder, FolderId, SavedCredential, Tag, TagId } from "../../api/types";
 import { useUser } from "../../app/auth";
 import { useDirectory } from "../../app/directory";
+import { useWorkspace } from "../../app/workspace";
 import { CredentialDialog } from "../../components/CredentialDialog";
 import { Icon } from "../../components/icons";
 import {
@@ -18,10 +27,13 @@ import {
   useToast,
 } from "../../components/ui";
 import { buildTree, canMoveFolder, flattenTree } from "../../lib/folders";
-import { prefillUsername } from "../../lib/unlock";
+import { agentTooOld, prefillUsername, UNLOCK_AGENT, unlockKeyFailure } from "../../lib/unlock";
 import { sealForDevice } from "../../lib/unlockSeal";
 
 export const NOTES_MAX = 4000;
+
+// Covers the device's approval prompt (60 s) when it asks for every session.
+const FETCH_KEY_MS = 90_000;
 
 type DialogReq =
   | { kind: "move"; ids: string[] }
@@ -475,16 +487,56 @@ function DeviceCredentialDialog({
 }) {
   const user = useUser();
   const toast = useToast();
+  const ws = useWorkspace();
   const [state, setState] = useState<Awaited<ReturnType<typeof api.devices.credential>> | null>(
     null,
   );
   const [error, setError] = useState<string | null>(null);
+  const [fetching, setFetching] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const alive = useRef(true);
   useEffect(() => {
+    alive.current = true;
     api.devices
       .credential(d.id)
       .then(setState)
       .catch((e: unknown) => setError(errorMessage(e)));
+    return () => {
+      alive.current = false;
+    };
   }, [d.id]);
+
+  // A session uploads the device's signed unlock key when its hello arrives;
+  // open one in the background (unless this tab has one) and wait for it.
+  const fetchKey = async () => {
+    setFetchError(null);
+    const opened = !ws.has(d.id);
+    if (opened && !ws.open(d.id).ok) {
+      setFetchError("Too many sessions are open in this tab. Close one first.");
+      return;
+    }
+    setFetching(true);
+    let failure: string | null = `${d.name} did not send its unlock key in time.`;
+    for (const deadline = Date.now() + FETCH_KEY_MS; Date.now() < deadline && alive.current;) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const snap = ws.session(d.id)?.snapshot;
+      const why = snap && unlockKeyFailure(snap, d.name);
+      if (why) {
+        failure = why;
+        break;
+      }
+      const r = await api.devices.credential(d.id).catch(() => null);
+      if (r?.unlock_key) {
+        failure = null;
+        if (alive.current) setState(r);
+        break;
+      }
+    }
+    if (opened) ws.close(d.id);
+    if (!alive.current) return;
+    setFetching(false);
+    setFetchError(failure);
+  };
 
   if (error)
     return (
@@ -500,9 +552,34 @@ function DeviceCredentialDialog({
       initialUsername={prefillUsername(state.credential?.username, d.info?.user)}
       saved={!!state.credential}
       unavailable={
-        unlockKey
-          ? null
-          : `Open a session to ${d.name} once (its agent needs version 0.5.0 or later), then its sign-in can be saved here.`
+        unlockKey ? null : agentTooOld(d.agent_version) ? (
+          <p>
+            {d.name} runs agent {d.agent_version || "of an unknown version"}. Saved sign-in needs{" "}
+            {UNLOCK_AGENT} or later: update it from its menu or device page.
+          </p>
+        ) : (
+          <>
+            <p>
+              {d.name} has not sent its unlock key yet. Connecting once fetches it; the session
+              closes again by itself.
+            </p>
+            {fetchError && <ErrorBox error={fetchError} />}
+            <button
+              type="button"
+              className="btn-tonal btn-sm"
+              disabled={
+                fetching || (!ws.has(d.id) && (!d.online || d.status === "disabled" || d.busy))
+              }
+              onClick={() => void fetchKey()}
+            >
+              {fetching
+                ? `Connecting to ${d.name}…`
+                : d.online
+                  ? "Connect and fetch"
+                  : `${d.name} is offline`}
+            </button>
+          </>
+        )
       }
       onSave={async (username, password) => {
         if (!unlockKey) return;
