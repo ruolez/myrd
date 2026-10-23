@@ -117,7 +117,8 @@ Rate limit: 10 failed attempts / 15 min per IP and per email → 429.
 | PATCH | `/v1/tags/{id}` | `{name?, color?}` → `{tag}` |
 | DELETE | `/v1/tags/{id}` | → `{}`; removed from every device |
 | DELETE | `/v1/devices/{id}` | → `{}`; marks removed, closes its socket, agent auth refused afterwards |
-| GET | `/v1/devices/{id}/credential` | → `{credential: {client_key_id, username, sealed: SealedCredential, updated_at} \| null}`: the caller's saved sign-in for the device (§4.2) |
+| GET | `/v1/devices/{id}/credential` | → `{credential: {client_key_id, username, sealed: SealedCredential, updated_at} \| null, unlock_key: {public_key, signature} \| null}`: the caller's saved sign-in for the device and the device's unlock key, once a browser uploaded it (§4.2) |
+| PUT | `/v1/devices/{id}/unlock-key` | `{public_key: b64 SPKI P-256, signature: b64 Ed25519}` → `{}`; kept only when the device key signed `UnlockKeyMessage` for that key (400 `bad_signature` otherwise). Browsers upload the key after verifying it in a session |
 | PUT | `/v1/devices/{id}/credential` | `{username (≤ 256 chars), sealed: SealedCredential}` → `{credential}`; replaces the caller's saved sign-in. 400 when `sealed` is malformed (eph_pub 65 bytes, iv 12, sig 64, unlock_key a SHA-256 hex, ciphertext 17..2112 bytes) or `client_key` is not a live client key of the caller. Audited `device.credential.saved` (meta: client_key_id, label) |
 | DELETE | `/v1/devices/{id}/credential` | → `{}`; audited `device.credential.removed` when one was saved |
 | POST | `/v1/devices/{id}/update` | `{force?:bool}` → 202 `{version}`; sends `update.check{explicit:true,force}`. 409 `device_offline` \| `up_to_date` \| `unsupported` (Linux demo). Audited `agent.update.requested` |
@@ -312,6 +313,7 @@ A user can save a device's sign-in so that opening a session on its lock screen 
   - macOS: Shift (wakes the password field), 1 s, Cmd+A, the password, Return.
 
   The agent checks the lock again just before typing, and types nothing if the screen was unlocked meanwhile.
+- **Outside a session** (dashboard menu, device page): after a session verifies the unlock key, the browser uploads it with its signature (`PUT /v1/devices/{id}/unlock-key`; the server checks the signature against the device key). The dashboard seals to that stored key only when this browser has pinned the device (§4) and the pinned key signed it. The server cannot slip in its own key, because it would have to forge the device signature, and a browser that never connected refuses to save.
 - **Browser.** It fetches the saved credential once the session's unlock key has verified. When the session in view shows its lock screen, it sends the credential once per lock, so a wrong saved password is never retried on its own; a new lock gets a new try. When nothing is saved, it offers the save form once per lock, unless the user turned that off for the device (this browser, localStorage). The username field starts with the saved username, else the device's signed-in user (`device.info.user`). A device still locked 15 s after typing shows "Still locked: the saved password may be wrong".
 - Vectors: `unlock` in `docs/test-vectors.json` (fixed keys, the derived unlock key, the expected header and ciphertext, and cases that must fail); `proto/unlock.go` implements both sides for Go, `web/src/lib/unlockCrypto.ts` the browser's seal.
 

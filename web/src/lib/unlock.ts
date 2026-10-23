@@ -28,6 +28,9 @@ export function autoUnlockAction(s: AutoUnlockInput): "unlock" | "prompt" | null
   return s.prompted || !s.askToSave ? null : "prompt";
 }
 
+/** Devices whose agent can type a saved password (macOS and Windows, agent 0.5.0 and later). */
+export const canSaveSignIn = (d: { os: string }) => d.os === "darwin" || d.os === "windows";
+
 /** The username the save form starts with: the saved one, else the device's signed-in user. */
 export function prefillUsername(
   saved: string | null | undefined,

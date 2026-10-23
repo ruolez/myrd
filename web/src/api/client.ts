@@ -16,6 +16,7 @@ import type {
   Release,
   ReleaseId,
   SavedCredential,
+  SignedUnlockKey,
   ReleaseOS,
   Session,
   Tag,
@@ -209,7 +210,12 @@ export const api = {
       ),
     remove: (id: string) => request<object>("DELETE", `/v1/devices/${id}`),
     credential: (id: string) =>
-      request<{ credential: SavedCredential | null }>("GET", `/v1/devices/${id}/credential`),
+      request<{ credential: SavedCredential | null; unlock_key: SignedUnlockKey | null }>(
+        "GET",
+        `/v1/devices/${id}/credential`,
+      ),
+    setUnlockKey: (id: string, public_key: string, signature: string) =>
+      request<object>("PUT", `/v1/devices/${id}/unlock-key`, { public_key, signature }),
     saveCredential: (id: string, username: string, sealed: SealedCredential) =>
       request<{ credential: SavedCredential }>("PUT", `/v1/devices/${id}/credential`, {
         username,

@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { FormEvent } from "react";
-import { api, errorMessage } from "../api/client";
+import { api } from "../api/client";
 import type { SavedCredential } from "../api/types";
+import { CredentialDialog } from "../components/CredentialDialog";
 import { Icon } from "../components/icons";
-import { ErrorBox, Field, Modal } from "../components/ui";
 import {
   askToSave,
   autoUnlockAction,
@@ -155,104 +154,18 @@ export function SignInDialog({
   signIn: SavedSignIn;
   locked: boolean;
 }) {
-  const [username, setUsername] = useState(() =>
-    prefillUsername(signIn.saved?.username, consoleUser),
-  );
-  const [password, setPassword] = useState("");
-  const [neverAsk, setNeverAsk] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const prompted = signIn.dialog?.prompted ?? false;
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      await signIn.save(username.trim(), password);
-    } catch (err) {
-      setError(errorMessage(err));
-      setBusy(false);
-    }
-  };
-  const dismiss = () => {
-    if (neverAsk) setAskToSave(signIn.deviceId, false);
-    signIn.closeDialog();
-  };
-  const remove = async () => {
-    setBusy(true);
-    try {
-      await signIn.remove();
-    } catch (err) {
-      setError(errorMessage(err));
-      setBusy(false);
-    }
-  };
-
   return (
-    <Modal title={`Sign-in for ${deviceName}`} onClose={dismiss}>
-      <form className="space-y-4" onSubmit={(e) => void submit(e)}>
-        <p className="text-muted">
-          {prompted ? `${deviceName} is locked. ` : ""}
-          Save its sign-in and opening it while locked unlocks it for you. The password is encrypted
-          so that only {deviceName} can read it, and it types it only on its own lock screen.
-        </p>
-        {error && <ErrorBox error={error} />}
-        <Field label="Username" hint="Shown for reference: the device types only the password.">
-          <input
-            className="input"
-            autoComplete="off"
-            spellCheck={false}
-            maxLength={256}
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-          />
-        </Field>
-        <Field
-          label="Password"
-          hint={signIn.saved ? "Saving replaces the stored password." : undefined}
-        >
-          <input
-            className="input"
-            type="password"
-            autoComplete="new-password"
-            required
-            maxLength={256}
-            value={password}
-            autoFocus
-            onChange={(e) => setPassword(e.target.value)}
-          />
-        </Field>
-        {prompted && !signIn.saved && (
-          <label className="flex items-center gap-2 text-muted">
-            <input
-              type="checkbox"
-              checked={neverAsk}
-              onChange={(e) => setNeverAsk(e.target.checked)}
-            />
-            Don't offer this again for {deviceName}
-          </label>
-        )}
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {signIn.saved && (
-            <button
-              type="button"
-              className="btn-text mr-auto text-error"
-              disabled={busy}
-              onClick={() => void remove()}
-            >
-              Remove saved sign-in
-            </button>
-          )}
-          <button type="button" className="btn-text" onClick={dismiss}>
-            {prompted ? "Not now" : "Cancel"}
-          </button>
-          <button className="btn-primary" disabled={busy || password === ""}>
-            {locked ? "Save and unlock" : "Save"}
-          </button>
-        </div>
-      </form>
-    </Modal>
+    <CredentialDialog
+      deviceName={deviceName}
+      initialUsername={prefillUsername(signIn.saved?.username, consoleUser)}
+      saved={!!signIn.saved}
+      prompted={signIn.dialog?.prompted ?? false}
+      locked={locked}
+      onSave={signIn.save}
+      onRemove={signIn.remove}
+      onClose={signIn.closeDialog}
+      onNeverAsk={() => setAskToSave(signIn.deviceId, false)}
+    />
   );
 }
 

@@ -58,3 +58,26 @@ func DeleteCredentialsOfClientKey(ctx context.Context, q db.Querier, clientKeyID
 	_, err := q.Exec(ctx, `DELETE FROM device_credentials WHERE client_key_id = $1`, clientKeyID)
 	return err
 }
+
+// UnlockKey is a device's unlock key (SPKI DER) and the device key's signature over it.
+type UnlockKey struct {
+	PublicKey []byte `json:"public_key"` // marshals as base64 std
+	Signature []byte `json:"signature"`
+}
+
+func SetDeviceUnlockKey(ctx context.Context, q db.Querier, deviceID string, k UnlockKey) error {
+	_, err := q.Exec(ctx, `UPDATE devices SET unlock_key = $2, unlock_key_sig = $3 WHERE id = $1`, deviceID, k.PublicKey, k.Signature)
+	return err
+}
+
+// DeviceUnlockKey returns nil until a browser has uploaded one.
+func DeviceUnlockKey(ctx context.Context, q db.Querier, deviceID string) (*UnlockKey, error) {
+	var k UnlockKey
+	if err := q.QueryRow(ctx, `SELECT unlock_key, unlock_key_sig FROM devices WHERE id = $1`, deviceID).Scan(&k.PublicKey, &k.Signature); err != nil {
+		return nil, notFound(err)
+	}
+	if k.PublicKey == nil {
+		return nil, nil
+	}
+	return &k, nil
+}

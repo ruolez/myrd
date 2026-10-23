@@ -1,13 +1,25 @@
-// Organization dialogs shared by the dashboard and the device page.
+// Organization and sign-in dialogs shared by the dashboard and the device page.
 
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { api, errorMessage } from "../../api/client";
-import type { Device, Folder, FolderId, Tag, TagId } from "../../api/types";
+import type { Device, Folder, FolderId, SavedCredential, Tag, TagId } from "../../api/types";
+import { useUser } from "../../app/auth";
 import { useDirectory } from "../../app/directory";
+import { CredentialDialog } from "../../components/CredentialDialog";
 import { Icon } from "../../components/icons";
-import { Modal, TAG_COLORS, TagDot, tagStyle, usePrompt, useToast } from "../../components/ui";
+import {
+  ErrorBox,
+  Modal,
+  TAG_COLORS,
+  TagDot,
+  tagStyle,
+  usePrompt,
+  useToast,
+} from "../../components/ui";
 import { buildTree, canMoveFolder, flattenTree } from "../../lib/folders";
+import { prefillUsername } from "../../lib/unlock";
+import { sealForDevice } from "../../lib/unlockSeal";
 
 export const NOTES_MAX = 4000;
 
@@ -16,7 +28,8 @@ type DialogReq =
   | { kind: "tags"; ids: string[] }
   | { kind: "notes"; id: string }
   | { kind: "tag"; tag: Tag | null }
-  | { kind: "moveFolder"; folder: Folder };
+  | { kind: "moveFolder"; folder: Folder }
+  | { kind: "credential"; device: Device; onChange?: (saved: SavedCredential | null) => void };
 
 const Ctx = createContext<(r: DialogReq) => void>(() => undefined);
 
@@ -34,6 +47,9 @@ export function DeviceDialogs({ children }: { children: ReactNode }) {
       {req?.kind === "notes" && <NotesDialog id={req.id} onClose={close} />}
       {req?.kind === "tag" && <TagDialog tag={req.tag} onClose={close} />}
       {req?.kind === "moveFolder" && <MoveFolderDialog folder={req.folder} onClose={close} />}
+      {req?.kind === "credential" && (
+        <DeviceCredentialDialog device={req.device} onChange={req.onChange} onClose={close} />
+      )}
     </Ctx.Provider>
   );
 }
@@ -444,5 +460,73 @@ function TagDialog({ tag, onClose }: { tag: Tag | null; onClose: () => void }) {
         )}
       </div>
     </Modal>
+  );
+}
+
+/** Saved sign-in from the dashboard or the device page (sealed with the unlock key a session uploaded). */
+function DeviceCredentialDialog({
+  device: d,
+  onChange,
+  onClose,
+}: {
+  device: Device;
+  onChange?: (saved: SavedCredential | null) => void;
+  onClose: () => void;
+}) {
+  const user = useUser();
+  const toast = useToast();
+  const [state, setState] = useState<Awaited<ReturnType<typeof api.devices.credential>> | null>(
+    null,
+  );
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    api.devices
+      .credential(d.id)
+      .then(setState)
+      .catch((e: unknown) => setError(errorMessage(e)));
+  }, [d.id]);
+
+  if (error)
+    return (
+      <Modal title={`Sign-in for ${d.name}`} onClose={onClose}>
+        <ErrorBox error={error} />
+      </Modal>
+    );
+  if (!state) return null;
+  const unlockKey = state.unlock_key;
+  return (
+    <CredentialDialog
+      deviceName={d.name}
+      initialUsername={prefillUsername(state.credential?.username, d.info?.user)}
+      saved={!!state.credential}
+      unavailable={
+        unlockKey
+          ? null
+          : `Open a session to ${d.name} once (its agent needs version 0.5.0 or later), then its sign-in can be saved here.`
+      }
+      onSave={async (username, password) => {
+        if (!unlockKey) return;
+        const sealed = await sealForDevice({
+          deviceId: d.id,
+          deviceName: d.name,
+          devicePublicKey: d.public_key,
+          unlockKey,
+          userId: user.id,
+          username,
+          password,
+        });
+        const { credential } = await api.devices.saveCredential(d.id, username, sealed);
+        onChange?.(credential);
+        toast(`Sign-in saved for ${d.name}`, "success");
+        onClose();
+      }}
+      onRemove={async () => {
+        await api.devices.removeCredential(d.id);
+        onChange?.(null);
+        toast(`Sign-in removed from ${d.name}`);
+        onClose();
+      }}
+      onClose={onClose}
+    />
   );
 }

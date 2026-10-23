@@ -43,11 +43,12 @@ To try a session:
   - Every transfer is shown on the device (tray, macOS notification, demo console) and written to the audit log as `file.*` events.
   - The agent's own data directory is never accessible. On Windows, file operations impersonate the signed-in user and are refused when nobody is signed in.
   - On the demo device, `/home/device/Downloads` lives in the container, so recreating the container empties it.
-- **Saved sign-in** (key button, or the bar shown while the device is locked; macOS and Windows agents from 0.5.0):
+- **Saved sign-in** (key button in a session, the bar shown while the device is locked, **Saved sign-in…** in a device card's ⋯ menu, or the device page; macOS and Windows agents from 0.5.0):
   - Save a device's username and password once. Opening a session to that device while it is locked types the password and unlocks it.
   - When nothing is saved, opening a locked device offers the form. The username starts as the device's signed-in user, and the offer can be turned off per device.
   - The browser encrypts the password to a key only that device holds, and signs it with its own browser key. The server stores what it cannot read, so the credential works from any browser of the account.
   - The device types the password only on its own lock or sign-in screen, and only if the browser that saved it is one it approved for that user. Revoking that browser deletes what it saved.
+  - Saving from the dashboard or the device page needs one session from that browser after the agent runs 0.5.0. The session pins the device and uploads its signed unlock key.
   - It tries once per lock. If the device is still locked 15 s later, the bar says the saved password may be wrong. Save a new one, or type it yourself.
 
 `make down` stops the stack, `make clean` also deletes its volumes, and `make logs` follows the logs.

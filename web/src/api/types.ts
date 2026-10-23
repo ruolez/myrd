@@ -186,6 +186,9 @@ export type SavedCredential = {
   updated_at: string;
 };
 
+/** A device's unlock key as the server keeps it: SPKI and the device key's signature (base64). */
+export type SignedUnlockKey = { public_key: string; signature: string };
+
 export type ClientKey = {
   id: ClientKeyId;
   label: string;

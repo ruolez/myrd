@@ -271,6 +271,7 @@ func (a *App) Router() http.Handler {
 			r.Get("/devices/{id}/credential", a.h(a.getCredential))
 			r.Put("/devices/{id}/credential", a.h(a.putCredential))
 			r.Delete("/devices/{id}/credential", a.h(a.deleteCredential))
+			r.Put("/devices/{id}/unlock-key", a.h(a.putUnlockKey))
 			r.Post("/devices/{id}/update", a.h(a.updateDevice))
 			r.Post("/devices/bulk", a.h(a.bulkDevices))
 			r.Get("/folders", a.h(a.listFolders))

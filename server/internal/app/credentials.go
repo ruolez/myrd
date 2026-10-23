@@ -23,7 +23,45 @@ func (a *App) getCredential(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"credential": c})
+	uk, err := store.DeviceUnlockKey(r.Context(), a.pool, d.ID)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"credential": c, "unlock_key": uk})
+	return nil
+}
+
+// putUnlockKey keeps the unlock key a browser received in a session, once
+// the device key's signature over it verifies, so sign-ins can be saved from
+// the dashboard.
+func (a *App) putUnlockKey(w http.ResponseWriter, r *http.Request) error {
+	d, err := a.ownDevice(r)
+	if err != nil {
+		return err
+	}
+	var body struct {
+		PublicKey string `json:"public_key"`
+		Signature string `json:"signature"`
+	}
+	if err := decode(r, &body); err != nil {
+		return err
+	}
+	der, err1 := base64.StdEncoding.DecodeString(body.PublicKey)
+	sig, err2 := base64.StdEncoding.DecodeString(body.Signature)
+	if errors.Join(err1, err2) != nil {
+		return errf(http.StatusBadRequest, "bad_request", "public_key and signature must be base64")
+	}
+	if _, err := proto.ParsePreviewKey(der); err != nil {
+		return errf(http.StatusBadRequest, "bad_request", "public_key must be a P-256 SPKI key")
+	}
+	devPub := base64.StdEncoding.EncodeToString(d.PublicKey)
+	if proto.VerifyDeviceSig(devPub, body.Signature, proto.UnlockKeyMessage(proto.SPKIHash(der))) != nil {
+		return errf(http.StatusBadRequest, "bad_signature", "the device key did not sign this unlock key")
+	}
+	if err := store.SetDeviceUnlockKey(r.Context(), a.pool, d.ID, store.UnlockKey{PublicKey: der, Signature: sig}); err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{})
 	return nil
 }
 

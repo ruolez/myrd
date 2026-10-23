@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   askToSave,
   autoUnlockAction,
+  canSaveSignIn,
   prefillUsername,
   setAskToSave,
   unlockFailure,
@@ -44,6 +45,16 @@ describe("autoUnlockAction", () => {
     ["the user turned the offer off for this device", { askToSave: false }],
   ])("does not offer to save when %s", (_name, patch) => {
     expect(autoUnlockAction({ ...lockedWithSaved, saved: false, ...patch })).toBeNull();
+  });
+});
+
+describe("canSaveSignIn", () => {
+  test.each([
+    ["darwin", true],
+    ["windows", true],
+    ["linux", false],
+  ])("%s → %s", (os, want) => {
+    expect(canSaveSignIn({ os })).toBe(want);
   });
 });
 

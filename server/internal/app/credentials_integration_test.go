@@ -2,6 +2,7 @@ package app
 
 import (
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
@@ -167,5 +168,43 @@ func TestRevokingABrowserDropsTheCredentialsItSaved(t *testing.T) {
 	}
 	if st := e.call(owner, "PUT", path, map[string]any{"username": "alice", "sealed": b.seal(t, ag, me.User.ID, "pw")}, nil); st != 400 {
 		t.Fatalf("a revoked browser saved a credential: %d", st)
+	}
+}
+
+func TestUnlockKeyIsKeptOnlyWhenTheDeviceSignedIt(t *testing.T) {
+	e := newEnv(t)
+	owner := e.login(adminEmail, adminPass)
+	ag := e.enroll(owner)
+	other := e.enroll(owner)
+	path := "/v1/devices/" + ag.id
+	signed := func(dev *fakeAgent, signer *fakeAgent) map[string]string {
+		uk, _ := proto.DeriveUnlockKey(dev.priv)
+		spki, _ := proto.UnlockKeySPKI(uk)
+		sig := ed25519.Sign(signer.priv, proto.UnlockKeyMessage(proto.SPKIHash(spki)))
+		return map[string]string{"public_key": base64.StdEncoding.EncodeToString(spki), "signature": base64.StdEncoding.EncodeToString(sig)}
+	}
+	var got struct {
+		UnlockKey *struct {
+			PublicKey string `json:"public_key"`
+			Signature string `json:"signature"`
+		} `json:"unlock_key"`
+	}
+	if e.call(owner, "GET", path+"/credential", nil, &got); got.UnlockKey != nil {
+		t.Fatal("an unlock key before any browser uploaded one")
+	}
+	if st := e.call(owner, "PUT", path+"/unlock-key", signed(other, other), nil); st != 400 {
+		t.Fatalf("another device's signed key accepted: %d", st)
+	}
+	want := signed(ag, ag)
+	if st := e.call(owner, "PUT", path+"/unlock-key", want, nil); st != 200 {
+		t.Fatalf("upload: %d", st)
+	}
+	if e.call(owner, "GET", path+"/credential", nil, &got); got.UnlockKey == nil ||
+		got.UnlockKey.PublicKey != want["public_key"] || got.UnlockKey.Signature != want["signature"] {
+		t.Fatalf("read back %+v", got.UnlockKey)
+	}
+	stranger := e.createUser(owner, "eve@example.com")
+	if st := e.call(stranger, "PUT", path+"/unlock-key", want, nil); st != 404 {
+		t.Fatalf("another account set the unlock key: %d", st)
 	}
 }

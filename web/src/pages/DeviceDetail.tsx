@@ -1,7 +1,7 @@
-import { Fragment, useCallback, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { api, errorMessage } from "../api/client";
-import type { Device, DevicePatch } from "../api/types";
+import type { Device, DevicePatch, SavedCredential } from "../api/types";
 import { useAuth } from "../app/auth";
 import { useDirectory } from "../app/directory";
 import {
@@ -36,6 +36,7 @@ import {
   memSeverity,
 } from "../lib/health";
 import { useAsync, useNow, usePaged } from "../lib/hooks";
+import { canSaveSignIn } from "../lib/unlock";
 import { updateBadge } from "../lib/update";
 import { NOTES_MAX, useOrgDialog } from "./devices/dialogs";
 
@@ -234,6 +235,7 @@ export function DeviceDetail() {
               />
             </div>
           )}
+          {canSaveSignIn(d) && <SavedSignInRow device={d} />}
           <div>
             <div className="mb-2 text-sm font-medium">Approved browsers</div>
             {d.pinned_clients && d.pinned_clients.length > 0 ? (
@@ -469,6 +471,44 @@ function HealthCard({ device: d }: { device: Device }) {
         </div>
       </div>
     </section>
+  );
+}
+
+/** Whether a sign-in is saved for unlocking the device, and a way to change it. */
+function SavedSignInRow({ device: d }: { device: Device }) {
+  const dialog = useOrgDialog();
+  const [saved, setSaved] = useState<SavedCredential | null | undefined>(undefined);
+  useEffect(() => {
+    let stale = false;
+    api.devices
+      .credential(d.id)
+      .then((r) => !stale && setSaved(r.credential))
+      .catch(() => !stale && setSaved(null));
+    return () => {
+      stale = true;
+    };
+  }, [d.id]);
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <div>
+        <div className="text-sm font-medium">Saved sign-in</div>
+        <p className="text-sm text-muted">
+          {saved
+            ? `Saved${saved.username ? ` for ${saved.username}` : ""}, ${timeAgo(saved.updated_at)}. `
+            : ""}
+          Opening a session while the device is locked types this password on its lock screen. Only
+          the device can read it.
+        </p>
+      </div>
+      <button
+        className="btn-tonal btn-sm shrink-0"
+        disabled={saved === undefined}
+        onClick={() => dialog({ kind: "credential", device: d, onChange: setSaved })}
+      >
+        <Icon name="key" size={16} />
+        {saved ? "Edit" : "Save…"}
+      </button>
+    </div>
   );
 }
 

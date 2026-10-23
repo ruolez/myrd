@@ -1,6 +1,7 @@
 // One controller session: signaling → RTCPeerConnection → data channels.
 // Media flows P2P; the server only forwards signed SDP blobs (PROTOCOL §3–5).
 
+import { api } from "../api/client";
 import type { ICEServer, Monitor, UserId } from "../api/types";
 import { ensureClientKey, signFingerprint } from "../lib/clientKey";
 import { checkDevicePin, pinDevice, verifyDeviceSignature } from "../lib/devicePins";
@@ -872,7 +873,11 @@ export class RemoteSession {
 
   private async checkUnlockKey(spki: string, sig: string) {
     const unlockKey = await verifyUnlockKey(this.devicePublicKey, spki, sig);
-    if (!this.ended) this.update({ unlockKey });
+    if (this.ended) return;
+    this.update({ unlockKey });
+    // So sign-ins can be saved from the dashboard too (the server checks the signature).
+    if (unlockKey)
+      void api.devices.setUnlockKey(this.opts.deviceId, spki, sig).catch(() => undefined);
   }
 
   /** Seals a username and password for this device, signed by this browser. */
