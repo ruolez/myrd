@@ -770,10 +770,12 @@ func (p *mediaPipe) setControlChannel(dc *webrtc.DataChannel) {
 	p.locked = locked
 	p.mu.Unlock()
 	perm := p.b.Permissions()
-	p.sendControl(map[string]any{"t": "hello", "monitors": mons, "active": active, "encoder": enc,
+	hello := map[string]any{"t": "hello", "monitors": mons, "active": active, "encoder": enc,
 		"codec": "h264", "fps": plan.FPS, "max_fps": maxFPS, "features": helloFeatures(p.s.m.o, p.canHideWP),
 		"permissions":   proto.Permissions{Screen: perm.Screen, Input: perm.Input},
-		"agent_version": p.s.m.o.AgentVersion, "os": runtime.GOOS, "locked": locked})
+		"agent_version": p.s.m.o.AgentVersion, "os": runtime.GOOS, "locked": locked}
+	p.s.m.helloUnlock(hello)
+	p.sendControl(hello)
 	p.sendStreamState(true)
 }
 
@@ -832,6 +834,8 @@ func (p *mediaPipe) onControlText(b []byte) {
 			return
 		}
 		p.setStream(SettingsFromRequest(r), r.Background, r.Wallpaper, r.ID, true)
+	case "unlock":
+		p.s.onUnlock(b)
 	}
 }
 

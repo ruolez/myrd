@@ -43,6 +43,12 @@ To try a session:
   - Every transfer is shown on the device (tray, macOS notification, demo console) and written to the audit log as `file.*` events.
   - The agent's own data directory is never accessible. On Windows, file operations impersonate the signed-in user and are refused when nobody is signed in.
   - On the demo device, `/home/device/Downloads` lives in the container, so recreating the container empties it.
+- **Saved sign-in** (key button, or the bar shown while the device is locked; macOS and Windows agents from 0.5.0):
+  - Save a device's username and password once. Opening a session to that device while it is locked types the password and unlocks it.
+  - When nothing is saved, opening a locked device offers the form. The username starts as the device's signed-in user, and the offer can be turned off per device.
+  - The browser encrypts the password to a key only that device holds, and signs it with its own browser key. The server stores what it cannot read, so the credential works from any browser of the account.
+  - The device types the password only on its own lock or sign-in screen, and only if the browser that saved it is one it approved for that user. Revoking that browser deletes what it saved.
+  - It tries once per lock. If the device is still locked 15 s later, the bar says the saved password may be wrong. Save a new one, or type it yourself.
 
 `make down` stops the stack, `make clean` also deletes its volumes, and `make logs` follows the logs.
 
@@ -206,6 +212,7 @@ Ports: 80/443 tcp+udp, 3478 tcp+udp, 5349/tcp, and 49152–65535/udp for the TUR
 - Auto-update has not run on real hardware yet. Still to verify: the macOS root helper, keeping grants with the self-signed identity, detached `msiexec` surviving the Windows service stop, and rollback on both.
 - Email alerts on login and new devices are not implemented; those events are only audited. (TOTP codes are single-use: the accepted time step is stored per user.)
 - Passkey ceremonies are implemented on both sides but were not exercised with a real authenticator.
+- Saved sign-in has not run on a real lock screen yet. To verify: Windows Ctrl+Alt+Delete then typing into LogonUI (text input as `KEYEVENTF_UNICODE`), the macOS lock screen, and FileVault pre-boot (not supported: the agent is not running there).
 - PNG clipboard is ignored; text clipboard works both ways.
 - File transfer: no folder transfer, resume, or delete/rename on the device. It has not been tried on a real Windows PC (impersonation), and the macOS privacy-prompt handling is untested.
 - The Linux x264 backend keeps a constant-rate setup. Variable-frame-rate input corrupted frames on the demo device, so the agent instead enforces a keyframe at least every 2 s.

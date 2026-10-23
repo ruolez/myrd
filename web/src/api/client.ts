@@ -15,6 +15,7 @@ import type {
   Page,
   Release,
   ReleaseId,
+  SavedCredential,
   ReleaseOS,
   Session,
   Tag,
@@ -23,6 +24,7 @@ import type {
 } from "./types";
 
 import type { SealedPreview } from "../lib/previewCrypto";
+import type { SealedCredential } from "../lib/unlockCrypto";
 
 export class ApiError extends Error {
   constructor(
@@ -206,6 +208,14 @@ export const api = {
         devicesOf,
       ),
     remove: (id: string) => request<object>("DELETE", `/v1/devices/${id}`),
+    credential: (id: string) =>
+      request<{ credential: SavedCredential | null }>("GET", `/v1/devices/${id}/credential`),
+    saveCredential: (id: string, username: string, sealed: SealedCredential) =>
+      request<{ credential: SavedCredential }>("PUT", `/v1/devices/${id}/credential`, {
+        username,
+        sealed,
+      }),
+    removeCredential: (id: string) => request<object>("DELETE", `/v1/devices/${id}/credential`),
     requestUpdate: (id: string, force: boolean) =>
       request<{ version: string }>("POST", `/v1/devices/${id}/update`, { force }),
     enrollToken: () =>

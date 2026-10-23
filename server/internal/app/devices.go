@@ -91,6 +91,9 @@ func (a *App) revokeClientKey(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	if err := store.DeleteCredentialsOfClientKey(r.Context(), a.pool, k.ID); err != nil {
+		return err
+	}
 	a.hub.PushKeyRevoked(u.ID, k.PublicKey)
 	a.audit(r.Context(), store.Audit{Actor: "user", Event: "client_key.revoked", UserID: u.ID, IP: a.clientIP(r),
 		Meta: map[string]any{"client_key_id": k.ID, "label": k.Label}})

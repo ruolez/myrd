@@ -21,6 +21,8 @@ import {
 import type { CursorMessage } from "../lib/input";
 import type { SentMove } from "../lib/cursor";
 import { signaling } from "../lib/signaling";
+import { sealCredential, verifyUnlockKey } from "../lib/unlockCrypto";
+import type { SealedCredential, UnlockKey } from "../lib/unlockCrypto";
 import type { SignalMessage } from "../lib/signaling";
 import {
   encodeStreamRequest,
@@ -92,6 +94,8 @@ export type Snapshot = {
   permissions: { screen: boolean; input: boolean } | null;
   /** The device shows its unlock screen (hello `locked`, then `screen`). */
   locked: boolean;
+  /** The device's unlock key, signed by its pinned key: it can type a saved password (feature `unlock`). */
+  unlockKey: UnlockKey | null;
   /** Not the session in view: streams at background quality (setBackground). */
   background: boolean;
   streamPrefs: StreamPrefs;
@@ -136,6 +140,10 @@ const emptyStats: HudStats = {
 };
 
 const STREAM_DEBOUNCE_MS = 200;
+// Typing a password takes the device a few seconds (Windows raises its sign-in box first).
+const UNLOCK_TIMEOUT_MS = 30_000;
+
+export type UnlockResult = { ok: boolean; code: string | null };
 // Stats in the background feed only thumbnails and the HUD of a hidden pane.
 const BACKGROUND_STATS_EVERY = 5;
 // Cursor shapes kept to replay to a newly mounted cursor layer (the agent
@@ -225,6 +233,8 @@ export class RemoteSession {
   private lastInbound: { ts: number; bytes: number; lost: number; recv: number } | null = null;
   private pingId = 0;
   private pings = new Map<number, number>();
+  private unlockReqId = 0;
+  private unlocks = new Map<number, (r: UnlockResult) => void>();
   private clipboard = new ClipboardAssembler();
   private clipXfer = 1;
   private ended = false;
@@ -251,6 +261,7 @@ export class RemoteSession {
       agentVersion: null,
       permissions: null,
       locked: false,
+      unlockKey: null,
       background: false,
       streamPrefs: loadStreamPrefs(opts.deviceId),
       streamState: null,
@@ -666,6 +677,8 @@ export class RemoteSession {
         });
         this.applyStream();
         this.refreshFiles();
+        if (features?.includes("unlock") && typeof m.unlock_key === "string")
+          void this.checkUnlockKey(m.unlock_key, String(m.unlock_key_sig));
         break;
       }
       case "monitor": {
@@ -686,6 +699,12 @@ export class RemoteSession {
       case "screen":
         this.update({ locked: m.locked === true });
         break;
+      case "unlock": {
+        const done = this.unlocks.get(m.id as number);
+        this.unlocks.delete(m.id as number);
+        done?.({ ok: m.ok === true, code: typeof m.code === "string" ? m.code : null });
+        break;
+      }
       case "stream": {
         const state = parseStreamState(m);
         if (state) this.update({ streamState: state, maxFps: state.max_fps });
@@ -851,7 +870,46 @@ export class RemoteSession {
     });
   }
 
+  private async checkUnlockKey(spki: string, sig: string) {
+    const unlockKey = await verifyUnlockKey(this.devicePublicKey, spki, sig);
+    if (!this.ended) this.update({ unlockKey });
+  }
+
+  /** Seals a username and password for this device, signed by this browser. */
+  async sealCredential(username: string, password: string): Promise<SealedCredential> {
+    const unlockKey = this.snap.unlockKey;
+    if (!unlockKey || !this.clientKey) throw new Error("This device cannot unlock itself.");
+    return sealCredential({
+      unlockKey,
+      clientSpki: this.clientKey.spki,
+      clientKey: this.clientKey.keyPair.privateKey,
+      userId: this.opts.userId,
+      username,
+      password,
+    });
+  }
+
+  /** Asks the device to type a saved password on its lock screen. */
+  unlock(credential: SealedCredential): Promise<UnlockResult> {
+    const control = this.control;
+    if (control?.readyState !== "open") return Promise.resolve({ ok: false, code: "ended" });
+    const id = ++this.unlockReqId;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.unlocks.delete(id);
+        resolve({ ok: false, code: "timeout" });
+      }, UNLOCK_TIMEOUT_MS);
+      this.unlocks.set(id, (r) => {
+        clearTimeout(timer);
+        resolve(r);
+      });
+      control.send(JSON.stringify({ t: "unlock", id, credential }));
+    });
+  }
+
   private cleanup() {
+    for (const done of this.unlocks.values()) done({ ok: false, code: "ended" });
+    this.unlocks.clear();
     if (this.streamTimer) clearTimeout(this.streamTimer);
     this.streamTimer = null;
     this.fileChannel?.dispose("session_ended");

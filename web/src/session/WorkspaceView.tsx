@@ -207,6 +207,7 @@ export function WorkspaceView() {
             key={`${x}:${e.gen}`}
             session={session}
             name={nameOf(x)}
+            consoleUser={devices.find((d) => d.id === x)?.info?.user ?? null}
             focused={x === st.focused}
             forceRelay={e.forceRelay}
             fullscreen={fullscreen}

@@ -4,7 +4,10 @@
 package session
 
 import (
+	"context"
+	"crypto/ecdh"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net"
@@ -44,6 +47,10 @@ type Options struct {
 	// ignores that chord as injected keys (the helper asks the service, which
 	// may call SendSAS). nil = the keys are injected like any other.
 	SecureAttention func()
+	// UnlockOS enables saved sign-in (control `unlock`): the OS whose lock
+	// screen the backend reports and types into ("darwin", "windows"). Empty
+	// disables it.
+	UnlockOS string
 
 	// Network: UDPPort > 0 multiplexes ICE on one UDP port; NAT1To1IPs adds
 	// extra host candidates with those IPs (Docker Desktop: 127.0.0.1).
@@ -86,6 +93,13 @@ type Manager struct {
 
 	audit *fileAudit // nil without Files
 
+	// Saved sign-in: the unlock key derived from DeviceKey, its SPKI and the
+	// device key's signature over it (nil without Options.UnlockOS).
+	unlockKey  *ecdh.PrivateKey
+	unlockSPKI []byte
+	unlockSig  string
+	sleep      func(context.Context, time.Duration) bool
+
 	mu      sync.Mutex
 	cur     *sess
 	revoked map[string]bool // SPKI b64
@@ -115,7 +129,19 @@ func NewManager(o Options) (*Manager, error) {
 	if o.AskNewBrowsers == nil {
 		o.AskNewBrowsers = func() bool { return false }
 	}
-	m := &Manager{o: o, revoked: map[string]bool{}}
+	m := &Manager{o: o, revoked: map[string]bool{}, sleep: sleepCtx}
+	if o.UnlockOS != "" {
+		k, err := proto.DeriveUnlockKey(o.DeviceKey)
+		if err != nil {
+			return nil, err
+		}
+		spki, err := proto.UnlockKeySPKI(k)
+		if err != nil {
+			return nil, err
+		}
+		m.unlockKey, m.unlockSPKI = k, spki
+		m.unlockSig = base64.StdEncoding.EncodeToString(ed25519.Sign(o.DeviceKey, proto.UnlockKeyMessage(proto.SPKIHash(spki))))
+	}
 	if o.Files != nil {
 		m.audit = newFileAudit(o.Send, o.Log)
 		go m.audit.run()

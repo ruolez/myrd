@@ -97,7 +97,7 @@ Rate limit: 10 failed attempts / 15 min per IP and per email → 429.
 |---|---|---|
 | GET | `/v1/client-keys` | → `{items:[ClientKey]}` |
 | POST | `/v1/client-keys` | `{public_key: b64 SPKI P-256, label}` → `{client_key}` (idempotent on public_key for the same user) |
-| DELETE | `/v1/client-keys/{id}` | revoke → `{}`; server pushes `client_key.revoked` to the user's online agents |
+| DELETE | `/v1/client-keys/{id}` | revoke → `{}`; server pushes `client_key.revoked` to the user's online agents and deletes the sign-ins that key saved (§4.2) |
 | PUT | `/v1/client-keys/{id}/preview-key` | `{public_key: b64 SPKI ECDH P-256, signature: b64 P1363 by the client key over PreviewKeyMessage}` → `{client_key}` (§4.1). 400 `bad_signature`; a different key drops the previews sealed to the old one |
 | GET | `/v1/previews?client_key_id=&device_ids=a,b` | → `{items:[preview]}`: the latest stored preview of each listed device of the caller (≤ 100) sealed to that browser key's current preview key; empty while the admin setting is off |
 
@@ -117,6 +117,9 @@ Rate limit: 10 failed attempts / 15 min per IP and per email → 429.
 | PATCH | `/v1/tags/{id}` | `{name?, color?}` → `{tag}` |
 | DELETE | `/v1/tags/{id}` | → `{}`; removed from every device |
 | DELETE | `/v1/devices/{id}` | → `{}`; marks removed, closes its socket, agent auth refused afterwards |
+| GET | `/v1/devices/{id}/credential` | → `{credential: {client_key_id, username, sealed: SealedCredential, updated_at} \| null}`: the caller's saved sign-in for the device (§4.2) |
+| PUT | `/v1/devices/{id}/credential` | `{username (≤ 256 chars), sealed: SealedCredential}` → `{credential}`; replaces the caller's saved sign-in. 400 when `sealed` is malformed (eph_pub 65 bytes, iv 12, sig 64, unlock_key a SHA-256 hex, ciphertext 17..2112 bytes) or `client_key` is not a live client key of the caller. Audited `device.credential.saved` (meta: client_key_id, label) |
+| DELETE | `/v1/devices/{id}/credential` | → `{}`; audited `device.credential.removed` when one was saved |
 | POST | `/v1/devices/{id}/update` | `{force?:bool}` → 202 `{version}`; sends `update.check{explicit:true,force}`. 409 `device_offline` \| `up_to_date` \| `unsupported` (Linux demo). Audited `agent.update.requested` |
 | POST | `/v1/enroll-tokens` | `{}` → `{token:"XXXX-XXXX", expires_at}` (charset `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`, 15 min, single use, stored hashed) |
 | GET | `/v1/sessions?device_id=&limit=&before=` | → paged `Session` |
@@ -244,7 +247,7 @@ HostInfo { "os_name":"macOS","os_version":"15.1","os_build":"24B83",
            "disks":[{"name","mount","fs","total","free"}] }   // ≤ 32; free = available to the user
 ```
 
-Sources: macOS sysctl, Mach host statistics (used = app + wired + compressed), CGEventSource idle time, SCDynamicStore console user, the startup volume and local volumes under `/Volumes`. Windows: registry `CurrentVersion` (ProductName shows Windows 11 from build 22000), GetSystemTimes, GlobalMemoryStatusEx, fixed drives with a letter; the console user, idle time and lock state (input desktop other than `Default`) come from the session helper, and the service drops the helper's reports when the server did not list the feature. Linux (demo device): /proc and statfs; no user, idle or lock. The server truncates text to 128 characters, clamps numbers and keeps at most 32 disks with a size.
+Sources: macOS sysctl, Mach host statistics (used = app + wired + compressed), CGEventSource idle time, SCDynamicStore console user, the startup volume and local volumes under `/Volumes`. Windows: registry `CurrentVersion` (ProductName shows Windows 11 from build 22000), GetSystemTimes, GlobalMemoryStatusEx, fixed drives with a letter; the console user, idle time and lock state (input desktop other than `Default` with LogonUI running in the session, so a UAC prompt is not a lock) come from the session helper, and the service drops the helper's reports when the server did not list the feature. Linux (demo device): /proc and statfs; no user, idle or lock. The server truncates text to 128 characters, clamps numbers and keeps at most 32 disks with a size.
 
 ### Screen previews (feature `preview`)
 
@@ -294,6 +297,23 @@ Browser                        Server                                  Agent
 - **Signature**: Ed25519 by the device key over `header + "\n" + hex(sha256(ciphertext))`.
 - **Open (browser)**: rebuild the header, verify the signature with the device key this browser pinned, then decrypt. The signature binds the device (the server cannot show one device's screen on another's tile) and `captured_at_ms` (it cannot pass an old picture off as new; it can only withhold new ones). Decrypting alone proves nothing: anyone who knows the preview key's public half can encrypt to it.
 - Vectors: `preview` in `docs/test-vectors.json` (fixed keys, the expected header, ciphertext and signature, and cases that must fail); `proto/preview.go` implements both sides for Go, `web/src/lib/previewCrypto.ts` the browser's.
+
+### 4.2 Saved sign-in (feature `"unlock"`)
+
+A user can save a device's sign-in so that opening a session on its lock screen unlocks it. Only the device can read the password, and it types the password only on its own lock screen.
+
+- **Unlock key (device).** An ECDH P-256 key derived from the Ed25519 device key: the scalar is HKDF-SHA256(secret = the 32-byte Ed25519 seed, no salt, info = `"remotectl-unlock-key-v1"`, 32 bytes). If that scalar is out of range (it practically never is), the info gets `"\n1"`, `"\n2"`, … appended. The key needs no storage, survives restarts and updates, and changes when the device re-enrolls. The control `hello` carries its SPKI (`unlock_key`, base64 DER) and `unlock_key_sig` = Ed25519 by the device key over `UnlockKeyMessage = "remotectl-unlock-key-v1\n" + uk_sha`, where `uk_sha` is the lowercase hex SHA-256 of that SPKI. The browser accepts the key only when the signature verifies with the device key it pinned (§4).
+- **Seal (browser).** An ephemeral P-256 key; `shared` = ECDH(ephemeral, unlock key) (32 bytes); `key` = HKDF-SHA256(`shared`, salt = the 65-byte uncompressed ephemeral public key, info = `"remotectl-unlock-v1\n" + user_id + "\n" + ck_sha + "\n" + uk_sha`, 32 bytes). `ck_sha` is the SPKIHash of the browser's client key, and `user_id` is the signed-in user's lowercase id. `ciphertext` = AES-256-GCM(`key`, 12-byte random `iv`, plaintext = UTF-8 JSON `{"username","password"}`, additional data = the header), with the 16-byte tag appended. The username and password are each at most 256 characters, and the password is not empty.
+- **Header**: one line each, no trailing newline: `remotectl-unlock-v1`, user_id, ck_sha, uk_sha, base64(eph_pub), base64(iv).
+- **Signature**: ECDSA P-256/SHA-256 (P1363) by the client key over `header + "\n" + hex(sha256(ciphertext))`.
+- `SealedCredential = {client_key (b64 SPKI of the signing client key), unlock_key (uk_sha), eph_pub, iv, ciphertext, sig}` (base64 std). The server stores it per device and user with the username in clear (`PUT /v1/devices/{id}/credential`). It can read neither the password nor make a credential the device accepts.
+- **Unlock (agent, control `unlock`).** The agent refuses the request when the screen is not locked (`not_locked`), when `client_key` is not pinned on the device for the session's user or is revoked (`untrusted`; the account trust of §4 is not enough), or when `unlock_key` is not its own (`stale_key`). It also refuses a credential whose signature or decryption fails for the session's user id (`bad_credential`). It allows one unlock at a time (`busy`) and at most one every 5 s per session (`too_soon`). It then types the password, one character every 20 ms, as text input:
+  - Windows: secure attention (as for Ctrl+Alt+Delete, §5), 2 s for the sign-in box, Ctrl+A, the password, Enter.
+  - macOS: Shift (wakes the password field), 1 s, Cmd+A, the password, Return.
+
+  The agent checks the lock again just before typing, and types nothing if the screen was unlocked meanwhile.
+- **Browser.** It fetches the saved credential once the session's unlock key has verified. When the session in view shows its lock screen, it sends the credential once per lock, so a wrong saved password is never retried on its own; a new lock gets a new try. When nothing is saved, it offers the save form once per lock, unless the user turned that off for the device (this browser, localStorage). The username field starts with the saved username, else the device's signed-in user (`device.info.user`). A device still locked 15 s after typing shows "Still locked: the saved password may be wrong".
+- Vectors: `unlock` in `docs/test-vectors.json` (fixed keys, the derived unlock key, the expected header and ciphertext, and cases that must fail); `proto/unlock.go` implements both sides for Go, `web/src/lib/unlockCrypto.ts` the browser's seal.
 
 ## 5. Data channels
 
@@ -351,9 +371,11 @@ JSON text messages, `{"t": "...", ...}`:
 
 | t | dir | fields |
 |---|---|---|
-| `hello` | A→B on open | `monitors:[Monitor]`, `active:index`, `encoder`, `codec:"h264"`, `fps` (current target), `max_fps` (encoder cap), `features:[string]` (`"stream"`, `"move"`, `"files"`, `"wallpaper"`; absent on old agents), `permissions:{screen,input}`, `agent_version`, `os`, `locked` (the device shows its unlock screen; absent on old agents = false) |
+| `hello` | A→B on open | `monitors:[Monitor]`, `active:index`, `encoder`, `codec:"h264"`, `fps` (current target), `max_fps` (encoder cap), `features:[string]` (`"stream"`, `"move"`, `"files"`, `"wallpaper"`, `"unlock"`; absent on old agents), `permissions:{screen,input}`, `agent_version`, `os`, `locked` (the device shows its unlock screen; absent on old agents = false), `unlock_key`, `unlock_key_sig` (with `"unlock"`, §4.2) |
 | `monitor` | A→B | `active:index`, `width`, `height` (native pixels, after a switch) |
-| `screen` | A→B on change | `locked:bool`. Polled once a second. The viewer says the device is locked and that typing the password unlocks it: macOS blanks the unlock screen for ScreenCaptureKit, so while locked the macOS backend captures with CGDisplayStream instead, and every macOS capture wakes the display and keeps it on. Only macOS reports a lock (Windows' secure desktop is the service's) |
+| `screen` | A→B on change | `locked:bool`. Polled once a second. The viewer says the device is locked and that typing the password unlocks it: macOS blanks the unlock screen for ScreenCaptureKit, so while locked the macOS backend captures with CGDisplayStream instead, and every macOS capture wakes the display and keeps it on. Windows (since 0.5.0) reports a lock while the input desktop is the secure one and LogonUI runs in the console session (lock and sign-in screens, not UAC prompts); the Linux demo device never does |
+| `unlock` | B→A | `id` (u32), `credential: SealedCredential`: type the saved password on the lock screen (feature `"unlock"`, §4.2) |
+| `unlock` | A→B | `id`, `ok`, `code` when not ok (`unsupported`, `busy`, `too_soon`, `not_locked`, `untrusted`, `stale_key`, `bad_credential`, `input_failed`). `ok` means the password was typed, not that it was right: the browser watches `screen` |
 | `stream` | B→A | desired stream settings, see below |
 | `stream` | A→B | stream state, see below |
 | `ping` | B→A | `id`, `ts` (ms, browser clock) |

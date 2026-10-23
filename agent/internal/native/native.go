@@ -190,7 +190,7 @@ func (b *Backend) HideWallpaper(hide bool) error {
 	return rcErr(C.rc_wallpaper_hide(v))
 }
 
-func (b *Backend) ScreenLocked() bool { return C.rc_screen_locked() == 1 }
+func (b *Backend) ScreenLocked() bool { return screenLocked() }
 
 func (b *Backend) Snapshot(monitorID uint32, maxW, maxH int) (platform.Image, error) {
 	var img C.rc_image

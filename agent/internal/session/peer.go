@@ -59,10 +59,11 @@ type sess struct {
 	ended        bool
 	started      bool // media pipeline started (first connect)
 
-	media *mediaPipe
-	fec   *fecControl
-	in    *inputState
-	files *files.Service // set when the browser opens the file channel
+	media  *mediaPipe
+	fec    *fecControl
+	in     *inputState
+	files  *files.Service // set when the browser opens the file channel
+	unlock unlockGate
 }
 
 func newSess(m *Manager, o proto.SessionOffer) *sess {

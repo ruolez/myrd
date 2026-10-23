@@ -405,6 +405,7 @@ func RunHelper(o Options) error {
 		OnPinsChanged: func() {
 			link.Send(proto.TypePinsSync, proto.PinsSync{PinnedClientKeys: ps.List()})
 		},
+		UnlockOS: "windows",
 		SecureAttention: func() {
 			if err := link.SAS(); err != nil {
 				o.Log.Warn("winsvc: Ctrl+Alt+Delete not passed to the service", "err", err)
@@ -442,7 +443,7 @@ func RunHelper(o Options) error {
 	// The helper runs in the console session, where the console user, idle
 	// time and lock screen are visible; the service drops these reports when
 	// the server does not take them.
-	collector := &sysinfo.Collector{Locked: sysinfo.InputDesktopLocked}
+	collector := &sysinfo.Collector{Locked: sysinfo.LockScreenShown}
 	info := sysinfo.NewReporter(collector.Collect,
 		func(h proto.HostInfo) error { return link.Send(proto.TypeDeviceInfo, proto.HostInfoReport{Info: h}) },
 		func() bool { return true })

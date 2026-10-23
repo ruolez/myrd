@@ -1,5 +1,7 @@
 // REST object shapes (docs/PROTOCOL.md §1).
 
+import type { SealedCredential } from "../lib/unlockCrypto";
+
 export type Brand<T, B extends string> = T & { readonly __brand: B };
 export type UserId = Brand<string, "UserId">;
 export type DeviceId = Brand<string, "DeviceId">;
@@ -174,6 +176,14 @@ export type AuditEvent = {
   session_id: SessionId | null;
   ip: string | null;
   meta: Record<string, unknown> | null;
+};
+
+/** A saved sign-in for a device; only the device can open `sealed` (PROTOCOL §4.2). */
+export type SavedCredential = {
+  client_key_id: ClientKeyId;
+  username: string;
+  sealed: SealedCredential;
+  updated_at: string;
 };
 
 export type ClientKey = {

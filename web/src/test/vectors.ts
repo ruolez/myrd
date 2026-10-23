@@ -43,6 +43,26 @@ export type PreviewVectors = {
   }[];
 };
 
+export type UnlockVectors = {
+  device_public_key: string;
+  unlock_d_hex: string;
+  unlock_spki: string;
+  uk_sha: string;
+  key_message_utf8: string;
+  key_message_sig: string;
+  client_d_hex: string;
+  client_spki: string;
+  ck_sha: string;
+  user_id: string;
+  eph_d_hex: string;
+  eph_pub: string;
+  iv: string;
+  plaintext_utf8: string;
+  header_utf8: string;
+  ciphertext: string;
+  sig: string;
+};
+
 export type Vectors = {
   input: Vector[];
   input_invalid: { name: string; hex: string }[];
@@ -64,6 +84,7 @@ export type Vectors = {
   file_sha256: { name: string; chunks_hex: string[]; sha256: string }[];
   versions: string[];
   preview: PreviewVectors;
+  unlock: UnlockVectors;
   release: {
     public_key: string;
     key_id: string;

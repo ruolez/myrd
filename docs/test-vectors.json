@@ -171,5 +171,49 @@
         "sig": "SglMNQXCzpiQo+cZUFvEeeLtC8QrTrEHiMkO5h7fMUQYjW4czJBM6PGLNNwp+qsndhnrERRYMl+MMSTazDeLCg=="
       }
     ]
+  },
+  "unlock": {
+    "note": "All keys come from sha256 of a label (see proto/unlock_test.go); the unlock key is derived from the device seed. sig is ECDSA (randomized): verify it, do not compare it. Invalid cases change one field of the valid credential; opening must fail.",
+    "device_seed_hex": "8c9086420df12d528d8bdcdb2ab28e1c13303c0489ed8bede867e6f9f9b7b792",
+    "device_public_key": "D/LsbXPmnNuA2z4jD4yGFmtzSK/ql8cEzn8O3/arJFY=",
+    "unlock_d_hex": "d1d10cf19d7d4f25d65c86d24abf1dea83b37955dc7fd289b9e238c788c73a2d",
+    "unlock_spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE+60w9j8l173Z+ck0vOE6bZGDN0VLZ7SaaLnsNQ4tYNk+xsbQksfDUyoOHMUuz0x74whY+CcICwNrdl2sC2pVTw==",
+    "uk_sha": "1af545daacefad2da06776b4cb562c034e164a8d0b7fb62fe94bb3d706c932ed",
+    "key_message_utf8": "remotectl-unlock-key-v1\n1af545daacefad2da06776b4cb562c034e164a8d0b7fb62fe94bb3d706c932ed",
+    "key_message_sig": "fGX4QnEoo3D99c4FM3TY82Ooa8ZMg13kW0S/Cwxzyum3kqz+ZA2VoDLTuUphKBkiqgN394aSWkxO31n8K8NmAA==",
+    "client_d_hex": "6adc6be3c181cac2817179a543c0acea03c4322e6d9844d86fce9b91d5ddb06a",
+    "client_spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEA2zxKiFEC7vFc2UZJ9M5liON0FINGZONxTBmVyL1WYXHkpCNslTuNfz+bqmLcDNMnumRLBKPuhguVdBifzbg3w==",
+    "ck_sha": "49fdc2820d515240908b7881350a7efcbb44cddd08692e3abee976dbe383ac8e",
+    "user_id": "6d2b8f5e-1c3a-4e7b-9f00-2a4c6e8b0d13",
+    "eph_d_hex": "ce6195bc7fe32008c7bbb45ef4bce606ef8f80736fef421987e8f0c2049ea8f5",
+    "eph_pub": "BJWh9WMoe29MkZPpD+4IjZqX9yi841xCjGgrf2GY3cTiYM0rEE0L7YWWlrBf5CkqtgaSO3gg/v0gT00YP01yles=",
+    "iv": "WOE35FKaMlsp2VHe",
+    "plaintext_utf8": "{\"username\":\"alice\",\"password\":\"correct horse ✓\"}",
+    "key_hex": "2245ec4fc467a71d74aebf61d24b72137412b0c4488c95eb78e77a7547c5985d",
+    "header_utf8": "remotectl-unlock-v1\n6d2b8f5e-1c3a-4e7b-9f00-2a4c6e8b0d13\n49fdc2820d515240908b7881350a7efcbb44cddd08692e3abee976dbe383ac8e\n1af545daacefad2da06776b4cb562c034e164a8d0b7fb62fe94bb3d706c932ed\nBJWh9WMoe29MkZPpD+4IjZqX9yi841xCjGgrf2GY3cTiYM0rEE0L7YWWlrBf5CkqtgaSO3gg/v0gT00YP01yles=\nWOE35FKaMlsp2VHe",
+    "ciphertext": "J6LpKFHs+NE1roJlrW7IAZoZnAHmt6xTlIcRn9mgadBHkdhFWW2fzlD2qgTDbzm9/qA23KDLfqeU/1dG6CucZcet9w==",
+    "sig": "iWFOex+Dr14yeLCBDcoBQhmYImEzuu3noJlZjqpn92e8LGqkgSTmGYHOU5bsbtScnETKE2sK+xZjhS3gPJWzlQ==",
+    "invalid": [
+      {
+        "name": "another user",
+        "user_id": "6d2b8f5e-1c3a-4e7b-9f00-2a4c6e8b0d14"
+      },
+      {
+        "name": "another unlock key",
+        "unlock_key": "d9298a10d1b0735837dc4bd85dac641b0f3cef27a47e5d53a54f2f3f5b2fcffa"
+      },
+      {
+        "name": "a flipped ciphertext byte",
+        "ciphertext": "J6LpaFHs+NE1roJlrW7IAZoZnAHmt6xTlIcRn9mgadBHkdhFWW2fzlD2qgTDbzm9/qA23KDLfqeU/1dG6CucZcet9w=="
+      },
+      {
+        "name": "a truncated tag",
+        "ciphertext": "J6LpKFHs+NE1roJlrW7IAZoZnAHmt6xTlIcRn9mgadBHkdhFWW2fzlD2qgTDbzm9/qA23KDLfqeU/1dG6CucZcet"
+      },
+      {
+        "name": "a flipped signature byte",
+        "sig": "iGFOex+Dr14yeLCBDcoBQhmYImEzuu3noJlZjqpn92e8LGqkgSTmGYHOU5bsbtScnETKE2sK+xZjhS3gPJWzlQ=="
+      }
+    ]
   }
 }

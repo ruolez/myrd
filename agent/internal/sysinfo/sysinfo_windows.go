@@ -161,6 +161,36 @@ func InputDesktopLocked() bool {
 	return !strings.EqualFold(windows.UTF16ToString(name[:]), "Default")
 }
 
+// LockScreenShown reports whether this console session shows its lock or
+// sign-in screen: the secure desktop is up and LogonUI runs in the session.
+// A UAC prompt is on the secure desktop too, but without LogonUI.
+func LockScreenShown() bool {
+	if !InputDesktopLocked() {
+		return false
+	}
+	var own uint32
+	if windows.ProcessIdToSessionId(windows.GetCurrentProcessId(), &own) != nil {
+		return false
+	}
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(snap)
+	var pe windows.ProcessEntry32
+	pe.Size = uint32(unsafe.Sizeof(pe))
+	for err = windows.Process32First(snap, &pe); err == nil; err = windows.Process32Next(snap, &pe) {
+		if !strings.EqualFold(windows.UTF16ToString(pe.ExeFile[:]), "LogonUI.exe") {
+			continue
+		}
+		var sid uint32
+		if windows.ProcessIdToSessionId(pe.ProcessID, &sid) == nil && sid == own {
+			return true
+		}
+	}
+	return false
+}
+
 // disks lists fixed drives with a letter (volumes mounted without a letter
 // are not listed).
 func disks() []proto.DiskInfo {

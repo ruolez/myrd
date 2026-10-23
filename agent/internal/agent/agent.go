@@ -558,6 +558,16 @@ func (a *Agent) enrolledCh() chan struct{} {
 	return a.enrolled
 }
 
+// unlockOS enables saved sign-in where the backend reports the lock screen:
+// macOS (Windows runs sessions in the winsvc helper, the Linux demo device
+// has no lock screen).
+func unlockOS(b platform.Backend) string {
+	if runtime.GOOS == "darwin" && b.Name() != "none" {
+		return runtime.GOOS
+	}
+	return ""
+}
+
 func (a *Agent) runConnected(ctx context.Context) error {
 	key, err := a.ks.Load()
 	if err != nil {
@@ -580,7 +590,8 @@ func (a *Agent) runConnected(ctx context.Context) error {
 			OnSessionChange: func(*session.Info) { a.pushTray() },
 			UDPPort:         a.cfg.Settings.UDPPort, NAT1To1IPs: a.cfg.Settings.NAT1To1IPs,
 			AgentVersion: a.cfg.Version, Log: a.log, // MaxFPS unset: the session follows the live encoder
-			Files: files.LocalHost{}, FileDeny: []string{a.cfg.Settings.DataDir}, OnFileActivity: a.onFileActivity,
+			UnlockOS: unlockOS(a.cfg.Backend),
+			Files:    files.LocalHost{}, FileDeny: []string{a.cfg.Settings.DataDir}, OnFileActivity: a.onFileActivity,
 		})
 		if err != nil {
 			return err

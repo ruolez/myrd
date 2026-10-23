@@ -25,6 +25,7 @@ import { KeysButton } from "./KeysMenu";
 import { END_REASONS } from "./RemoteSession";
 import type { RemoteSession, Snapshot } from "./RemoteSession";
 import { StreamButton, StreamMenu } from "./StreamMenu";
+import { LockedBanner, SignInDialog, useSavedSignIn } from "./SavedSignIn";
 import { useRemoteInput } from "./useRemoteInput";
 
 const HUD_KEY = "remotectl-hud";
@@ -128,6 +129,8 @@ export type PaneProps = {
   session: RemoteSession;
   /** Name from the device list until the session reports its own. */
   name: string;
+  /** The device's signed-in user (device info), to prefill its saved sign-in. */
+  consoleUser: string | null;
   /** The session in view; the others stay mounted (state, cursor) but hidden. */
   focused: boolean;
   forceRelay: boolean;
@@ -149,6 +152,7 @@ export type PaneProps = {
 export function SessionPane({
   session,
   name: listName,
+  consoleUser,
   focused,
   forceRelay,
   fullscreen,
@@ -183,6 +187,7 @@ export function SessionPane({
   sessionRef.current = session;
 
   const snap = useSessionSnap(session);
+  const signIn = useSavedSignIn(session, snap, focused);
 
   // Attach the stream without re-rendering frames through a canvas.
   useEffect(() => {
@@ -445,6 +450,15 @@ export function SessionPane({
             disabled={!live || !files}
             text="Files"
           />
+          {signIn.canUnlock && (
+            <ToolButton
+              label={signIn.saved ? "Saved sign-in" : "Save sign-in for unlocking"}
+              icon="key"
+              active={!!signIn.saved}
+              onClick={signIn.openDialog}
+              disabled={!live || signIn.saved === undefined}
+            />
+          )}
           <ToolButton
             label="Type clipboard as keystrokes"
             icon="paste"
@@ -550,17 +564,14 @@ export function SessionPane({
             </div>
           </div>
         </div>
-        {live && snap?.locked && (
-          <div
-            role="status"
-            className="pointer-events-none absolute bottom-4 left-1/2 z-20 flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-2 rounded-full bg-black/80 px-4 py-2 text-sm text-white shadow-lg"
-          >
-            <Icon name="lock" size={16} />
-            <span>
-              {snap.deviceName} is locked. Click the screen, type its password and press Enter, even
-              if the screen stays black.
-            </span>
-          </div>
+        {live && snap?.locked && <LockedBanner deviceName={snap.deviceName} signIn={signIn} />}
+        {signIn.dialog && snap && (
+          <SignInDialog
+            deviceName={snap.deviceName}
+            consoleUser={consoleUser}
+            signIn={signIn}
+            locked={snap.locked}
+          />
         )}
         {hud && live && snap && (
           <Hud
