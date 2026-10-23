@@ -788,6 +788,9 @@ func (p *mediaPipe) setControlChannel(dc *webrtc.DataChannel) {
 		"permissions":   proto.Permissions{Screen: perm.Screen, Input: perm.Input},
 		"agent_version": p.s.m.o.AgentVersion, "os": runtime.GOOS, "locked": locked}
 	p.s.m.helloUnlock(hello)
+	if acts := powerActions(p.s.m.o); len(acts) > 0 {
+		hello["power"] = acts
+	}
 	p.sendControl(hello)
 	p.sendStreamState(true)
 }
@@ -864,6 +867,8 @@ func (p *mediaPipe) onControlText(b []byte) {
 		p.setStream(SettingsFromRequest(r), r.Background, r.Wallpaper, r.ID, true)
 	case "unlock":
 		p.s.onUnlock(b)
+	case "power":
+		p.s.onPower(b)
 	}
 }
 

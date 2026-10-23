@@ -369,6 +369,8 @@ const (
 	EndAbuse         = "input_abuse"
 	EndAgentUpdate   = "agent_update" // the owner or an admin forced an update
 	EndCaptureFailed = "capture_failed"
+	EndDeviceRestart = "device_restart" // the controller restarted the device (control `power`)
+	EndAgentRestart  = "agent_restart"  // the controller restarted the agent (control `power`)
 )
 
 type SessionEnd struct {

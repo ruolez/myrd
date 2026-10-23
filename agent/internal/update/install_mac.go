@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -42,29 +43,51 @@ func newRequestID() string {
 	return hex.EncodeToString(b)
 }
 
-// drop writes the request as .tmp-<id> and renames it into place, so the
-// daemon never sees a partial file.
+// drop writes the request and hands it to the daemon.
 func (mi *macInstaller) drop(req Request) error {
-	inbox := filepath.Join(mi.updaterDir, "inbox")
-	b, err := json.Marshal(req)
+	commit, err := writeRequest(mi.updaterDir, req)
 	if err != nil {
 		return err
+	}
+	return commit()
+}
+
+// writeRequest writes req into the daemon's inbox as .tmp-<id>, which the
+// daemon ignores; commit renames it into place, so the daemon never sees a
+// partial file.
+func writeRequest(updaterDir string, req Request) (commit func() error, err error) {
+	inbox := filepath.Join(updaterDir, "inbox")
+	b, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
 	}
 	tmp := filepath.Join(inbox, ".tmp-"+req.ID)
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := f.Write(b); err != nil {
 		f.Close()
 		os.Remove(tmp)
-		return err
+		return nil, err
 	}
 	if err := f.Close(); err != nil {
 		os.Remove(tmp)
-		return err
+		return nil, err
 	}
-	return os.Rename(tmp, filepath.Join(inbox, req.ID+".json"))
+	return func() error { return os.Rename(tmp, filepath.Join(inbox, req.ID+".json")) }, nil
+}
+
+// requestRestart asks the daemon under updaterDir to restart the Mac after
+// delay (for the session to end first). The request is written now, so an
+// unusable inbox is an error here, not a silent no-op later.
+func requestRestart(updaterDir string, delay time.Duration) error {
+	commit, err := writeRequest(updaterDir, Request{V: 1, Op: OpRestart, ID: newRequestID()})
+	if err != nil {
+		return fmt.Errorf("the update daemon's inbox is not writable (reinstall the agent): %w", err)
+	}
+	time.AfterFunc(delay, func() { _ = commit() })
+	return nil
 }
 
 func (mi *macInstaller) readStatus() (DaemonStatus, error) {

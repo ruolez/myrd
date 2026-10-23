@@ -16,6 +16,7 @@ import { useUser } from "../../app/auth";
 import { useDirectory } from "../../app/directory";
 import { useWorkspace } from "../../app/workspace";
 import { CredentialDialog } from "../../components/CredentialDialog";
+import { PowerDialog } from "../../components/PowerDialog";
 import { Icon } from "../../components/icons";
 import {
   ErrorBox,
@@ -27,13 +28,16 @@ import {
   useToast,
 } from "../../components/ui";
 import { buildTree, canMoveFolder, flattenTree } from "../../lib/folders";
+import { powerFailure } from "../../lib/power";
+import type { PowerAction } from "../../lib/power";
 import { agentTooOld, prefillUsername, UNLOCK_AGENT, unlockKeyFailure } from "../../lib/unlock";
 import { sealForDevice } from "../../lib/unlockSeal";
+import { END_REASONS } from "../../session/RemoteSession";
 
 export const NOTES_MAX = 4000;
 
 // Covers the device's approval prompt (60 s) when it asks for every session.
-const FETCH_KEY_MS = 90_000;
+const CONNECT_MS = 90_000;
 
 type DialogReq =
   | { kind: "move"; ids: string[] }
@@ -41,7 +45,8 @@ type DialogReq =
   | { kind: "notes"; id: string }
   | { kind: "tag"; tag: Tag | null }
   | { kind: "moveFolder"; folder: Folder }
-  | { kind: "credential"; device: Device; onChange?: (saved: SavedCredential | null) => void };
+  | { kind: "credential"; device: Device; onChange?: (saved: SavedCredential | null) => void }
+  | { kind: "power"; device: Device };
 
 const Ctx = createContext<(r: DialogReq) => void>(() => undefined);
 
@@ -59,6 +64,7 @@ export function DeviceDialogs({ children }: { children: ReactNode }) {
       {req?.kind === "notes" && <NotesDialog id={req.id} onClose={close} />}
       {req?.kind === "tag" && <TagDialog tag={req.tag} onClose={close} />}
       {req?.kind === "moveFolder" && <MoveFolderDialog folder={req.folder} onClose={close} />}
+      {req?.kind === "power" && <DevicePowerDialog device={req.device} onClose={close} />}
       {req?.kind === "credential" && (
         <DeviceCredentialDialog device={req.device} onChange={req.onChange} onClose={close} />
       )}
@@ -517,7 +523,7 @@ function DeviceCredentialDialog({
     }
     setFetching(true);
     let failure: string | null = `${d.name} did not send its unlock key in time.`;
-    for (const deadline = Date.now() + FETCH_KEY_MS; Date.now() < deadline && alive.current;) {
+    for (const deadline = Date.now() + CONNECT_MS; Date.now() < deadline && alive.current;) {
       await new Promise((r) => setTimeout(r, 1500));
       const snap = ws.session(d.id)?.snapshot;
       const why = snap && unlockKeyFailure(snap, d.name);
@@ -603,6 +609,76 @@ function DeviceCredentialDialog({
         toast(`Sign-in removed from ${d.name}`);
         onClose();
       }}
+      onClose={onClose}
+    />
+  );
+}
+
+/**
+ * Restarts a device from the dashboard or its page: through this tab's
+ * session to it, else one opened in the background for the request and
+ * closed again.
+ */
+function DevicePowerDialog({ device: d, onClose }: { device: Device; onClose: () => void }) {
+  const ws = useWorkspace();
+  const toast = useToast();
+  const [pending, setPending] = useState<string | undefined>();
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  const known = ws.session(d.id)?.snapshot;
+
+  // The session to the device once its hello arrived.
+  const connected = async (action: PowerAction) => {
+    for (const deadline = Date.now() + CONNECT_MS; ;) {
+      if (!alive.current) throw new Error("Cancelled.");
+      const s = ws.session(d.id);
+      const snap = s?.snapshot;
+      if (snap?.phase === "ended" || snap?.phase === "pin_mismatch")
+        throw new Error(
+          snap.endDetail ?? END_REASONS[snap.endReason ?? ""] ?? `The session to ${d.name} ended.`,
+        );
+      if (s && snap?.phase === "connected" && snap.features !== null) {
+        if (!snap.powerActions.includes(action)) throw new Error(powerFailure("unsupported"));
+        return s;
+      }
+      if (Date.now() > deadline) throw new Error(`${d.name} did not connect in time.`);
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  };
+
+  const run = async (action: PowerAction) => {
+    const opened = !ws.has(d.id);
+    if (opened && !ws.open(d.id).ok)
+      throw new Error("Too many sessions are open in this tab. Close one first.");
+    try {
+      if (opened) setPending(`Connecting to ${d.name}…`);
+      const s = await connected(action);
+      setPending(undefined);
+      const r = await s.power(action);
+      if (!r.ok) throw new Error(powerFailure(r.code));
+    } finally {
+      setPending(undefined);
+      if (opened) ws.close(d.id);
+    }
+    toast(
+      action === "restart" ? `${d.name} is restarting` : `${d.name}'s agent is restarting`,
+      "success",
+    );
+    onClose();
+  };
+
+  return (
+    <PowerDialog
+      deviceName={d.name}
+      os={d.os}
+      actions={known?.phase === "connected" && known.features !== null ? known.powerActions : null}
+      pending={pending}
+      onRun={run}
       onClose={onClose}
     />
   );

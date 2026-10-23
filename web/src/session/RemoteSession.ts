@@ -22,6 +22,8 @@ import {
 import type { CursorMessage } from "../lib/input";
 import type { SentMove } from "../lib/cursor";
 import { signaling } from "../lib/signaling";
+import { powerActions } from "../lib/power";
+import type { PowerAction } from "../lib/power";
 import { sealCredential, verifyUnlockKey } from "../lib/unlockCrypto";
 import type { SealedCredential, UnlockKey } from "../lib/unlockCrypto";
 import type { SignalMessage } from "../lib/signaling";
@@ -97,6 +99,8 @@ export type Snapshot = {
   locked: boolean;
   /** The device's unlock key, signed by its pinned key: it can type a saved password (feature `unlock`). */
   unlockKey: UnlockKey | null;
+  /** The restarts the device offers (feature `power`). */
+  powerActions: PowerAction[];
   /** Not the session in view: streams at background quality (setBackground). */
   background: boolean;
   streamPrefs: StreamPrefs;
@@ -143,8 +147,9 @@ const emptyStats: HudStats = {
 const STREAM_DEBOUNCE_MS = 200;
 // Typing a password takes the device a few seconds (Windows raises its sign-in box first).
 const UNLOCK_TIMEOUT_MS = 30_000;
+const POWER_TIMEOUT_MS = 15_000;
 
-export type UnlockResult = { ok: boolean; code: string | null };
+export type ControlResult = { ok: boolean; code: string | null };
 // Stats in the background feed only thumbnails and the HUD of a hidden pane.
 const BACKGROUND_STATS_EVERY = 5;
 // Cursor shapes kept to replay to a newly mounted cursor layer (the agent
@@ -196,6 +201,8 @@ export const END_REASONS: Record<string, string> = {
   capture_failed: "The device could not capture its screen.",
   encoder_failed: "The device's video encoder failed.",
   agent_update: "The device is installing an update. Reconnect in a minute.",
+  device_restart: "The device is restarting. Reconnect in a minute or two.",
+  agent_restart: "The device's agent is restarting. Reconnect in a few seconds.",
 };
 
 type Options = {
@@ -234,8 +241,9 @@ export class RemoteSession {
   private lastInbound: { ts: number; bytes: number; lost: number; recv: number } | null = null;
   private pingId = 0;
   private pings = new Map<number, number>();
-  private unlockReqId = 0;
-  private unlocks = new Map<number, (r: UnlockResult) => void>();
+  private requestId = 0;
+  /** Pending control requests (`unlock`, `power`) by `${t}:${id}`. */
+  private replies = new Map<string, (r: ControlResult) => void>();
   private clipboard = new ClipboardAssembler();
   private clipXfer = 1;
   private ended = false;
@@ -263,6 +271,7 @@ export class RemoteSession {
       permissions: null,
       locked: false,
       unlockKey: null,
+      powerActions: [],
       background: false,
       streamPrefs: loadStreamPrefs(opts.deviceId),
       streamState: null,
@@ -673,6 +682,7 @@ export class RemoteSession {
           permissions: (m.permissions as Snapshot["permissions"]) ?? null,
           locked: m.locked === true,
           features: features ?? [],
+          powerActions: powerActions(features, m.power),
           streamFeature: features?.includes("stream") ?? false,
           maxFps: num(m.max_fps),
         });
@@ -700,9 +710,11 @@ export class RemoteSession {
       case "screen":
         this.update({ locked: m.locked === true });
         break;
-      case "unlock": {
-        const done = this.unlocks.get(m.id as number);
-        this.unlocks.delete(m.id as number);
+      case "unlock":
+      case "power": {
+        const key = `${m.t}:${String(m.id)}`;
+        const done = this.replies.get(key);
+        this.replies.delete(key);
         done?.({ ok: m.ok === true, code: typeof m.code === "string" ? m.code : null });
         break;
       }
@@ -895,26 +907,40 @@ export class RemoteSession {
   }
 
   /** Asks the device to type a saved password on its lock screen. */
-  unlock(credential: SealedCredential): Promise<UnlockResult> {
+  unlock(credential: SealedCredential): Promise<ControlResult> {
+    return this.request("unlock", { credential }, UNLOCK_TIMEOUT_MS);
+  }
+
+  /** Asks the device to restart itself or its agent; on success it ends the session. */
+  power(action: PowerAction): Promise<ControlResult> {
+    return this.request("power", { action }, POWER_TIMEOUT_MS);
+  }
+
+  private request(
+    t: "unlock" | "power",
+    body: Record<string, unknown>,
+    timeoutMs: number,
+  ): Promise<ControlResult> {
     const control = this.control;
     if (control?.readyState !== "open") return Promise.resolve({ ok: false, code: "ended" });
-    const id = ++this.unlockReqId;
+    const id = ++this.requestId;
+    const key = `${t}:${id}`;
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
-        this.unlocks.delete(id);
+        this.replies.delete(key);
         resolve({ ok: false, code: "timeout" });
-      }, UNLOCK_TIMEOUT_MS);
-      this.unlocks.set(id, (r) => {
+      }, timeoutMs);
+      this.replies.set(key, (r) => {
         clearTimeout(timer);
         resolve(r);
       });
-      control.send(JSON.stringify({ t: "unlock", id, credential }));
+      control.send(JSON.stringify({ t, id, ...body }));
     });
   }
 
   private cleanup() {
-    for (const done of this.unlocks.values()) done({ ok: false, code: "ended" });
-    this.unlocks.clear();
+    for (const done of this.replies.values()) done({ ok: false, code: "ended" });
+    this.replies.clear();
     if (this.streamTimer) clearTimeout(this.streamTimer);
     this.streamTimer = null;
     this.fileChannel?.dispose("session_ended");

@@ -6,6 +6,7 @@ import { useDirectory } from "../../app/directory";
 import { useWorkspace, useWorkspaceState } from "../../app/workspace";
 import type { MenuEntry } from "../../components/menu";
 import { usePrompt, useToast } from "../../components/ui";
+import { canRestart } from "../../lib/power";
 import { canSaveSignIn } from "../../lib/unlock";
 import { canUpdate } from "../../lib/update";
 import { useOrgDialog } from "./dialogs";
@@ -144,6 +145,16 @@ export function useDeviceActions() {
                 label: "Saved sign-in…",
                 icon: "key" as const,
                 onSelect: () => dialog({ kind: "credential", device: d }),
+              },
+            ]
+          : []),
+        ...(canRestart(d)
+          ? [
+              {
+                label: "Restart…",
+                icon: "power" as const,
+                disabled: !here && !canConnect(d),
+                onSelect: () => dialog({ kind: "power", device: d }),
               },
             ]
           : []),

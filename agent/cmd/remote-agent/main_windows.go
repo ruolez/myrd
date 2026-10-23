@@ -20,6 +20,7 @@ import (
 //	remote-agent helper             session helper, spawned by the service into the console session
 //	remote-agent install-service    register + start the service (admin; the MSI does this normally)
 //	remote-agent uninstall-service  stop + delete the service
+//	remote-agent restart-service    stop + start the service (spawned detached for control `power`)
 //
 // Anything else (run, enroll, status, selftest, uninstall, version) falls
 // through to the single-process commands in main.go.
@@ -41,6 +42,16 @@ func platformMain(args []string) bool {
 		os.Exit(report("install-service", err))
 	case "uninstall-service":
 		os.Exit(report("uninstall-service", winsvc.Uninstall()))
+	case "restart-service":
+		log, closeLog := fileLogger(config.FromEnv().DataDir, "restart.log")
+		err := winsvc.RestartService()
+		if err != nil {
+			log.Error("restart-service failed", "err", err)
+		} else {
+			log.Info("restart-service: service restarted")
+		}
+		closeLog()
+		os.Exit(report("restart-service", err))
 	case "":
 		if winsvc.IsService() {
 			os.Exit(runService())

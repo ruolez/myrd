@@ -162,3 +162,39 @@ func TestMacWatch(t *testing.T) {
 		})
 	}
 }
+
+func TestRequestRestartHandsTheDaemonARequestAfterTheDelay(t *testing.T) {
+	root := t.TempDir()
+	inbox := filepath.Join(root, "Updater", "inbox")
+	if err := os.MkdirAll(inbox, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := requestRestart(filepath.Join(root, "Updater"), 50*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	names := func() []string {
+		es, _ := os.ReadDir(inbox)
+		var n []string
+		for _, e := range es {
+			n = append(n, e.Name())
+		}
+		return n
+	}
+	if n := names(); len(n) != 1 || !strings.HasPrefix(n[0], ".tmp-") {
+		t.Fatalf("before the delay: %v, want only the temporary file", n)
+	}
+	var got []string
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if got = names(); len(got) == 1 && strings.HasSuffix(got[0], ".json") {
+			break
+		}
+	}
+	b, err := os.ReadFile(filepath.Join(inbox, got[0]))
+	var req Request
+	if err != nil || json.Unmarshal(b, &req) != nil || req.Op != OpRestart || ValidateRequest(req, "", "", "") != nil {
+		t.Fatalf("inbox %v: %s (%v)", got, b, err)
+	}
+	if err := requestRestart(filepath.Join(root, "missing"), time.Millisecond); err == nil {
+		t.Fatal("a missing inbox must fail at once")
+	}
+}

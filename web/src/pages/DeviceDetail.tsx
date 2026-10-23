@@ -36,6 +36,7 @@ import {
   memSeverity,
 } from "../lib/health";
 import { useAsync, useNow, usePaged } from "../lib/hooks";
+import { canRestart } from "../lib/power";
 import { canSaveSignIn } from "../lib/unlock";
 import { updateBadge } from "../lib/update";
 import { NOTES_MAX, useOrgDialog } from "./devices/dialogs";
@@ -236,6 +237,25 @@ export function DeviceDetail() {
             </div>
           )}
           {canSaveSignIn(d) && <SavedSignInRow device={d} />}
+          {canRestart(d) && (
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-sm font-medium">Restart</div>
+                <p className="text-sm text-muted">
+                  Restart the device, or only its agent. The request goes through a session, so it
+                  connects first if none is open.
+                </p>
+              </div>
+              <button
+                className="btn-tonal btn-sm shrink-0"
+                disabled={!d.online || d.status === "disabled"}
+                onClick={() => dialog({ kind: "power", device: d })}
+              >
+                <Icon name="power" size={16} />
+                Restart…
+              </button>
+            </div>
+          )}
           <div>
             <div className="mb-2 text-sm font-medium">Approved browsers</div>
             {d.pinned_clients && d.pinned_clients.length > 0 ? (

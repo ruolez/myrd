@@ -461,3 +461,29 @@ func TestDaemonHealthyDuringInstall(t *testing.T) {
 		t.Fatalf("marker = %+v inbox = %q", m, ls(t, f.inbox()))
 	}
 }
+
+func TestDaemonRestartsOnlyForTheConsoleUser(t *testing.T) {
+	me := uint32(os.Getuid())
+	cases := []struct {
+		name    string
+		user    string
+		uid     uint32
+		restart bool
+	}{
+		{"the console user", "ann", me, true},
+		{"another user", "ann", me + 1, false},
+		{"nobody logged in", "loginwindow", me, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newDaemonFixture(t)
+			f.d.Console = func() (string, uint32, bool) { return c.user, c.uid, true }
+			f.writeRequest("r1", Request{V: 1, Op: OpRestart, ID: "r1"})
+			f.runDaemon()
+			got := slices.Contains(f.run.calls, "/sbin/shutdown -r now")
+			if got != c.restart {
+				t.Fatalf("restarted = %v, want %v (calls %v)", got, c.restart, f.run.calls)
+			}
+		})
+	}
+}

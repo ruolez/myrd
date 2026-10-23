@@ -7,12 +7,14 @@ import type {
 } from "react";
 import { useSessionSnap } from "../app/workspace";
 import { Icon } from "../components/icons";
+import { PowerDialog } from "../components/PowerDialog";
 import { Badge, Spinner } from "../components/ui";
 import { keyFingerprint } from "../lib/devicePins";
 import { displayRect } from "../lib/geometry";
 import { comboInput } from "../lib/combos";
 import type { Combo } from "../lib/combos";
 import { encodeText } from "../lib/input";
+import { powerFailure } from "../lib/power";
 import type { Hotkey } from "../lib/shortcuts";
 import { streamView } from "../lib/stream";
 import { CursorLayer } from "./CursorLayer";
@@ -171,6 +173,7 @@ export function SessionPane({
   const [streamOpen, setStreamOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const [keysOpen, setKeysOpen] = useState(false);
+  const [powerOpen, setPowerOpen] = useState(false);
   const [filesFolder, setFilesFolder] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
@@ -459,6 +462,14 @@ export function SessionPane({
               disabled={!live || signIn.saved === undefined}
             />
           )}
+          {!!snap?.powerActions.length && (
+            <ToolButton
+              label="Restart the device or its agent"
+              icon="power"
+              onClick={() => setPowerOpen(true)}
+              disabled={!live}
+            />
+          )}
           <ToolButton
             label="Type clipboard as keystrokes"
             icon="paste"
@@ -571,6 +582,19 @@ export function SessionPane({
             consoleUser={consoleUser}
             signIn={signIn}
             locked={snap.locked}
+          />
+        )}
+        {powerOpen && snap && (
+          <PowerDialog
+            deviceName={snap.deviceName}
+            os={snap.agentOs}
+            actions={snap.powerActions}
+            onRun={async (action) => {
+              const r = await session.power(action);
+              if (!r.ok) throw new Error(powerFailure(r.code));
+              setPowerOpen(false);
+            }}
+            onClose={() => setPowerOpen(false)}
           />
         )}
         {hud && live && snap && (

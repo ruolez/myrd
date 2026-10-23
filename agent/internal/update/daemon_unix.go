@@ -147,6 +147,8 @@ func (d *Daemon) processInbox(ctx context.Context) bool {
 		switch req.Op {
 		case OpHealthy:
 			d.healthy(ctx, req)
+		case OpRestart:
+			d.restart(ctx, req, uid)
 		default:
 			d.install(ctx, req, uid)
 		}
@@ -340,6 +342,24 @@ func (d *Daemon) healthy(ctx context.Context, req Request) {
 	_ = os.Remove(d.path("marker.json"))
 	d.writeStatus(DaemonStatus{ID: m.ID, State: DaemonHealthy, From: m.From, To: m.To})
 	d.Log.Info("updater: update healthy", "version", m.To)
+}
+
+// restart restarts the Mac for the console user's agent; a request from
+// anyone else (the inbox is writable by all) is refused.
+func (d *Daemon) restart(ctx context.Context, req Request, uid uint32) {
+	if err := ValidateRequest(req, "", d.PubKey, ""); err != nil {
+		d.Log.Warn("updater: restart request refused", "err", err)
+		return
+	}
+	name, cuid, ok := d.Console()
+	if !ok || name == "root" || name == "loginwindow" || cuid != uid {
+		d.Log.Warn("updater: restart request not from the console user", "uid", uid, "console", name)
+		return
+	}
+	d.Log.Info("updater: restarting at the console user's request", "user", name)
+	if out, err := d.Runner.Run(ctx, "/sbin/shutdown", "-r", "now"); err != nil {
+		d.Log.Error("updater: shutdown -r failed", "err", err, "out", strings.TrimSpace(string(out)))
+	}
 }
 
 // watch applies DecideHealth to a pending install (the 120 s watchdog).

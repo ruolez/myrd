@@ -50,6 +50,10 @@ To try a session:
   - The device types the password only on its own lock or sign-in screen, and only if the browser that saved it is one it approved for that user. Revoking that browser deletes what it saved.
   - Saving from the dashboard or the device page needs one session from that browser after the agent runs 0.5.0. The session pins the device and uploads its signed unlock key.
   - It tries once per lock. If the device is still locked 15 s later, the bar says the saved password may be wrong. Save a new one, or type it yourself.
+- **Remote restart** (power button in a session, **Restart…** in a device card's ⋯ menu, or the device page; macOS and Windows agents from 0.5.4):
+  - Restart the device, or only its agent. From the dashboard or the device page, the browser connects in the background first and closes the session again.
+  - The request travels on the session's encrypted control channel, so only a browser the device approved can send it, never the server.
+  - Windows restarts after 5 s and closes apps without asking; a Mac restarts at once through the root update daemon, which takes the request only from the logged-in user's agent.
 
 `make down` stops the stack, `make clean` also deletes its volumes, and `make logs` follows the logs.
 
@@ -213,7 +217,9 @@ Ports: 80/443 tcp+udp, 3478 tcp+udp, 5349/tcp, and 49152–65535/udp for the TUR
 - Auto-update has not run on real hardware yet. Still to verify: the macOS root helper, keeping grants with the self-signed identity, detached `msiexec` surviving the Windows service stop, and rollback on both.
 - Email alerts on login and new devices are not implemented; those events are only audited. (TOTP codes are single-use: the accepted time step is stored per user.)
 - Passkey ceremonies are implemented on both sides but were not exercised with a real authenticator.
-- Saved sign-in has not run on a real lock screen yet. To verify: Windows Ctrl+Alt+Delete then typing into LogonUI (text input as `KEYEVENTF_UNICODE`), the macOS lock screen, and FileVault pre-boot (not supported: the agent is not running there).
+- Saved sign-in typed the password on a real Windows Server 2019 sign-in screen; the macOS lock screen is untried, and FileVault pre-boot is not supported (the agent is not running there).
+- Remote restart has not run on a real device yet.
+- Windows servers without a GPU (display-only adapter, no monitor) capture through Desktop Duplication read back to the CPU. On an HPE ProLiant with no monitor attached, the console showed black with only the "Activate Windows" overlay after sign-in; a dummy display plug is the usual fix.
 - PNG clipboard is ignored; text clipboard works both ways.
 - File transfer: no folder transfer, resume, or delete/rename on the device. It has not been tried on a real Windows PC (impersonation), and the macOS privacy-prompt handling is untested.
 - The Linux x264 backend keeps a constant-rate setup. Variable-frame-rate input corrupted frames on the demo device, so the agent instead enforces a keyframe at least every 2 s.

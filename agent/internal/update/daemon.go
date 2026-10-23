@@ -16,6 +16,9 @@ import (
 const (
 	OpInstall = "install"
 	OpHealthy = "healthy"
+	// OpRestart restarts the Mac (control `power`). Taken only from the
+	// console user, who could restart it from the Apple menu anyway.
+	OpRestart = "restart"
 
 	MaxRequestBytes = 16 << 10
 )
@@ -82,6 +85,8 @@ func ValidateRequest(req Request, installedVersion, pubKey, userHome string) err
 		if !proto.ValidVersion(req.Version) {
 			return fmt.Errorf("bad version %q", req.Version)
 		}
+		return nil
+	case OpRestart:
 		return nil
 	case OpInstall:
 	default:

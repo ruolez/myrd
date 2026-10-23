@@ -51,6 +51,12 @@ type Options struct {
 	// screen the backend reports and types into ("darwin", "windows"). Empty
 	// disables it.
 	UnlockOS string
+	// Restart schedules a restart of the device a few seconds out (control
+	// `power`); an error means it cannot happen. nil: not offered.
+	Restart func() error
+	// RestartAgent schedules a restart of this agent the same way; nil: not
+	// offered.
+	RestartAgent func() error
 
 	// Network: UDPPort > 0 multiplexes ICE on one UDP port; NAT1To1IPs adds
 	// extra host candidates with those IPs (Docker Desktop: 127.0.0.1).

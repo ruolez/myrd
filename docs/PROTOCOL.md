@@ -373,11 +373,13 @@ JSON text messages, `{"t": "...", ...}`:
 
 | t | dir | fields |
 |---|---|---|
-| `hello` | A→B on open | `monitors:[Monitor]`, `active:index`, `encoder`, `codec:"h264"`, `fps` (current target), `max_fps` (encoder cap), `features:[string]` (`"stream"`, `"move"`, `"files"`, `"wallpaper"`, `"unlock"`; absent on old agents), `permissions:{screen,input}`, `agent_version`, `os`, `locked` (the device shows its unlock screen; absent on old agents = false), `unlock_key`, `unlock_key_sig` (with `"unlock"`, §4.2) |
+| `hello` | A→B on open | `monitors:[Monitor]`, `active:index`, `encoder`, `codec:"h264"`, `fps` (current target), `max_fps` (encoder cap), `features:[string]` (`"stream"`, `"move"`, `"files"`, `"wallpaper"`, `"unlock"`, `"power"`; absent on old agents), `permissions:{screen,input}`, `agent_version`, `os`, `locked` (the device shows its unlock screen; absent on old agents = false), `unlock_key`, `unlock_key_sig` (with `"unlock"`, §4.2), `power:[string]` (with `"power"`: the restarts offered, `"restart"` and/or `"restart_agent"`) |
 | `monitor` | A→B | `active:index`, `width`, `height` (native pixels, after a switch) |
 | `screen` | A→B on change | `locked:bool`. Polled once a second. The viewer says the device is locked and that typing the password unlocks it: macOS blanks the unlock screen for ScreenCaptureKit, so while locked the macOS backend captures with CGDisplayStream instead, and every macOS capture wakes the display and keeps it on. Windows (since 0.5.0) reports a lock while the input desktop is the secure one and LogonUI runs in the console session (lock and sign-in screens, not UAC prompts); the Linux demo device never does |
 | `unlock` | B→A | `id` (u32), `credential: SealedCredential`: type the saved password on the lock screen (feature `"unlock"`, §4.2) |
 | `unlock` | A→B | `id`, `ok`, `code` when not ok (`unsupported`, `busy`, `too_soon`, `not_locked`, `untrusted`, `stale_key`, `bad_credential`, `input_failed`). `ok` means the password was typed, not that it was right: the browser watches `screen` |
+| `power` | B→A | `id` (u32), `action` (`"restart"`: the device, `"restart_agent"`: the agent) (feature `"power"`, since 0.5.4) |
+| `power` | A→B | `id`, `ok`, `code` when not ok (`unsupported`: not offered; `failed`: could not be scheduled). On `ok` the restart is scheduled a few seconds out and the agent ends the session ~300 ms later with `session.end{device_restart}` or `{agent_restart}`. Windows: `InitiateSystemShutdownEx` (5 s notice, apps forced closed) from the SYSTEM helper; the agent restart is a detached `remote-agent restart-service` that stops and starts the service. macOS: an `op:"restart"` request to the root update daemon (§7), and `launchctl kickstart -k` of the LaunchAgent |
 | `stream` | B→A | desired stream settings, see below |
 | `stream` | A→B | stream state, see below |
 | `ping` | B→A | `id`, `ts` (ms, browser clock) |
@@ -515,7 +517,7 @@ The URL is not signed; the SHA-256 pins the bytes. `os` ∈ `darwin|windows`, `a
 
 **macOS.** The pkg installs a root LaunchDaemon `com.remotectl.updater` (`RemoteAgent.app/Contents/MacOS/remote-agent update-daemon`, launchd `QueueDirectories` on its inbox plus a 120 s watchdog). Directory `/Library/Application Support/RemoteAgent/Updater/` (root:wheel 0755):
 - `inbox/` (1733, sticky drop box): the user agent writes `.tmp-<id>` then renames to `<id>.json`:
-  `{"v":1,"op":"install","id","manifest":{version,os,arch,sha256,size,signature},"payload":"<path in the user's RemoteAgent/updates/>"}` or `{"v":1,"op":"healthy","id","version"}`.
+  `{"v":1,"op":"install","id","manifest":{version,os,arch,sha256,size,signature},"payload":"<path in the user's RemoteAgent/updates/>"}` or `{"v":1,"op":"healthy","id","version"}` or `{"v":1,"op":"restart","id"}` (since 0.5.4: `shutdown -r now`, accepted only when the request file belongs to the console user, who could restart from the Apple menu anyway; the inbox is writable by every user).
 - `status.json` (0644, written atomically): `{"v":1,"id","state":"verifying|installing|installed|failed|rolled_back|healthy","from","to","error","at"}`.
 - `pkgs/`, `previous/`, `logs/` (0700), `marker.json` (0600).
 

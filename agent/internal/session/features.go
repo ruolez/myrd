@@ -6,7 +6,8 @@ import "github.com/ruolez/remotectl/proto"
 // advertised in the control-channel hello (docs/PROTOCOL.md §5): "stream"
 // and "move" always, "files" when Options enables file transfer, "wallpaper" when the
 // backend can hide the wallpaper, "unlock" when the device types saved
-// passwords on its lock screen (Options.UnlockOS).
+// passwords on its lock screen (Options.UnlockOS), "power" when it restarts on
+// request (Options.Restart / RestartAgent).
 func helloFeatures(o Options, wallpaper bool) []string {
 	f := []string{"stream", "move"}
 	if o.Files != nil {
@@ -17,6 +18,9 @@ func helloFeatures(o Options, wallpaper bool) []string {
 	}
 	if o.UnlockOS != "" {
 		f = append(f, proto.FeatureUnlock)
+	}
+	if len(powerActions(o)) > 0 {
+		f = append(f, proto.FeaturePower)
 	}
 	return f
 }

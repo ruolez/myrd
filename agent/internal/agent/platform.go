@@ -16,4 +16,9 @@ var (
 	// restartIntoUpdate makes the service manager run the freshly installed
 	// build when this process outlived its own update. nil = nothing to do.
 	restartIntoUpdate func()
+	// restartDevice and restartAgent back control `power` (session.Options
+	// Restart / RestartAgent): each schedules its restart a moment out. nil
+	// = not offered.
+	restartDevice func() error
+	restartAgent  func() error
 )
