@@ -21,6 +21,7 @@ EXPORTS
     rc_request_keyframe
     rc_request_permission
     rc_screen_locked
+    rc_set_log
     rc_shutdown
     rc_snapshot
     rc_wallpaper_hide

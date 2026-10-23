@@ -556,7 +556,14 @@ static Source *open_source(Capture *c) {
     return new DxgiSource(c->dev.get(), c->output.get());
 }
 
-static void run_loop(Capture *c) {
+// How long Desktop Duplication may fail before its first frame until the
+// GDI pipeline takes over (a display-only adapter on a server never works).
+static const int64_t kGpuGraceUs = 3000000;
+
+// Runs the D3D11 pipeline until stopped; true when its source kept failing
+// and never delivered a frame (the caller switches to GDI).
+static bool run_loop(Capture *c) {
+    int64_t started = now_us();
     int64_t interval = 1000000 / (c->fps > 0 ? c->fps : 30);
     int64_t last_encode = 0, last_content = 0;
     int64_t last_desktop_check = now_us();
@@ -615,6 +622,10 @@ static void run_loop(Capture *c) {
         } else if (FAILED(hr)) {
             // Re-open on the next iteration; back off a little on repeated failure.
             if (++failures > 3) Sleep(50);
+            if (!have && failures > 3 && now_us() - started > kGpuGraceUs) {
+                logf("capture: %s source failing (0x%08lx) with no frame yet", c->src->kind(), (unsigned long)hr);
+                return true;
+            }
         }
 
         // Follow the input desktop: WGC cannot see UAC / lock screen.
@@ -670,11 +681,12 @@ static void run_loop(Capture *c) {
             logf("capture: encoder failed, recreating with the software MFT");
             if (!make_encoder(c, false)) {
                 logf("capture: no encoder available, stopping");
-                return;
+                return false;
             }
             sent_any = false;
         }
     }
+    return false;
 }
 
 // The GDI pipeline: poll the screen at the frame rate while it changes (every
@@ -814,61 +826,9 @@ static int start_cpu(Capture *c, bool have_mf) {
     return RC_OK;
 }
 
-static DWORD WINAPI capture_thread(void *p) {
-    Capture *c = (Capture *)p;
-    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    bool have_mf = mf_startup();
-    timeBeginPeriod(1);
-    attach_input_desktop();
-
-    int result = RC_ERR;
-    c->cpu = use_cpu_pipeline();
-    do {
-        if (c->cpu) {
-            result = start_cpu(c, have_mf);
-            break;
-        }
-        if (!create_device(c)) break;
-        target_size(c->cfg, c->mon.pub.width, c->mon.pub.height, &c->dst_w, &c->dst_h);
-        if (!setup_processor(c, c->mon.pub.width, c->mon.pub.height, DXGI_FORMAT_B8G8R8A8_UNORM)) {
-            logf("capture: video processor unavailable");
-            break;
-        }
-        if (c->full_color) {
-#ifdef RC_HAVE_VPX
-            c->vpx = rc_vpx_open((int)c->dst_w, (int)c->dst_h, c->cfg.fps, c->cfg.bitrate_kbps);
-            bool ok = c->vpx != nullptr;
-#else
-            bool ok = false;
-#endif
-            if (!ok) {
-                logf("capture: no full-color encoder");
-                result = RC_ERR_UNSUPPORTED;
-                break;
-            }
-            c->encoder = "libvpx-vp9";
-            InterlockedExchange(&c->refine_ok, 1);
-        } else if (!make_encoder(c, true)) {
-            logf("capture: no H.264 encoder");
-            result = have_mf ? RC_ERR : RC_ERR_UNSUPPORTED;
-            break;
-        }
-        c->src = open_source(c);
-        result = RC_OK;
-    } while (0);
-
-    c->start_result = result;
-    if (result == RC_OK && c->on_shape && c->on_pos) cursor_start(c->mon.rect, c->on_shape, c->on_pos, c->user);
-    SetEvent(c->started);
-
-    if (result == RC_OK) {
-        if (c->cpu)
-            run_loop_cpu(c);
-        else
-            run_loop(c);
-        cursor_stop();
-    }
-
+// Releases the D3D11 pipeline and the encoders (a failed start, a switch to
+// GDI, the end of capture).
+static void release_pipeline(Capture *c) {
     delete c->src;
     c->src = nullptr;
     delete c->gdi;
@@ -893,6 +853,80 @@ static DWORD WINAPI capture_thread(void *p) {
     c->ctx.reset();
     c->dev.reset();
     c->output.reset();
+    c->src_w = c->src_h = 0;
+    c->src_fmt = DXGI_FORMAT_UNKNOWN;
+}
+
+// Starts the D3D11 pipeline (Desktop Duplication / WGC, video processor,
+// GPU encoder); an RC_* result.
+static int start_gpu(Capture *c, bool have_mf) {
+    if (!create_device(c)) return RC_ERR;
+    target_size(c->cfg, c->mon.pub.width, c->mon.pub.height, &c->dst_w, &c->dst_h);
+    if (!setup_processor(c, c->mon.pub.width, c->mon.pub.height, DXGI_FORMAT_B8G8R8A8_UNORM)) {
+        logf("capture: video processor unavailable");
+        return RC_ERR;
+    }
+    if (c->full_color) {
+#ifdef RC_HAVE_VPX
+        c->vpx = rc_vpx_open((int)c->dst_w, (int)c->dst_h, c->cfg.fps, c->cfg.bitrate_kbps);
+        bool ok = c->vpx != nullptr;
+#else
+        bool ok = false;
+#endif
+        if (!ok) {
+            logf("capture: no full-color encoder");
+            return RC_ERR_UNSUPPORTED;
+        }
+        c->encoder = "libvpx-vp9";
+        InterlockedExchange(&c->refine_ok, 1);
+    } else if (!make_encoder(c, true)) {
+        logf("capture: no H.264 encoder");
+        return have_mf ? RC_ERR : RC_ERR_UNSUPPORTED;
+    }
+    c->src = open_source(c);
+    return RC_OK;
+}
+
+// Moves a capture to the GDI pipeline; an RC_* result.
+static int switch_to_cpu(Capture *c, bool have_mf) {
+    release_pipeline(c);
+    c->cpu = true;
+    int r = start_cpu(c, have_mf);
+    logf("capture: GDI pipeline %s (%d)", r == RC_OK ? "started" : "failed", r);
+    return r;
+}
+
+static DWORD WINAPI capture_thread(void *p) {
+    Capture *c = (Capture *)p;
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    bool have_mf = mf_startup();
+    timeBeginPeriod(1);
+    attach_input_desktop();
+
+    // GDI where D3D11 cannot work: Windows 7, a monitor DXGI does not list,
+    // or a D3D11 pipeline that fails to start (a server's display-only adapter
+    // has no video processor or GPU encoder).
+    int result;
+    c->cpu = use_cpu_pipeline() || c->mon.gdi;
+    if (c->cpu) {
+        result = start_cpu(c, have_mf);
+    } else {
+        result = start_gpu(c, have_mf);
+        if (result != RC_OK) {
+            logf("capture: D3D11 pipeline failed to start (%d)", result);
+            result = switch_to_cpu(c, have_mf);
+        }
+    }
+
+    c->start_result = result;
+    if (result == RC_OK && c->on_shape && c->on_pos) cursor_start(c->mon.rect, c->on_shape, c->on_pos, c->user);
+    SetEvent(c->started);
+
+    if (result == RC_OK) {
+        if (c->cpu || (run_loop(c) && !c->stop && switch_to_cpu(c, have_mf) == RC_OK)) run_loop_cpu(c);
+        cursor_stop();
+    }
+    release_pipeline(c);
 
     timeEndPeriod(1);
     if (have_mf) mf_shutdown();
@@ -918,7 +952,8 @@ int capture_start(const rc_capture_config *cfg, rc_frame_fn on_frame, rc_cursor_
     c->user = user;
     c->fps = c->cfg.fps;
     c->bitrate_kbps = c->cfg.bitrate_kbps;
-    if (!find_monitor(cfg->monitor_id, &c->mon)) {
+    if (!find_monitor(cfg->monitor_id, &c->mon) && !find_primary_monitor(&c->mon)) {
+        logf("capture: no monitor %u and no primary monitor", cfg->monitor_id);
         delete c;
         return RC_ERR;
     }

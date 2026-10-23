@@ -368,6 +368,7 @@ const (
 	EndPermission    = "permission_missing"
 	EndAbuse         = "input_abuse"
 	EndAgentUpdate   = "agent_update" // the owner or an admin forced an update
+	EndCaptureFailed = "capture_failed"
 )
 
 type SessionEnd struct {

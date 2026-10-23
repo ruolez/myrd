@@ -70,8 +70,10 @@ private:
     Lock &l_;
 };
 
-// ---- logging (OutputDebugString + stderr when RC_NATIVE_DEBUG is set) ----
+// ---- logging (OutputDebugString, the rc_set_log callback, and stderr when
+// RC_NATIVE_DEBUG is set) ----
 void logf(const char *fmt, ...);
+void set_log(rc_log_fn fn);
 
 // ---- strings ----
 // Returns a malloc'd UTF-16 string; caller frees with free().
@@ -104,11 +106,15 @@ struct MonitorInfo {
     HMONITOR hmon;
     UINT adapter_index;
     UINT output_index;
+    bool gdi;           // found by GDI, not DXGI: only the GDI pipeline can capture it
 };
-// Re-enumerates DXGI outputs and refreshes the cache used by input mapping.
+// Re-enumerates DXGI outputs (GDI monitors when DXGI has none attached, as on
+// a headless server) and refreshes the cache used by input mapping.
 int enumerate_monitors(MonitorInfo *out, int max);
 // Looks up a monitor by id in the cache (enumerating once if empty).
 bool find_monitor(uint32_t id, MonitorInfo *out);
+// The primary monitor (else the first); false when there is none.
+bool find_primary_monitor(MonitorInfo *out);
 // Virtual desktop rect (all monitors).
 RECT virtual_desktop();
 

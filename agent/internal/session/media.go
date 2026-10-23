@@ -107,6 +107,7 @@ type mediaPipe struct {
 	canHideWP  bool // the backend can hide it
 	fullColor  bool // VP9 4:4:4 negotiated and encodable; known once capture starts
 	colorFail  bool // a full-color capture failed to start: H.264 only from then on
+	h264Fail   bool // no H.264 encoder (Windows Server without Media Foundation): full color only
 	auto       AutoState
 	ladder     []Rung
 	est        cc.BandwidthEstimator
@@ -187,7 +188,7 @@ func (p *mediaPipe) nativeLocked() (uint32, uint32) {
 // fpsLimitLocked is the frame-rate cap for the current settings: full color
 // is a software encoder.
 func (p *mediaPipe) fpsLimitLocked() int {
-	if (StreamInput{Settings: p.settings, FullColor: p.fullColor}).Codec() == platform.CodecVP9 {
+	if (StreamInput{Settings: p.settings, FullColor: p.fullColor, NoH264: p.h264Fail}).Codec() == platform.CodecVP9 {
 		return min(p.maxFPS, fullColorFPS)
 	}
 	return p.maxFPS
@@ -197,7 +198,7 @@ func (p *mediaPipe) inputLocked() StreamInput {
 	nw, nh := p.nativeLocked()
 	in := StreamInput{Settings: p.settings, Background: p.background, Wallpaper: p.wallpaper, MaxFPS: p.fpsLimitLocked(),
 		NativeW: nw, NativeH: nh, MaxW: p.s.m.o.MaxWidth, MaxH: p.s.m.o.MaxHeight, Relay: p.relay,
-		BweKbps: int(float64(p.bweKbps) / (1 + p.fecRate)), FullColor: p.fullColor}
+		BweKbps: int(float64(p.bweKbps) / (1 + p.fecRate)), FullColor: p.fullColor, NoH264: p.h264Fail}
 	if p.settings.Preset == proto.PresetAuto && len(p.ladder) > 0 {
 		r := p.ladder[max(0, min(p.auto.Rung, len(p.ladder)-1))]
 		in.Rung = &r
@@ -495,13 +496,18 @@ func (p *mediaPipe) start() {
 	p.capMu.Unlock()
 	if err != nil {
 		code := "capture_failed"
-		reason := proto.EndError
+		reason := proto.EndCaptureFailed
 		if errors.Is(err, platform.ErrPermission) {
 			code, reason = "permission_missing", proto.EndPermission
 		}
-		p.sendControl(map[string]any{"t": "error", "code": code, "detail": err.Error()})
 		p.s.log.Error("capture start failed", "err", err)
-		go p.s.end(reason, true)
+		go func() {
+			// Capture starts as the connection does, often before the browser's
+			// control channel is open: wait for it so the reason gets there.
+			p.awaitControl(controlWait)
+			p.sendControl(map[string]any{"t": "error", "code": code, "detail": err.Error()})
+			p.s.end(reason, true)
+		}()
 		return
 	}
 	go p.loop()
@@ -530,13 +536,20 @@ func (p *mediaPipe) startCaptureLocked() error {
 	p.applied = encoderState{plan.Kbps, plan.FPS, plan.W, plan.H, plan.Codec}
 	p.mu.Unlock()
 	if err := p.b.StartCapture(cfg, p); err != nil {
-		if cfg.Codec != platform.CodecVP9 {
+		p.mu.Lock()
+		retry := false
+		switch {
+		case cfg.Codec == platform.CodecVP9 && !p.h264Fail:
+			p.s.log.Warn("full-color capture failed, staying on H.264", "err", err)
+			p.colorFail, retry = true, true
+		case cfg.Codec == platform.CodecH264 && fullColor && errors.Is(err, platform.ErrUnsupported):
+			p.s.log.Warn("no H.264 encoder, streaming in full color", "err", err)
+			p.h264Fail, retry = true, true
+		}
+		p.mu.Unlock()
+		if !retry {
 			return err
 		}
-		p.s.log.Warn("full-color capture failed, staying on H.264", "err", err)
-		p.mu.Lock()
-		p.colorFail = true
-		p.mu.Unlock()
 		return p.startCaptureLocked()
 	}
 	p.mu.Lock()
@@ -789,6 +802,21 @@ func (p *mediaPipe) setCursorChannel(dc *webrtc.DataChannel) {
 			p.sendCursor(msg)
 		}
 	})
+}
+
+// controlWait bounds how long a failed start waits for the control channel.
+const controlWait = 3 * time.Second
+
+// awaitControl returns once the control channel is open, or after d.
+func (p *mediaPipe) awaitControl(d time.Duration) {
+	for deadline := time.Now().Add(d); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		p.mu.Lock()
+		dc := p.control
+		p.mu.Unlock()
+		if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
+			return
+		}
+	}
 }
 
 func (p *mediaPipe) sendControl(v any) {

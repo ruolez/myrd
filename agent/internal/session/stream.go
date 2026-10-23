@@ -229,12 +229,14 @@ type StreamInput struct {
 	Rung             *Rung
 	// FullColor: this agent can encode 4:4:4 and the browser negotiated it.
 	FullColor bool
+	// NoH264: the device has no H.264 encoder, so full color is all it streams.
+	NoH264 bool
 }
 
-// Codec is what the encoder runs for these settings: full color only when
-// asked for and available.
+// Codec is what the encoder runs for these settings: full color when asked
+// for (or the only choice) and available.
 func (in StreamInput) Codec() int {
-	if in.Settings.Color == proto.ColorFull && in.FullColor {
+	if (in.Settings.Color == proto.ColorFull || in.NoH264) && in.FullColor {
 		return platform.CodecVP9
 	}
 	return platform.CodecH264
@@ -309,7 +311,10 @@ func colorName(codec int) string {
 }
 
 // ColorOptions lists the color modes this session can switch to.
-func ColorOptions(fullColor bool) []string {
+func ColorOptions(fullColor, noH264 bool) []string {
+	if fullColor && noH264 {
+		return []string{proto.ColorFull}
+	}
 	if fullColor {
 		return []string{proto.ColorStandard, proto.ColorFull}
 	}
@@ -359,5 +364,5 @@ func BuildStreamState(in StreamInput, plan StreamPlan, auto *AutoInfo) StreamSta
 		TargetFPS: plan.FPS, MaxFPS: in.MaxFPS, Width: plan.W, Height: plan.H, NativeWidth: in.NativeW, NativeHeight: in.NativeH,
 		CeilKbps: plan.CeilKbps, Relay: in.Relay, Auto: auto,
 		Options: streamOptions{FPSOptions(in.MaxFPS), ResolutionOptions(in.NativeW, in.NativeH, in.MaxW, in.MaxH, s.View),
-			ColorOptions(in.FullColor)}}
+			ColorOptions(in.FullColor, in.NoH264)}}
 }

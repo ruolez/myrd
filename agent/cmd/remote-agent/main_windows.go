@@ -61,6 +61,7 @@ func report(what string, err error) int {
 func windowsOptions(logName string) (winsvc.Options, func()) {
 	s := config.FromEnv()
 	log, closeLog := fileLogger(s.DataDir, logName)
+	native.SetLogger(log)
 	return winsvc.Options{Settings: s, Version: version, Log: log, NewBackend: native.New}, closeLog
 }
 

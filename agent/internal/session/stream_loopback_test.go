@@ -357,6 +357,45 @@ func TestLoopbackFullColorFallsBackWhenTheEncoderFails(t *testing.T) {
 	}
 }
 
+func TestLoopbackFullColorWhenThereIsNoH264Encoder(t *testing.T) {
+	h := newHarness(t, platform.ConsentOnce)
+	h.backend.SetFullColor(true)
+	h.backend.SetH264Fails(true)
+	h.browserCodecs = chromeCodecs
+	h.offer(false)
+	if err := <-h.answerOK; err != nil {
+		t.Fatal(err)
+	}
+	h.waitControl(t, "hello")
+	waitFor(t, "full-color capture", func() bool {
+		s := h.backend.Starts()
+		return len(s) == 1 && s[0].Codec == platform.CodecVP9 && h.backend.Capturing()
+	})
+	waitFor(t, "VP9 profile 1 on the wire", func() bool { pts := h.payloadTypes(); return len(pts) > 0 && pts[len(pts)-1] == 35 })
+	h.sendColor(t, 2, "standard")
+	st := h.waitStreamReply(t, 2)
+	opts := st["options"].(map[string]any)
+	if r := st["resolved"].(map[string]any); r["color"] != "full" || fmt.Sprint(opts["color"]) != "[full]" {
+		t.Fatalf("resolved %v options %v: full color is the only choice without H.264", r, opts["color"])
+	}
+	if n := len(h.backend.Starts()); n != 1 {
+		t.Fatalf("%d captures, want no switch back to the missing H.264 encoder", n)
+	}
+}
+
+func TestLoopbackCaptureFailureEndsWithItsReason(t *testing.T) {
+	h := newHarness(t, platform.ConsentOnce)
+	h.backend.SetH264Fails(true) // and no full color to fall back to
+	h.offer(false)
+	if err := <-h.answerOK; err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "session end", func() bool { _, _, ends := h.snapshot(); return len(ends) == 1 })
+	if _, _, ends := h.snapshot(); ends[0].Reason != proto.EndCaptureFailed {
+		t.Fatalf("ended with %q, want %q", ends[0].Reason, proto.EndCaptureFailed)
+	}
+}
+
 func TestLoopbackAnswerAnnouncesTheRepairStream(t *testing.T) {
 	cases := []struct {
 		name   string

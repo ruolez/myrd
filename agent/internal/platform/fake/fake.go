@@ -50,6 +50,7 @@ type Backend struct {
 	noRefine   bool
 	vp9        bool // SupportsCodec(CodecVP9)
 	vp9Fails   bool // StartCapture refuses CodecVP9
+	h264Fails  bool // StartCapture refuses CodecH264 (no H.264 encoder)
 
 	canHideWallpaper bool
 	wallpaperHidden  bool
@@ -88,6 +89,14 @@ func (b *Backend) SetFullColor(on bool) {
 	b.mu.Unlock()
 }
 
+// SetH264Fails makes a CodecH264 StartCapture fail with ErrUnsupported, as
+// on Windows Server without Media Foundation (not recorded in Starts).
+func (b *Backend) SetH264Fails(on bool) {
+	b.mu.Lock()
+	b.h264Fails = on
+	b.mu.Unlock()
+}
+
 // SetFullColorFails makes a CodecVP9 StartCapture fail (not recorded in Starts).
 func (b *Backend) SetFullColorFails(on bool) {
 	b.mu.Lock()
@@ -101,7 +110,7 @@ func (b *Backend) StartCapture(cfg platform.CaptureConfig, sink platform.Capture
 		b.mu.Unlock()
 		return platform.ErrBusy
 	}
-	if cfg.Codec == platform.CodecVP9 && b.vp9Fails {
+	if (cfg.Codec == platform.CodecVP9 && b.vp9Fails) || (cfg.Codec == platform.CodecH264 && b.h264Fails) {
 		b.mu.Unlock()
 		return platform.ErrUnsupported
 	}

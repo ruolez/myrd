@@ -61,6 +61,10 @@ typedef struct {
 } rc_monitor;
 
 /* ---- lifecycle ---- */
+/* Windows only: hands the backend's diagnostic lines (no newline) to fn, from
+ * any thread. Call before rc_init; NULL stops it. */
+typedef void (*rc_log_fn)(const char *line);
+void rc_set_log(rc_log_fn fn);
 int  rc_init(void);
 void rc_shutdown(void);
 const char *rc_backend_name(void);   /* "macos" | "windows" | "linux-x11" */

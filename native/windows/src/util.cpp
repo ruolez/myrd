@@ -6,6 +6,10 @@
 
 namespace rcw {
 
+static rc_log_fn volatile g_log_fn = nullptr;
+
+void set_log(rc_log_fn fn) { g_log_fn = fn; }
+
 void logf(const char *fmt, ...) {
     char buf[1024];
     va_list ap;
@@ -14,6 +18,9 @@ void logf(const char *fmt, ...) {
     va_end(ap);
     if (n < 0) return;
     if (n > (int)sizeof(buf) - 2) n = (int)sizeof(buf) - 2;
+    buf[n] = 0;
+    rc_log_fn fn = g_log_fn;
+    if (fn) fn(buf);
     buf[n] = '\n';
     buf[n + 1] = 0;
     OutputDebugStringA(buf);

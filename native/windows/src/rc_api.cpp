@@ -11,6 +11,8 @@ static const char *g_probed_encoder = "mf";
 
 extern "C" {
 
+void rc_set_log(rc_log_fn fn) { set_log(fn); }
+
 int rc_init(void) {
     // Physical-pixel coordinates everywhere (capture, cursor, SendInput).
     HMODULE user32 = GetModuleHandleW(L"user32.dll");
