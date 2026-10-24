@@ -690,13 +690,87 @@ static Source *open_source(Capture *c) {
     return new DxgiSource(c->dev.get(), c->output.get());
 }
 
+// How a capture loop ended.
+enum LoopEnd {
+    kLoopStopped, // capture_stop, or no encoder left
+    kLoopBlind,   // the source never delivered a frame
+    kLoopStale,   // the source worked, then stopped (rebuild it)
+    kLoopBlack,   // the source shows black where GDI sees the desktop (use GDI)
+};
+
+// Desktop Duplication on a server without a GPU (Windows Server 2019 on a
+// display-only adapter) can deliver black, or nothing, while GDI copies the
+// session's desktop, as the previews do. Checked while the source looks dark.
+static const int64_t kProbeFirstUs = 1000000, kProbeUs = 2000000;
+
+// The dark fraction of a small GDI copy of the monitor.
+static float gdi_dark_fraction(const RECT &r) {
+    const int w = 32, h = 32;
+    attach_input_desktop();
+    HDC screen = GetDC(nullptr);
+    if (!screen) return 1;
+    HDC mem = CreateCompatibleDC(screen);
+    BITMAPINFO bi = {};
+    bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = -h;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void *bits = nullptr;
+    HBITMAP bmp = mem ? CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0) : nullptr;
+    float dark = 1;
+    if (bmp) {
+        HGDIOBJ old = SelectObject(mem, bmp);
+        SetStretchBltMode(mem, COLORONCOLOR); // samples, as rc_dark_fraction does
+        BOOL ok = StretchBlt(mem, 0, 0, w, h, screen, r.left, r.top, r.right - r.left, r.bottom - r.top, SRCCOPY);
+        SelectObject(mem, old);
+        GdiFlush();
+        if (ok) dark = rc_dark_fraction((const uint8_t *)bits, w, h, w * 4);
+        DeleteObject(bmp);
+    }
+    if (mem) DeleteDC(mem);
+    ReleaseDC(nullptr, screen);
+    return dark;
+}
+
+// The GPU pipeline reads its frame back only this long after it starts.
+static const int64_t kProbeForUs = 10000000;
+
+// True when the GPU pipeline has no frame yet or its latest one is dark.
+static bool frame_dark(Capture *c, bool have, Com<ID3D11Texture2D> &probe) {
+    if (!have) return true;
+    if (c->src_fmt != DXGI_FORMAT_B8G8R8A8_UNORM) return false;
+    D3D11_TEXTURE2D_DESC d;
+    if (probe) probe->GetDesc(&d);
+    if (!probe || d.Width != c->src_w || d.Height != c->src_h) {
+        probe.reset();
+        D3D11_TEXTURE2D_DESC sd = {};
+        sd.Width = c->src_w;
+        sd.Height = c->src_h;
+        sd.MipLevels = 1;
+        sd.ArraySize = 1;
+        sd.Format = c->src_fmt;
+        sd.SampleDesc.Count = 1;
+        sd.Usage = D3D11_USAGE_STAGING;
+        sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        if (FAILED(c->dev->CreateTexture2D(&sd, nullptr, probe.put()))) return false;
+    }
+    c->ctx->CopyResource(probe.get(), c->last.get());
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (FAILED(c->ctx->Map(probe.get(), 0, D3D11_MAP_READ, 0, &m))) return false;
+    float dark = rc_dark_fraction((const uint8_t *)m.pData, (int32_t)c->src_w, (int32_t)c->src_h, (int32_t)m.RowPitch);
+    c->ctx->Unmap(probe.get(), 0);
+    return dark > 0.9f;
+}
+
 // How long Desktop Duplication may fail before its first frame until the
 // GDI pipeline takes over (a display-only adapter on a server never works).
 static const int64_t kGpuGraceUs = 3000000;
 
-// Runs the D3D11 pipeline until stopped; true when its source kept failing
-// and never delivered a frame (the caller switches to GDI).
-static bool run_loop(Capture *c) {
+// Runs the D3D11 pipeline until stopped, its source kept failing and never
+// delivered a frame, or it shows black where GDI sees the desktop.
+static LoopEnd run_loop(Capture *c) {
     int64_t started = now_us();
     int64_t interval = 1000000 / (c->fps > 0 ? c->fps : 30);
     int64_t last_encode = 0, last_content = 0;
@@ -706,6 +780,8 @@ static bool run_loop(Capture *c) {
     float changed = 0; // fraction of the frame changed since the last encode, -1 unknown
     int idx = 0;
     int failures = 0;
+    int64_t next_probe = started + kProbeFirstUs;
+    Com<ID3D11Texture2D> probe;
 
     while (!c->stop) {
         LONG br = c->bitrate_kbps;
@@ -758,7 +834,7 @@ static bool run_loop(Capture *c) {
             if (++failures > 3) Sleep(50);
             if (!have && failures > 3 && now_us() - started > kGpuGraceUs) {
                 logf("capture: %s source failing (0x%08lx) with no frame yet", c->src->kind(), (unsigned long)hr);
-                return true;
+                return kLoopBlind;
             }
         }
 
@@ -775,6 +851,13 @@ static bool run_loop(Capture *c) {
                 InterlockedExchange(&c->keyframe_req, 1);
             }
 #endif
+        }
+        if (now >= next_probe && now - started < kProbeForUs) {
+            next_probe = now + kProbeUs;
+            if (frame_dark(c, have, probe) && gdi_dark_fraction(c->mon.rect) < 0.5f) {
+                logf("capture: %s shows %s where GDI sees the desktop", c->src->kind(), have ? "black" : "nothing");
+                return kLoopBlack;
+            }
         }
 
         bool key = InterlockedExchange(&c->keyframe_req, 0) != 0;
@@ -815,20 +898,13 @@ static bool run_loop(Capture *c) {
             logf("capture: encoder failed, recreating with the software MFT");
             if (!make_encoder(c, false)) {
                 logf("capture: no encoder available, stopping");
-                return false;
+                return kLoopStopped;
             }
             sent_any = false;
         }
     }
-    return false;
+    return kLoopStopped;
 }
-
-// How a capture loop ended.
-enum LoopEnd {
-    kLoopStopped, // capture_stop, or no encoder left
-    kLoopBlind,   // the source never delivered a frame
-    kLoopStale,   // the source worked, then stopped (rebuild it)
-};
 
 // The CPU pipeline: poll the source at the frame rate while the screen
 // changes (every 100 ms once it has been still for a second), convert on the
@@ -841,6 +917,7 @@ static LoopEnd run_loop_cpu(Capture *c) {
     bool dirty = false, sent_any = false;
     float changed = 0; // fraction of rows changed since the last encode
     int failures = 0;
+    int64_t next_probe = started + kProbeFirstUs;
 
     while (!c->stop) {
         LONG br = c->bitrate_kbps;
@@ -879,6 +956,17 @@ static LoopEnd run_loop_cpu(Capture *c) {
             if (fallible && c->grab->have() && c->grab->stale(now_us()) && now_us() - started > kGpuGraceUs) {
                 logf("capture: %s source stopped delivering frames", c->grab->kind());
                 return kLoopStale;
+            }
+            if (fallible && now_us() >= next_probe) {
+                next_probe = now_us() + kProbeUs;
+                bool have = c->grab->have();
+                if ((!have || rc_dark_fraction(c->grab->pixels(), (int32_t)c->dst_w, (int32_t)c->dst_h,
+                                               c->grab->stride()) > 0.9f) &&
+                    gdi_dark_fraction(c->mon.rect) < 0.5f) {
+                    logf("capture: %s shows %s where GDI sees the desktop", c->grab->kind(),
+                         have ? "black" : "nothing");
+                    return kLoopBlack;
+                }
             }
         }
 
@@ -1101,15 +1189,16 @@ static DWORD WINAPI capture_thread(void *p) {
 
     if (result == RC_OK) {
         // A failing source is rebuilt on a fresh device and output: Desktop
-        // Duplication again (twice at most while it delivers nothing), then GDI.
+        // Duplication again (twice at most while it delivers nothing), then GDI;
+        // a black one goes to GDI at once.
         int blind = 0;
         for (;;) {
-            LoopEnd end = c->cpu ? run_loop_cpu(c) : run_loop(c) ? kLoopBlind : kLoopStopped;
+            LoopEnd end = c->cpu ? run_loop_cpu(c) : run_loop(c);
             if (c->stop || end == kLoopStopped) break;
             if (end == kLoopStale) blind = 0;
             RECT before = c->mon.rect;
             refresh_monitor(c);
-            bool dxgi = end == kLoopStale || ++blind <= 2;
+            bool dxgi = end == kLoopStale || (end == kLoopBlind && ++blind <= 2);
             if (switch_to_cpu(c, have_mf, dxgi) != RC_OK) break;
             if (memcmp(&before, &c->mon.rect, sizeof before) != 0 && c->on_shape && c->on_pos) {
                 cursor_stop();

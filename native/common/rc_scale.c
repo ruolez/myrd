@@ -1,5 +1,7 @@
 #include "rc_scale.h"
 
+#include <stddef.h>
+
 void rc_fit(int32_t w, int32_t h, int32_t max_w, int32_t max_h, int32_t *out_w, int32_t *out_h) {
     int32_t ow = w, oh = h;
     if (w <= 0 || h <= 0 || max_w <= 0 || max_h <= 0) {
@@ -47,4 +49,17 @@ void rc_scale_bgra(const uint8_t *src, int32_t src_w, int32_t src_h, int32_t src
             o[3] = 255;
         }
     }
+}
+
+float rc_dark_fraction(const uint8_t *px, int32_t w, int32_t h, int32_t stride) {
+    if (!px || w <= 0 || h <= 0) return 1.0f;
+    int32_t nx = w < 32 ? w : 32, ny = h < 32 ? h : 32, dark = 0;
+    for (int32_t gy = 0; gy < ny; gy++) {
+        const uint8_t *row = px + (size_t)((int64_t)(2 * gy + 1) * h / (2 * ny)) * stride;
+        for (int32_t gx = 0; gx < nx; gx++) {
+            const uint8_t *p = row + (size_t)((int64_t)(2 * gx + 1) * w / (2 * nx)) * 4;
+            if (p[0] < 24 && p[1] < 24 && p[2] < 24) dark++;
+        }
+    }
+    return (float)dark / (float)(nx * ny);
 }
