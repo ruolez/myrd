@@ -57,6 +57,10 @@ type Options struct {
 	// RestartAgent schedules a restart of this agent the same way; nil: not
 	// offered.
 	RestartAgent func() error
+	// DisplayMarker is a file that exists while a session's display mode is
+	// not restored yet: a new agent process that finds it restores the saved
+	// modes (the last one died first). Empty: no crash recovery.
+	DisplayMarker string
 
 	// Network: UDPPort > 0 multiplexes ICE on one UDP port; NAT1To1IPs adds
 	// extra host candidates with those IPs (Docker Desktop: 127.0.0.1).
@@ -109,6 +113,9 @@ type Manager struct {
 	mu      sync.Mutex
 	cur     *sess
 	revoked map[string]bool // SPKI b64
+
+	display      displayState
+	displayDelay time.Duration // how long a changed mode outlives its session
 }
 
 var _ Handler = (*Manager)(nil)
@@ -135,7 +142,8 @@ func NewManager(o Options) (*Manager, error) {
 	if o.AskNewBrowsers == nil {
 		o.AskNewBrowsers = func() bool { return false }
 	}
-	m := &Manager{o: o, revoked: map[string]bool{}, sleep: sleepCtx}
+	m := &Manager{o: o, revoked: map[string]bool{}, sleep: sleepCtx, displayDelay: displayRestoreDelay}
+	m.recoverDisplays()
 	if o.UnlockOS != "" {
 		k, err := proto.DeriveUnlockKey(o.DeviceKey)
 		if err != nil {
@@ -307,6 +315,7 @@ func (m *Manager) Current() *Info {
 // and releases the UDP port.
 func (m *Manager) Close() {
 	m.EndAll(proto.EndAgentKill)
+	m.restoreDisplays()
 	if m.audit != nil {
 		m.audit.close()
 	}

@@ -23,6 +23,14 @@ import type { CursorMessage } from "../lib/input";
 import { SHAPE_CACHE } from "../lib/cursor";
 import type { SentMove } from "../lib/cursor";
 import { signaling } from "../lib/signaling";
+import {
+  bestFitMode,
+  displayPrefKey,
+  parseDisplayPref,
+  rememberedMode,
+  serializeDisplayPref,
+} from "../lib/display";
+import type { DisplayChoice, DisplayMode } from "../lib/display";
 import { powerActions } from "../lib/power";
 import type { PowerAction } from "../lib/power";
 import { sealCredential, verifyUnlockKey } from "../lib/unlockCrypto";
@@ -102,6 +110,10 @@ export type Snapshot = {
   unlockKey: UnlockKey | null;
   /** The restarts the device offers (feature `power`). */
   powerActions: PowerAction[];
+  /** A `display` request (screen resolution) is in flight. */
+  displayBusy: boolean;
+  /** Why the last screen resolution change failed; null after a success. */
+  displayError: string | null;
   /** Not the session in view: streams at background quality (setBackground). */
   background: boolean;
   streamPrefs: StreamPrefs;
@@ -150,6 +162,8 @@ const STREAM_DEBOUNCE_MS = 200;
 // Typing a password takes the device a few seconds (Windows raises its sign-in box first).
 const UNLOCK_TIMEOUT_MS = 30_000;
 const POWER_TIMEOUT_MS = 15_000;
+// A mode switch stops capture, waits for the display and starts it again.
+const DISPLAY_TIMEOUT_MS = 20_000;
 
 export type ControlResult = { ok: boolean; code: string | null };
 // Without a HUD showing them, stats feed only the path badge.
@@ -168,6 +182,23 @@ function loadStreamPrefs(deviceId: string): StreamPrefs {
     return parseStreamPrefs(localStorage.getItem(streamPrefsKey(deviceId)));
   } catch {
     return parseStreamPrefs(null);
+  }
+}
+
+function loadDisplayPref(deviceId: string): DisplayChoice | null {
+  try {
+    return parseDisplayPref(localStorage.getItem(displayPrefKey(deviceId)));
+  } catch {
+    return null;
+  }
+}
+
+function saveDisplayPref(deviceId: string, choice: DisplayChoice | null) {
+  try {
+    if (choice) localStorage.setItem(displayPrefKey(deviceId), serializeDisplayPref(choice));
+    else localStorage.removeItem(displayPrefKey(deviceId));
+  } catch {
+    // storage unavailable
   }
 }
 
@@ -250,7 +281,9 @@ export class RemoteSession {
   private pingId = 0;
   private pings = new Map<number, number>();
   private requestId = 0;
-  /** Pending control requests (`unlock`, `power`) by `${t}:${id}`. */
+  /** The remembered screen resolution was looked at for this connection. */
+  private displayApplied = false;
+  /** Pending control requests (`unlock`, `power`, `display`) by `${t}:${id}`. */
   private replies = new Map<string, (r: ControlResult) => void>();
   private clipboard = new ClipboardAssembler();
   private clipXfer = 1;
@@ -280,6 +313,8 @@ export class RemoteSession {
       locked: false,
       unlockKey: null,
       powerActions: [],
+      displayBusy: false,
+      displayError: null,
       background: false,
       streamPrefs: loadStreamPrefs(opts.deviceId),
       streamState: null,
@@ -744,6 +779,7 @@ export class RemoteSession {
           streamFeature: features?.includes("stream") ?? false,
           maxFps: num(m.max_fps),
         });
+        this.displayApplied = false;
         this.applyStream();
         this.refreshFiles();
         if (features?.includes("unlock") && typeof m.unlock_key === "string")
@@ -769,7 +805,8 @@ export class RemoteSession {
         this.update({ locked: m.locked === true });
         break;
       case "unlock":
-      case "power": {
+      case "power":
+      case "display": {
         const key = `${m.t}:${String(m.id)}`;
         const done = this.replies.get(key);
         this.replies.delete(key);
@@ -779,6 +816,15 @@ export class RemoteSession {
       case "stream": {
         const state = parseStreamState(m);
         if (state) this.update({ streamState: state, maxFps: state.max_fps });
+        if (state?.display && !this.displayApplied) {
+          this.displayApplied = true;
+          const want = rememberedMode(
+            loadDisplayPref(this.opts.deviceId),
+            state.display,
+            this.fitView(),
+          );
+          if (want) void this.switchDisplay({ width: want.width, height: want.height });
+        }
         break;
       }
       case "pong": {
@@ -969,13 +1015,46 @@ export class RemoteSession {
     return this.request("unlock", { credential }, UNLOCK_TIMEOUT_MS);
   }
 
+  /**
+   * Switches the device's screen resolution and remembers the choice for this
+   * device; "original" brings back the mode it had before and forgets it.
+   */
+  setDisplay(choice: DisplayChoice | "original"): Promise<ControlResult> {
+    saveDisplayPref(this.opts.deviceId, choice === "original" ? null : choice);
+    if (choice === "original") return this.switchDisplay({ restore: true });
+    const modes = this.snap.streamState?.display?.modes ?? [];
+    const mode: DisplayMode | null | undefined =
+      choice.kind === "fit"
+        ? bestFitMode(modes, this.fitView())
+        : modes.find((x) => x.width === choice.width && x.height === choice.height);
+    if (!mode) return Promise.resolve({ ok: false, code: "unknown_mode" });
+    return this.switchDisplay({ width: mode.width, height: mode.height });
+  }
+
+  private async switchDisplay(body: Record<string, unknown>): Promise<ControlResult> {
+    this.update({ displayBusy: true, displayError: null });
+    const r = await this.request("display", body, DISPLAY_TIMEOUT_MS);
+    this.update({ displayBusy: false, displayError: r.ok ? null : (r.code ?? "failed") });
+    return r;
+  }
+
+  /** The stage in device pixels: the reported view, else (at 1:1) the window below the toolbar. */
+  private fitView(): { w: number; h: number } {
+    if (this.view) return this.view;
+    const dpr = window.devicePixelRatio || 1;
+    return {
+      w: Math.floor(window.innerWidth * dpr),
+      h: Math.floor((window.innerHeight - 48) * dpr),
+    };
+  }
+
   /** Asks the device to restart itself or its agent; on success it ends the session. */
   power(action: PowerAction): Promise<ControlResult> {
     return this.request("power", { action }, POWER_TIMEOUT_MS);
   }
 
   private request(
-    t: "unlock" | "power",
+    t: "unlock" | "power" | "display",
     body: Record<string, unknown>,
     timeoutMs: number,
   ): Promise<ControlResult> {

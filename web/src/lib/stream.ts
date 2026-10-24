@@ -1,6 +1,8 @@
 // Stream settings (docs/PROTOCOL.md §5 "Stream settings"). Pure: no DOM, no storage.
 
 import type { Brand } from "../api/types";
+import { parseDisplay } from "./display";
+import type { DisplayInfo } from "./display";
 
 export type StreamPreset = "auto" | "speed" | "balanced" | "quality" | "custom";
 export type NamedPreset = Exclude<StreamPreset, "custom">;
@@ -51,6 +53,8 @@ export type StreamState = {
   relay: boolean;
   auto: { rung: number; rungs: number; reason: AutoReason } | null;
   options: { fps: number[]; res: ResolutionOption[]; color: StreamColor[] };
+  /** The monitor's display modes (feature `display`); null when they cannot change. */
+  display: DisplayInfo | null;
 };
 
 export const NAMED_PRESETS: readonly NamedPreset[] = ["auto", "speed", "balanced", "quality"];
@@ -200,6 +204,7 @@ export function parseStreamState(m: unknown): StreamState | null {
     relay: m.relay === true,
     auto,
     options: { fps: fpsOpts, res: resOpts, color: colorOpts },
+    display: parseDisplay(m.display),
   };
 }
 

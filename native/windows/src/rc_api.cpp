@@ -90,6 +90,17 @@ void rc_indicator_show(int on) { indicator_show(on != 0); }
 
 int rc_wallpaper_hide(int hide) { return wallpaper_hide(hide != 0); }
 
+int rc_display_modes(uint32_t monitor_id, rc_display_mode *out, int max, rc_display_mode *current) {
+    if (!out || max <= 0) return RC_ERR;
+    return display_modes(monitor_id, out, max, current);
+}
+
+int rc_display_set_mode(uint32_t monitor_id, uint32_t width, uint32_t height) {
+    return display_set_mode(monitor_id, width, height);
+}
+
+int rc_display_restore(void) { return display_restore(); }
+
 int rc_screen_locked(void) { return RC_ERR_UNSUPPORTED; }
 
 int rc_snapshot(uint32_t monitor_id, int32_t max_w, int32_t max_h, rc_image *out) {

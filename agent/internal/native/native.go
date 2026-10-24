@@ -192,6 +192,26 @@ func (b *Backend) HideWallpaper(hide bool) error {
 
 func (b *Backend) ScreenLocked() bool { return screenLocked() }
 
+func (b *Backend) DisplayModes(monitorID uint32) ([]platform.DisplayMode, platform.DisplayMode, error) {
+	var buf [128]C.rc_display_mode
+	var cur C.rc_display_mode
+	n := C.rc_display_modes(C.uint32_t(monitorID), &buf[0], C.int(len(buf)), &cur)
+	if n < 0 {
+		return nil, platform.DisplayMode{}, rcErr(n)
+	}
+	modes := make([]platform.DisplayMode, int(n))
+	for i := range modes {
+		modes[i] = platform.DisplayMode{Width: uint32(buf[i].width), Height: uint32(buf[i].height), Scale: float32(buf[i].scale)}
+	}
+	return modes, platform.DisplayMode{Width: uint32(cur.width), Height: uint32(cur.height), Scale: float32(cur.scale)}, nil
+}
+
+func (b *Backend) SetDisplayMode(monitorID uint32, w, h uint32) error {
+	return rcErr(C.rc_display_set_mode(C.uint32_t(monitorID), C.uint32_t(w), C.uint32_t(h)))
+}
+
+func (b *Backend) RestoreDisplays() error { return rcErr(C.rc_display_restore()) }
+
 func (b *Backend) Snapshot(monitorID uint32, maxW, maxH int) (platform.Image, error) {
 	var img C.rc_image
 	if err := rcErr(C.rc_snapshot(C.uint32_t(monitorID), C.int32_t(maxW), C.int32_t(maxH), &img)); err != nil {

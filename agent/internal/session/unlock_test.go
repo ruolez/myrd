@@ -233,7 +233,7 @@ func TestUnlockKeyIsSignedByTheDeviceKeyAndStable(t *testing.T) {
 	t.Cleanup(off.Close)
 	none := map[string]any{}
 	off.helloUnlock(none)
-	if len(none) != 0 || slices.Contains(helloFeatures(off.o, false), proto.FeatureUnlock) {
+	if len(none) != 0 || slices.Contains(helloFeatures(off.o, false, false), proto.FeatureUnlock) {
 		t.Fatalf("a device without UnlockOS offers unlock: %v", none)
 	}
 }

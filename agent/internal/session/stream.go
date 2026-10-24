@@ -344,6 +344,7 @@ type StreamState struct {
 	Relay        bool           `json:"relay"`
 	Auto         *AutoInfo      `json:"auto"`
 	Options      streamOptions  `json:"options"`
+	Display      *DisplayInfo   `json:"display,omitempty"`
 }
 
 func nonZero[T comparable](v T) *T {

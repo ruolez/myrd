@@ -26,7 +26,7 @@ func TestPowerActions(t *testing.T) {
 	}
 	for _, c := range cases {
 		got := powerActions(c.o)
-		offered := slices.Contains(helloFeatures(c.o, false), proto.FeaturePower)
+		offered := slices.Contains(helloFeatures(c.o, false, false), proto.FeaturePower)
 		if !slices.Equal(got, c.want) || offered != (len(c.want) > 0) {
 			t.Errorf("%s: actions %v feature %v, want %v", c.name, got, offered, c.want)
 		}

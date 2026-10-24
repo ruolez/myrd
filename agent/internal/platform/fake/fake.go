@@ -4,6 +4,8 @@
 package fake
 
 import (
+	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -59,6 +61,10 @@ type Backend struct {
 	snapshot         platform.Image
 	snapshotErr      error
 	snapshots        int
+
+	displayModes []platform.DisplayMode // nil: DisplayModes is unsupported
+	savedMode    map[uint32]platform.DisplayMode
+	displayCalls []string
 }
 
 func New() *Backend {
@@ -68,13 +74,17 @@ func New() *Backend {
 	}
 }
 
-func (b *Backend) Name() string                          { return "fake" }
-func (b *Backend) Init() error                           { return nil }
-func (b *Backend) Shutdown()                             { b.StopCapture() }
-func (b *Backend) Monitors() ([]platform.Monitor, error) { return b.MonitorList, nil }
-func (b *Backend) Permissions() platform.Permissions     { return b.Perms }
-func (b *Backend) RequestPermission(bool)                {}
-func (b *Backend) EncoderName() string                   { return "fake" }
+func (b *Backend) Name() string { return "fake" }
+func (b *Backend) Init() error  { return nil }
+func (b *Backend) Shutdown()    { b.StopCapture() }
+func (b *Backend) Monitors() ([]platform.Monitor, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]platform.Monitor(nil), b.MonitorList...), nil
+}
+func (b *Backend) Permissions() platform.Permissions { return b.Perms }
+func (b *Backend) RequestPermission(bool)            {}
+func (b *Backend) EncoderName() string               { return "fake" }
 
 func (b *Backend) SupportsCodec(codec int) bool {
 	b.mu.Lock()
@@ -244,6 +254,70 @@ func (b *Backend) HideWallpaper(hide bool) error {
 	return nil
 }
 
+func (b *Backend) monitorLocked(id uint32) int {
+	for i, m := range b.MonitorList {
+		if m.ID == id || (id == 0 && m.Primary) {
+			return i
+		}
+	}
+	return -1
+}
+
+func (b *Backend) DisplayModes(monitorID uint32) ([]platform.DisplayMode, platform.DisplayMode, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	i := b.monitorLocked(monitorID)
+	if b.displayModes == nil || i < 0 {
+		return nil, platform.DisplayMode{}, platform.ErrUnsupported
+	}
+	m := b.MonitorList[i]
+	return append([]platform.DisplayMode(nil), b.displayModes...), platform.DisplayMode{Width: m.Width, Height: m.Height, Scale: 1}, nil
+}
+
+// SetDisplayMode resizes the monitor like a real mode switch; ErrBusy while
+// capturing (the natives need capture stopped).
+func (b *Backend) SetDisplayMode(monitorID uint32, w, h uint32) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.displayCalls = append(b.displayCalls, fmt.Sprintf("set %d %dx%d", monitorID, w, h))
+	i := b.monitorLocked(monitorID)
+	if b.displayModes == nil || i < 0 {
+		return platform.ErrUnsupported
+	}
+	if b.capturing {
+		return platform.ErrBusy
+	}
+	if !slices.Contains(b.displayModes, platform.DisplayMode{Width: w, Height: h, Scale: 1}) {
+		return platform.ErrUnsupported
+	}
+	m := &b.MonitorList[i]
+	if b.savedMode == nil {
+		b.savedMode = map[uint32]platform.DisplayMode{}
+	}
+	if _, ok := b.savedMode[m.ID]; !ok {
+		b.savedMode[m.ID] = platform.DisplayMode{Width: m.Width, Height: m.Height, Scale: 1}
+	}
+	m.Width, m.Height = w, h
+	return nil
+}
+
+func (b *Backend) RestoreDisplays() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.displayCalls = append(b.displayCalls, "restore")
+	if b.displayModes == nil {
+		return platform.ErrUnsupported
+	}
+	for i := range b.MonitorList {
+		m := &b.MonitorList[i]
+		if s, ok := b.savedMode[m.ID]; ok {
+			m.Width, m.Height = s.Width, s.Height
+		}
+	}
+	b.savedMode = nil
+	return nil
+}
+
 func (b *Backend) ConsentPrompt(title, message string, _ int) (platform.Consent, error) {
 	if b.PromptFn == nil {
 		return platform.ConsentDeny, platform.ErrUnsupported
@@ -252,6 +326,21 @@ func (b *Backend) ConsentPrompt(title, message string, _ int) (platform.Consent,
 }
 
 // ---- test accessors ----
+
+// SetDisplayModes makes the display modes switchable (all at scale 1).
+func (b *Backend) SetDisplayModes(modes []platform.DisplayMode) {
+	b.mu.Lock()
+	b.displayModes = modes
+	b.mu.Unlock()
+}
+
+// DisplayCalls lists SetDisplayMode ("set <id> <w>x<h>") and RestoreDisplays
+// ("restore") calls in order.
+func (b *Backend) DisplayCalls() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.displayCalls...)
+}
 
 // SetStatic makes the screen static: after the first frame only keyframes
 // and refinement passes are emitted.

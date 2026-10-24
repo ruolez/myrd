@@ -32,6 +32,11 @@ func (Backend) ClipboardText() (string, error)   { return "", platform.ErrUnsupp
 func (Backend) SetClipboardText(string) error    { return platform.ErrUnsupported }
 func (Backend) HideWallpaper(bool) error         { return platform.ErrUnsupported }
 func (Backend) ScreenLocked() bool               { return false }
+func (Backend) DisplayModes(uint32) ([]platform.DisplayMode, platform.DisplayMode, error) {
+	return nil, platform.DisplayMode{}, platform.ErrUnsupported
+}
+func (Backend) SetDisplayMode(uint32, uint32, uint32) error { return platform.ErrUnsupported }
+func (Backend) RestoreDisplays() error                      { return platform.ErrUnsupported }
 func (Backend) Snapshot(uint32, int, int) (platform.Image, error) {
 	return platform.Image{}, platform.ErrUnsupported
 }

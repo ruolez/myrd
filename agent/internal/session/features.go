@@ -7,8 +7,9 @@ import "github.com/ruolez/remotectl/proto"
 // and "move" always, "files" when Options enables file transfer, "wallpaper" when the
 // backend can hide the wallpaper, "unlock" when the device types saved
 // passwords on its lock screen (Options.UnlockOS), "power" when it restarts on
-// request (Options.Restart / RestartAgent).
-func helloFeatures(o Options, wallpaper bool) []string {
+// request (Options.Restart / RestartAgent), "display" when the backend can
+// switch the monitor's display mode.
+func helloFeatures(o Options, wallpaper, display bool) []string {
 	f := []string{"stream", "move"}
 	if o.Files != nil {
 		f = append(f, "files")
@@ -21,6 +22,9 @@ func helloFeatures(o Options, wallpaper bool) []string {
 	}
 	if len(powerActions(o)) > 0 {
 		f = append(f, proto.FeaturePower)
+	}
+	if display {
+		f = append(f, proto.FeatureDisplay)
 	}
 	return f
 }

@@ -167,6 +167,30 @@ int  rc_input_inject(const rc_input_event *ev);
 /* Types a UTF-8 string with no key mapping (IME, emoji). */
 int  rc_input_text(const char *utf8, int32_t len);
 
+/* ---- display modes ---- */
+/* A mode as the OS's display settings name it: pixels, points ("looks like")
+ * on macOS, where scale is the pixels per point (2.0 for a HiDPI mode). */
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    float    scale;
+} rc_display_mode;
+
+/* The modes monitor_id (0 = primary) can switch to, largest first, one per
+ * size (macOS prefers the HiDPI variant of a size), and its current mode in
+ * *current. Returns the count or an RC_ERR_* (RC_ERR_UNSUPPORTED where the
+ * mode cannot change). */
+int  rc_display_modes(uint32_t monitor_id, rc_display_mode *out, int max, rc_display_mode *current);
+/* Switches monitor_id to the listed mode width×height for this login session
+ * only: it is never saved, so a reboot (Windows, Linux) or logout (macOS)
+ * brings the saved mode back. Returns once the OS reports the new size.
+ * Stop capture first and list the monitors again after; ids stay. */
+int  rc_display_set_mode(uint32_t monitor_id, uint32_t width, uint32_t height);
+/* Brings back the saved mode of every monitor, including one an earlier
+ * process changed (Windows: the registry mode; macOS: the permanent
+ * configuration; Linux: what this process first changed). */
+int  rc_display_restore(void);
+
 /* ---- clipboard (text in v1; png optional) ---- */
 /* *out is allocated by the backend; free with rc_free. Returns RC_OK or RC_ERR. */
 int  rc_clipboard_get_text(char **out, int32_t *len);

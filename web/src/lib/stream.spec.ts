@@ -75,6 +75,7 @@ const parsedState: StreamState = {
   relay: false,
   auto: { rung: 2, rungs: 6, reason: "congestion" },
   options: wireState.options as StreamState["options"],
+  display: null,
 };
 
 const state = (patch: Partial<StreamState> = {}): StreamState => ({ ...parsedState, ...patch });
@@ -179,7 +180,20 @@ describe("parseStreamState", () => {
       relay: false,
       auto: null,
       options: { fps: [], res: [], color: [] },
+      display: null,
     });
+  });
+
+  test("reads the display modes", () => {
+    const display = {
+      modes: [
+        { width: 2560, height: 1440, scale: 1 },
+        { width: 1920, height: 1080, scale: 1 },
+      ],
+      current: { width: 1920, height: 1080, scale: 1 },
+      original: { width: 2560, height: 1440, scale: 1 },
+    };
+    expect(parseStreamState({ ...wireState, display })?.display).toEqual(display);
   });
 
   test("reads the color asked for, sent and offered", () => {

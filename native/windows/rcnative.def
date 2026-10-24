@@ -9,6 +9,9 @@ EXPORTS
     rc_clipboard_set_text
     rc_codecs
     rc_consent_prompt
+    rc_display_modes
+    rc_display_restore
+    rc_display_set_mode
     rc_encode_configure
     rc_encode_refine
     rc_encoder_name

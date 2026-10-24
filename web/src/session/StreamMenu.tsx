@@ -21,6 +21,8 @@ import {
   streamLabel,
 } from "../lib/stream";
 import type { ResolutionId, StreamPrefs, StreamState } from "../lib/stream";
+import { groupModes, modeLabel, sameSize } from "../lib/display";
+import type { DisplayChoice, DisplayInfo, DisplayMode } from "../lib/display";
 import type { Monitor } from "../api/types";
 
 type Props = {
@@ -33,7 +35,89 @@ type Props = {
   maxFps: number | null;
   monitor: Monitor | undefined;
   onChange: (prefs: StreamPrefs) => void;
+  /** Switches the device's screen resolution (feature `display`). */
+  onDisplay: (choice: DisplayChoice | "original") => void;
+  displayBusy: boolean;
+  displayError: string | null;
 };
+
+const DISPLAY_ERRORS: Record<string, string> = {
+  unknown_mode: "The device doesn't offer that resolution.",
+  unsupported: "This device can't change its resolution.",
+  timeout: "The device didn't answer in time.",
+  failed: "The device couldn't switch to that resolution.",
+};
+
+const sizeKey = (m: { width: number; height: number }) => `${m.width}x${m.height}`;
+
+function ScreenResolution({
+  display,
+  busy,
+  error,
+  onDisplay,
+}: {
+  display: DisplayInfo;
+  busy: boolean;
+  error: string | null;
+  onDisplay: Props["onDisplay"];
+}) {
+  const { same, other } = groupModes(display.modes, display.current);
+  const listed = display.modes.some((m) => sameSize(m, display.current));
+  const option = (m: DisplayMode) => (
+    <option key={sizeKey(m)} value={sizeKey(m)} className="text-black">
+      {modeLabel(m)}
+    </option>
+  );
+  const pick = (v: string) => {
+    if (v === "original" || v === "fit") return onDisplay(v === "fit" ? { kind: "fit" } : v);
+    const [width = 0, height = 0] = v.split("x").map(Number);
+    onDisplay({ kind: "mode", width, height });
+  };
+  const hint =
+    error && error !== "ended"
+      ? (DISPLAY_ERRORS[error] ?? DISPLAY_ERRORS.failed)
+      : display.original
+        ? `Changed for this session; back to ${modeLabel(display.original)} when you disconnect.`
+        : "Changes the device's own screen; it goes back when you disconnect.";
+  return (
+    <label className="block">
+      <span className="mb-1 flex items-center text-xs text-white/60">
+        Screen resolution
+        {busy && <span className="ml-auto text-[#8ab4f8]">Switching…</span>}
+      </span>
+      <select
+        className="w-full rounded-lg bg-white/10 px-2 py-1.5 text-xs disabled:opacity-60"
+        aria-label="Screen resolution"
+        value={sizeKey(display.current)}
+        onChange={(e) => pick(e.target.value)}
+        disabled={busy}
+      >
+        {display.original && (
+          <option value="original" className="text-black">
+            Original · {modeLabel(display.original)}
+          </option>
+        )}
+        <option value="fit" className="text-black">
+          Best fit for this window
+        </option>
+        {!listed && option(display.current)}
+        <optgroup label="Same shape as now" className="text-black">
+          {same.map(option)}
+        </optgroup>
+        {other.length > 0 && (
+          <optgroup label="Other shapes" className="text-black">
+            {other.map(option)}
+          </optgroup>
+        )}
+      </select>
+      <p
+        className={`mt-1 text-xs ${error && error !== "ended" ? "text-[#fdd663]" : "text-white/50"}`}
+      >
+        {hint}
+      </p>
+    </label>
+  );
+}
 
 export function StreamButton({
   prefs,
@@ -78,6 +162,9 @@ export function StreamMenu({
   maxFps,
   monitor,
   onChange,
+  onDisplay,
+  displayBusy,
+  displayError,
   onClose,
   className = "",
 }: Props & { onClose: () => void; className?: string }) {
@@ -147,6 +234,15 @@ export function StreamMenu({
         ))}
       </div>
 
+      {state?.display && (
+        <ScreenResolution
+          display={state.display}
+          busy={displayBusy}
+          error={displayError}
+          onDisplay={onDisplay}
+        />
+      )}
+
       {feature === false && (
         <p className="text-xs text-white/60">
           This device's agent only supports presets. Update the agent for frame rate, resolution and
@@ -180,7 +276,7 @@ export function StreamMenu({
 
           <label className="block">
             <span className="mb-1 block text-xs text-white/60">
-              Resolution{prefs.preset === "auto" ? " (ceiling)" : ""}
+              Video size{prefs.preset === "auto" ? " (ceiling)" : ""}
             </span>
             <select
               className="w-full rounded-lg bg-white/10 px-2 py-1.5 text-xs"

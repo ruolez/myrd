@@ -405,9 +405,10 @@ func RunHelper(o Options) error {
 		OnPinsChanged: func() {
 			link.Send(proto.TypePinsSync, proto.PinsSync{PinnedClientKeys: ps.List()})
 		},
-		UnlockOS:     "windows",
-		Restart:      RestartDevice,
-		RestartAgent: StartServiceRestart,
+		UnlockOS:      "windows",
+		Restart:       RestartDevice,
+		RestartAgent:  StartServiceRestart,
+		DisplayMarker: filepath.Join(o.Settings.DataDir, session.DisplayMarkerName),
 		SecureAttention: func() {
 			if err := link.SAS(); err != nil {
 				o.Log.Warn("winsvc: Ctrl+Alt+Delete not passed to the service", "err", err)

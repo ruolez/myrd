@@ -25,6 +25,7 @@ static DWORD g_ind_tid = 0;
 static HANDLE g_ind_ready = nullptr;
 
 static HWND g_borders[16];
+static RECT g_border_rects[16];
 static int g_border_count = 0;
 
 static LRESULT CALLBACK border_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -64,6 +65,7 @@ static BOOL CALLBACK add_border(HMONITOR mon, HDC, LPRECT rc, LPARAM) {
     // captures this full-screen window as black over the whole desktop.
     if (os_excludes_from_capture()) SetWindowDisplayAffinity(h, WDA_EXCLUDEFROMCAPTURE);
     ShowWindow(h, SW_SHOWNOACTIVATE);
+    g_border_rects[g_border_count] = *rc;
     g_borders[g_border_count++] = h;
     return TRUE;
 }
@@ -99,12 +101,23 @@ static DWORD WINAPI indicator_thread(void *) {
             destroy_borders();
         } else if (msg.message == WM_TIMER && msg.hwnd == nullptr) {
             if (on) {
-                // Re-assert topmost; rebuild when the monitor layout changed.
-                int n = 0;
+                // Re-assert topmost; rebuild when the monitor layout changed
+                // (a monitor added or removed, a display mode switched).
+                struct Layout {
+                    RECT r[16];
+                    int n;
+                } now = {};
                 EnumDisplayMonitors(nullptr, nullptr,
-                                    [](HMONITOR, HDC, LPRECT, LPARAM p) -> BOOL { (*(int *)p)++; return TRUE; },
-                                    (LPARAM)&n);
-                if (n != g_border_count) create_borders();
+                                    [](HMONITOR, HDC, LPRECT rc, LPARAM p) -> BOOL {
+                                        Layout *l = (Layout *)p;
+                                        if (l->n < 16) l->r[l->n] = *rc;
+                                        l->n++;
+                                        return TRUE;
+                                    },
+                                    (LPARAM)&now);
+                if (now.n != g_border_count ||
+                    memcmp(now.r, g_border_rects, sizeof(RECT) * (size_t)(now.n < 16 ? now.n : 16)) != 0)
+                    create_borders();
                 for (int i = 0; i < g_border_count; i++)
                     SetWindowPos(g_borders[i], HWND_TOPMOST, 0, 0, 0, 0,
                                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);

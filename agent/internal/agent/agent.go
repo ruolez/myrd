@@ -591,7 +591,8 @@ func (a *Agent) runConnected(ctx context.Context) error {
 			UDPPort:         a.cfg.Settings.UDPPort, NAT1To1IPs: a.cfg.Settings.NAT1To1IPs,
 			AgentVersion: a.cfg.Version, Log: a.log, // MaxFPS unset: the session follows the live encoder
 			UnlockOS: unlockOS(a.cfg.Backend), Restart: restartDevice, RestartAgent: restartAgent,
-			Files: files.LocalHost{}, FileDeny: []string{a.cfg.Settings.DataDir}, OnFileActivity: a.onFileActivity,
+			DisplayMarker: filepath.Join(a.cfg.Settings.DataDir, session.DisplayMarkerName),
+			Files:         files.LocalHost{}, FileDeny: []string{a.cfg.Settings.DataDir}, OnFileActivity: a.onFileActivity,
 		})
 		if err != nil {
 			return err

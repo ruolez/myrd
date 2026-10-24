@@ -671,6 +671,9 @@ export function SessionPane({
             maxFps={snap.maxFps}
             monitor={monitor}
             onChange={(p) => session?.setStreamPrefs(p)}
+            onDisplay={(c) => void session?.setDisplay(c)}
+            displayBusy={snap.displayBusy}
+            displayError={snap.displayError}
             onClose={() => closePanel("stream")}
           />
         )}

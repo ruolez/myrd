@@ -133,3 +133,109 @@ BOOL rc_main_loop_alive(void) {
 }
 
 void rc_free(void *p) { free(p); }
+
+// ---- display modes ----
+
+// Every mode, the low-resolution (non-HiDPI) duplicates included.
+static CFArrayRef copy_all_modes(CGDirectDisplayID d) {
+    NSDictionary *opts = @{(__bridge NSString *)kCGDisplayShowDuplicateLowResolutionModes : @YES};
+    return CGDisplayCopyAllDisplayModes(d, (__bridge CFDictionaryRef)opts);
+}
+
+static float mode_scale(CGDisplayModeRef m) {
+    size_t w = CGDisplayModeGetWidth(m);
+    return w ? (float)CGDisplayModeGetPixelWidth(m) / (float)w : 1.0f;
+}
+
+// Of two modes of one size, the better: HiDPI, then the refresh rate closest
+// to the current one.
+static bool better_mode(CGDisplayModeRef a, CGDisplayModeRef b, double hz) {
+    float sa = mode_scale(a), sb = mode_scale(b);
+    if (sa != sb) return sa > sb;
+    return fabs(CGDisplayModeGetRefreshRate(a) - hz) < fabs(CGDisplayModeGetRefreshRate(b) - hz);
+}
+
+// The best desktop mode of display d at w×h points; NULL when there is none.
+// The caller releases it.
+static CGDisplayModeRef find_mode(CGDirectDisplayID d, uint32_t w, uint32_t h, double hz) {
+    CFArrayRef all = copy_all_modes(d);
+    if (!all) return NULL;
+    CGDisplayModeRef best = NULL;
+    for (CFIndex i = 0; i < CFArrayGetCount(all); i++) {
+        CGDisplayModeRef m = (CGDisplayModeRef)CFArrayGetValueAtIndex(all, i);
+        if (!CGDisplayModeIsUsableForDesktopGUI(m) || CGDisplayModeGetWidth(m) != w || CGDisplayModeGetHeight(m) != h)
+            continue;
+        if (!best || better_mode(m, best, hz)) best = m;
+    }
+    if (best) CGDisplayModeRetain(best);
+    CFRelease(all);
+    return best;
+}
+
+static int mode_cmp(const void *a, const void *b) {
+    const rc_display_mode *x = a, *y = b;
+    uint64_t ax = (uint64_t)x->width * x->height, ay = (uint64_t)y->width * y->height;
+    if (ax != ay) return ax < ay ? 1 : -1;
+    return x->width < y->width ? 1 : x->width > y->width ? -1 : 0;
+}
+
+int rc_display_modes(uint32_t monitor_id, rc_display_mode *out, int max, rc_display_mode *current) {
+    if (!out || max <= 0) return RC_ERR;
+    CGDirectDisplayID d = monitor_id ? monitor_id : CGMainDisplayID();
+    CGDisplayModeRef cur = CGDisplayCopyDisplayMode(d);
+    if (!cur) return RC_ERR;
+    if (current)
+        *current = (rc_display_mode){(uint32_t)CGDisplayModeGetWidth(cur), (uint32_t)CGDisplayModeGetHeight(cur),
+                                     mode_scale(cur)};
+    double hz = CGDisplayModeGetRefreshRate(cur);
+    CGDisplayModeRelease(cur);
+    CFArrayRef all = copy_all_modes(d);
+    if (!all) return RC_ERR_UNSUPPORTED;
+    int n = 0;
+    for (CFIndex i = 0; i < CFArrayGetCount(all) && n < max; i++) {
+        CGDisplayModeRef m = (CGDisplayModeRef)CFArrayGetValueAtIndex(all, i);
+        if (!CGDisplayModeIsUsableForDesktopGUI(m)) continue;
+        uint32_t w = (uint32_t)CGDisplayModeGetWidth(m), h = (uint32_t)CGDisplayModeGetHeight(m);
+        bool dup = false;
+        for (int j = 0; j < n && !dup; j++) dup = out[j].width == w && out[j].height == h;
+        if (dup) continue;
+        CGDisplayModeRef best = find_mode(d, w, h, hz);
+        out[n++] = (rc_display_mode){w, h, best ? mode_scale(best) : mode_scale(m)};
+        if (best) CGDisplayModeRelease(best);
+    }
+    CFRelease(all);
+    qsort(out, (size_t)n, sizeof *out, mode_cmp);
+    return n;
+}
+
+int rc_display_set_mode(uint32_t monitor_id, uint32_t width, uint32_t height) {
+    CGDirectDisplayID d = monitor_id ? monitor_id : CGMainDisplayID();
+    CGDisplayModeRef cur = CGDisplayCopyDisplayMode(d);
+    double hz = cur ? CGDisplayModeGetRefreshRate(cur) : 0;
+    if (cur) CGDisplayModeRelease(cur);
+    CGDisplayModeRef mode = find_mode(d, width, height, hz);
+    if (!mode) return RC_ERR_UNSUPPORTED;
+    CGDisplayConfigRef cfg;
+    CGError err = CGBeginDisplayConfiguration(&cfg);
+    if (err == kCGErrorSuccess) {
+        CGConfigureDisplayWithDisplayMode(cfg, d, mode, NULL);
+        // For this login only: logout or rc_display_restore brings the saved mode back.
+        err = CGCompleteDisplayConfiguration(cfg, kCGConfigureForSession);
+    }
+    CGDisplayModeRelease(mode);
+    if (err != kCGErrorSuccess) {
+        RCLOG("display %u: switch to %ux%u failed (%d)", d, width, height, err);
+        return RC_ERR;
+    }
+    for (int i = 0; i < 20; i++) {
+        CGRect b = CGDisplayBounds(d);
+        if ((uint32_t)b.size.width == width && (uint32_t)b.size.height == height) break;
+        usleep(100 * 1000);
+    }
+    return RC_OK;
+}
+
+int rc_display_restore(void) {
+    CGRestorePermanentDisplayConfiguration();
+    return RC_OK;
+}

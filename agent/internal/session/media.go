@@ -103,6 +103,7 @@ type mediaPipe struct {
 	maxFPS     int
 	monitors   []platform.Monitor
 	active     int
+	display    *displayCache // the active monitor's display modes; nil = fixed
 	settings   StreamSettings
 	background bool
 	wallpaper  bool // the browser asked to see the wallpaper
@@ -156,6 +157,7 @@ func newMediaPipe(s *sess, track *videoTrack) *mediaPipe {
 	p.encoder = b.EncoderName()
 	p.maxFPS = p.fpsCap(p.encoder)
 	p.canHideWP = b.HideWallpaper(false) == nil
+	s.m.displayAcquire()
 	mons, err := b.Monitors()
 	if err != nil {
 		s.log.Warn("monitor list failed", "err", err)
@@ -166,6 +168,7 @@ func newMediaPipe(s *sess, track *videoTrack) *mediaPipe {
 			p.active = i
 		}
 	}
+	p.display = p.readDisplayLocked()
 	p.resetAutoLocked()
 	go p.reconcileLoop()
 	return p
@@ -371,6 +374,7 @@ func (p *mediaPipe) streamStateLocked() StreamState {
 	}
 	st := BuildStreamState(in, PlanStream(in), auto)
 	st.OK = true
+	st.Display = p.displayInfoLocked()
 	return st
 }
 
@@ -596,6 +600,7 @@ func (p *mediaPipe) stop(reason string) {
 		p.b.StopCapture()
 	}
 	p.syncWallpaperLocked(false)
+	p.s.m.displayRelease()
 }
 
 func (p *mediaPipe) selectMonitor(idx int) error {
@@ -613,6 +618,7 @@ func (p *mediaPipe) selectMonitor(idx int) error {
 		return nil
 	}
 	p.active = idx
+	p.display = p.readDisplayLocked()
 	p.resetAutoLocked()
 	p.mu.Unlock()
 	err := p.restartLocked()
@@ -785,7 +791,7 @@ func (p *mediaPipe) setControlChannel(dc *webrtc.DataChannel) {
 	p.mu.Unlock()
 	perm := p.b.Permissions()
 	hello := map[string]any{"t": "hello", "monitors": mons, "active": active, "encoder": enc,
-		"codec": "h264", "fps": plan.FPS, "max_fps": maxFPS, "features": helloFeatures(p.s.m.o, p.canHideWP),
+		"codec": "h264", "fps": plan.FPS, "max_fps": maxFPS, "features": helloFeatures(p.s.m.o, p.canHideWP, p.display != nil),
 		"permissions":   proto.Permissions{Screen: perm.Screen, Input: perm.Input},
 		"agent_version": p.s.m.o.AgentVersion, "os": runtime.GOOS, "locked": locked}
 	p.s.m.helloUnlock(hello)
@@ -870,6 +876,8 @@ func (p *mediaPipe) onControlText(b []byte) {
 		p.s.onUnlock(b)
 	case "power":
 		p.s.onPower(b)
+	case "display":
+		go p.onDisplay(b) // a mode switch takes a second or two: keep the channel moving
 	}
 }
 

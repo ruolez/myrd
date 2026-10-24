@@ -119,6 +119,10 @@ bool find_monitor(uint32_t id, MonitorInfo *out);
 bool find_primary_monitor(MonitorInfo *out);
 // Virtual desktop rect (all monitors).
 RECT virtual_desktop();
+// rc_display_modes / rc_display_set_mode / rc_display_restore.
+int display_modes(uint32_t id, rc_display_mode *out, int max, rc_display_mode *current);
+int display_set_mode(uint32_t id, uint32_t w, uint32_t h);
+int display_restore();
 
 // ---- Media Foundation, loaded at runtime (mfapi_dyn.cpp) ----
 struct MfApi {

@@ -115,6 +115,13 @@ const (
 	ConsentRemember Consent = 2
 )
 
+// DisplayMode is a monitor mode as the OS's display settings name it: pixels,
+// points ("looks like") on macOS, where Scale is the pixels per point.
+type DisplayMode struct {
+	Width, Height uint32
+	Scale         float32
+}
+
 type Backend interface {
 	Name() string // "macos" | "windows" | "linux-x11"
 	Init() error
@@ -146,6 +153,16 @@ type Backend interface {
 	// controller sees; the state outlives capture restarts. ErrUnsupported
 	// when the platform cannot hide it.
 	HideWallpaper(hide bool) error
+
+	// DisplayModes lists the modes a monitor (0 = primary) can switch to,
+	// largest first, one per size, and its current mode. ErrUnsupported where
+	// modes cannot be changed (rc_native.h rc_display_modes).
+	DisplayModes(monitorID uint32) ([]DisplayMode, DisplayMode, error)
+	// SetDisplayMode switches a monitor to width×height for this login
+	// session only; capture must be stopped and the monitors listed again.
+	SetDisplayMode(monitorID uint32, width, height uint32) error
+	// RestoreDisplays brings back the saved mode of every monitor.
+	RestoreDisplays() error
 
 	// Snapshot takes one picture of a monitor (0 = primary) scaled down to
 	// fit maxW×maxH, without starting a capture, for a dashboard preview.

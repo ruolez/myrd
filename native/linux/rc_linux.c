@@ -109,11 +109,21 @@ static Display *open_display(void) {
 
 /* ---------------- monitors ---------------- */
 
+/* The screen's current size. DisplayWidth/Height are Xlib's copy from the
+ * connection setup and do not follow RandR changes. */
+static void screen_size_locked(int *w, int *h) {
+    Window r;
+    int x, y;
+    unsigned int sw = 0, sh = 0, bw, depth;
+    XGetGeometry(g.dpy, DefaultRootWindow(g.dpy), &r, &x, &y, &sw, &sh, &bw, &depth);
+    *w = (int)sw;
+    *h = (int)sh;
+}
+
 static void refresh_monitors_locked(void) {
     int n = 0;
     Window root = DefaultRootWindow(g.dpy);
-    g.screen_w = DisplayWidth(g.dpy, DefaultScreen(g.dpy));
-    g.screen_h = DisplayHeight(g.dpy, DefaultScreen(g.dpy));
+    screen_size_locked(&g.screen_w, &g.screen_h);
     int ev, er;
     if (XRRQueryExtension(g.dpy, &ev, &er)) {
         int cnt = 0;
@@ -165,6 +175,198 @@ static int find_monitor_locked(uint32_t id, rc_monitor *out) {
         return id == 0;
     }
     return 0;
+}
+
+/* ---------------- display modes ---------------- */
+
+/* What rc_display_set_mode changed, to put back: the CRTC's first mode and
+ * the screen size before the first change. */
+static struct {
+    int n;
+    RRCrtc crtc[MAX_MONITORS];
+    RRMode mode[MAX_MONITORS];
+    int screen_w, screen_h, screen_mmw, screen_mmh;
+} g_saved;
+
+/* The RandR output and CRTC showing monitor id (refresh_monitors_locked's
+ * numbering); 0 when it has none. */
+static int monitor_crtc_locked(uint32_t id, XRRScreenResources *res, RROutput *out, RRCrtc *crtc) {
+    refresh_monitors_locked();
+    rc_monitor m;
+    if (!find_monitor_locked(id, &m)) return 0;
+    Window root = DefaultRootWindow(g.dpy);
+    int cnt = 0, n = 0;
+    *out = None;
+    XRRMonitorInfo *mi = XRRGetMonitors(g.dpy, root, True, &cnt);
+    for (int i = 0; mi && i < cnt && n < MAX_MONITORS; i++) {
+        if (mi[i].width <= 0 || mi[i].height <= 0) continue;
+        if ((uint32_t)++n == m.id && mi[i].noutput > 0) *out = mi[i].outputs[0];
+    }
+    if (mi) XRRFreeMonitors(mi);
+    if (*out == None) return 0;
+    XRROutputInfo *oi = XRRGetOutputInfo(g.dpy, res, *out);
+    *crtc = oi ? oi->crtc : None;
+    if (oi) XRRFreeOutputInfo(oi);
+    return *crtc != None;
+}
+
+static const XRRModeInfo *mode_info(const XRRScreenResources *res, RRMode id) {
+    for (int i = 0; i < res->nmode; i++)
+        if (res->modes[i].id == id) return &res->modes[i];
+    return NULL;
+}
+
+static int mode_cmp(const void *a, const void *b) {
+    const rc_display_mode *x = a, *y = b;
+    uint64_t ax = (uint64_t)x->width * x->height, ay = (uint64_t)y->width * y->height;
+    if (ax != ay) return ax < ay ? 1 : -1;
+    return x->width < y->width ? 1 : x->width > y->width ? -1 : 0;
+}
+
+int rc_display_modes(uint32_t monitor_id, rc_display_mode *out, int max, rc_display_mode *current) {
+    pthread_mutex_lock(&g.mu);
+    if (!g.inited) {
+        pthread_mutex_unlock(&g.mu);
+        return RC_ERR;
+    }
+    XRRScreenResources *res = XRRGetScreenResourcesCurrent(g.dpy, DefaultRootWindow(g.dpy));
+    RROutput output;
+    RRCrtc crtc;
+    int n = RC_ERR_UNSUPPORTED;
+    if (res && monitor_crtc_locked(monitor_id, res, &output, &crtc)) {
+        XRROutputInfo *oi = XRRGetOutputInfo(g.dpy, res, output);
+        XRRCrtcInfo *ci = XRRGetCrtcInfo(g.dpy, res, crtc);
+        n = 0;
+        for (int i = 0; oi && i < oi->nmode && n < max; i++) {
+            const XRRModeInfo *mi = mode_info(res, oi->modes[i]);
+            if (!mi) continue;
+            int dup = 0;
+            for (int j = 0; j < n; j++) dup |= out[j].width == mi->width && out[j].height == mi->height;
+            if (dup) continue;
+            out[n++] = (rc_display_mode){mi->width, mi->height, 1.0f};
+        }
+        qsort(out, (size_t)n, sizeof *out, mode_cmp);
+        if (current && ci) *current = (rc_display_mode){ci->width, ci->height, 1.0f};
+        if (ci) XRRFreeCrtcInfo(ci);
+        if (oi) XRRFreeOutputInfo(oi);
+    }
+    if (res) XRRFreeScreenResources(res);
+    pthread_mutex_unlock(&g.mu);
+    return n;
+}
+
+/* Fits the screen to the CRTCs' bounding box (at least min_w×min_h), keeping 96 dpi. */
+static void fit_screen_locked(XRRScreenResources *res, int min_w, int min_h) {
+    int w = min_w, h = min_h;
+    for (int i = 0; i < res->ncrtc; i++) {
+        XRRCrtcInfo *ci = XRRGetCrtcInfo(g.dpy, res, res->crtcs[i]);
+        if (ci && ci->mode != None) {
+            if (ci->x + (int)ci->width > w) w = ci->x + (int)ci->width;
+            if (ci->y + (int)ci->height > h) h = ci->y + (int)ci->height;
+        }
+        if (ci) XRRFreeCrtcInfo(ci);
+    }
+    XRRSetScreenSize(g.dpy, DefaultRootWindow(g.dpy), w, h, (int)(w * 25.4 / 96), (int)(h * 25.4 / 96));
+}
+
+/* Puts crtc on mode, growing the screen first when the mode is larger. */
+static int set_crtc_mode_locked(RRCrtc crtc, RRMode mode) {
+    Window root = DefaultRootWindow(g.dpy);
+    XRRScreenResources *res = XRRGetScreenResourcesCurrent(g.dpy, root);
+    XRRCrtcInfo *ci = res ? XRRGetCrtcInfo(g.dpy, res, crtc) : NULL;
+    const XRRModeInfo *mi = res ? mode_info(res, mode) : NULL;
+    int rc = RC_ERR;
+    if (ci && mi) {
+        int sw, sh;
+        screen_size_locked(&sw, &sh);
+        int need_w = ci->x + (int)mi->width, need_h = ci->y + (int)mi->height;
+        if (need_w > sw || need_h > sh) {
+            int gw = need_w > sw ? need_w : sw, gh = need_h > sh ? need_h : sh;
+            XRRSetScreenSize(g.dpy, root, gw, gh, (int)(gw * 25.4 / 96), (int)(gh * 25.4 / 96));
+            // A new screen size is a new configuration: the old resources'
+            // timestamp would get the CRTC change refused.
+            XRRFreeScreenResources(res);
+            res = XRRGetScreenResourcesCurrent(g.dpy, root);
+        }
+        Status st = res ? XRRSetCrtcConfig(g.dpy, res, crtc, CurrentTime, ci->x, ci->y, mode, ci->rotation,
+                                           ci->outputs, ci->noutput)
+                        : RRSetConfigFailed;
+        if (st == RRSetConfigSuccess) rc = RC_OK;
+        else fprintf(stderr, "rc_linux: CRTC mode change refused (%d)\n", (int)st);
+    }
+    if (ci) XRRFreeCrtcInfo(ci);
+    if (res) {
+        fit_screen_locked(res, 1, 1);
+        XRRFreeScreenResources(res);
+    }
+    XSync(g.dpy, False);
+    return rc;
+}
+
+int rc_display_set_mode(uint32_t monitor_id, uint32_t width, uint32_t height) {
+    pthread_mutex_lock(&g.mu);
+    if (!g.inited || atomic_load(&g.running)) {
+        pthread_mutex_unlock(&g.mu);
+        return g.inited ? RC_ERR_BUSY : RC_ERR;
+    }
+    Window root = DefaultRootWindow(g.dpy);
+    XRRScreenResources *res = XRRGetScreenResourcesCurrent(g.dpy, root);
+    RROutput output;
+    RRCrtc crtc;
+    int rc = RC_ERR_UNSUPPORTED;
+    if (res && monitor_crtc_locked(monitor_id, res, &output, &crtc)) {
+        XRROutputInfo *oi = XRRGetOutputInfo(g.dpy, res, output);
+        RRMode mode = None;
+        for (int i = 0; oi && i < oi->nmode && mode == None; i++) {
+            const XRRModeInfo *mi = mode_info(res, oi->modes[i]);
+            if (mi && mi->width == width && mi->height == height) mode = mi->id;
+        }
+        if (oi) XRRFreeOutputInfo(oi);
+        if (mode != None) {
+            int saved = 0;
+            for (int i = 0; i < g_saved.n; i++) saved |= g_saved.crtc[i] == crtc;
+            if (!saved && g_saved.n < MAX_MONITORS) {
+                XRRCrtcInfo *ci = XRRGetCrtcInfo(g.dpy, res, crtc);
+                if (g_saved.n == 0) {
+                    screen_size_locked(&g_saved.screen_w, &g_saved.screen_h);
+                    g_saved.screen_mmw = (int)(g_saved.screen_w * 25.4 / 96);
+                    g_saved.screen_mmh = (int)(g_saved.screen_h * 25.4 / 96);
+                }
+                g_saved.crtc[g_saved.n] = crtc;
+                g_saved.mode[g_saved.n] = ci ? ci->mode : None;
+                g_saved.n++;
+                if (ci) XRRFreeCrtcInfo(ci);
+            }
+            rc = set_crtc_mode_locked(crtc, mode);
+        }
+    }
+    if (res) XRRFreeScreenResources(res);
+    refresh_monitors_locked();
+    pthread_mutex_unlock(&g.mu);
+    return rc;
+}
+
+int rc_display_restore(void) {
+    pthread_mutex_lock(&g.mu);
+    if (!g.inited) {
+        pthread_mutex_unlock(&g.mu);
+        return RC_ERR;
+    }
+    int rc = RC_OK;
+    if (g_saved.n > 0) {
+        for (int i = 0; i < g_saved.n; i++)
+            if (g_saved.mode[i] != None && set_crtc_mode_locked(g_saved.crtc[i], g_saved.mode[i]) != RC_OK)
+                rc = RC_ERR;
+        if (rc == RC_OK) {
+            XRRSetScreenSize(g.dpy, DefaultRootWindow(g.dpy), g_saved.screen_w, g_saved.screen_h, g_saved.screen_mmw,
+                             g_saved.screen_mmh);
+            g_saved.n = 0; // kept on failure, for the next try
+        }
+        XSync(g.dpy, False);
+    }
+    refresh_monitors_locked();
+    pthread_mutex_unlock(&g.mu);
+    return rc;
 }
 
 /* ---------------- lifecycle ---------------- */
