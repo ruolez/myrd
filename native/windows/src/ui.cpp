@@ -60,7 +60,9 @@ static BOOL CALLBACK add_border(HMONITOR mon, HDC, LPRECT rc, LPARAM) {
     if (!h) return TRUE;
     SetLayeredWindowAttributes(h, kKeyColor, 0, LWA_COLORKEY);
     // Keep the border out of the stream so the controller does not see it.
-    SetWindowDisplayAffinity(h, WDA_EXCLUDEFROMCAPTURE);
+    // Earlier builds (Server 2019) take the value as WDA_MONITOR, which
+    // captures this full-screen window as black over the whole desktop.
+    if (os_excludes_from_capture()) SetWindowDisplayAffinity(h, WDA_EXCLUDEFROMCAPTURE);
     ShowWindow(h, SW_SHOWNOACTIVATE);
     g_borders[g_border_count++] = h;
     return TRUE;

@@ -51,18 +51,29 @@ void wide_to_utf8(const wchar_t *w, char *out, int cap) {
     if (n <= 0) out[cap - 1] = 0;
 }
 
-bool os_before_win8() {
-    static int before = -1;
-    if (before < 0) {
-        // RtlGetVersion, unlike GetVersionEx, is not shimmed to the manifest's version.
+// The real Windows version, zero when unknown. RtlGetVersion, unlike
+// GetVersionEx, is not shimmed to the manifest's version.
+static const OSVERSIONINFOW &os_version() {
+    static const OSVERSIONINFOW v = [] {
         typedef LONG(WINAPI * RtlGetVersionFn)(OSVERSIONINFOW *);
-        OSVERSIONINFOW v = {};
-        v.dwOSVersionInfoSize = sizeof(v);
+        OSVERSIONINFOW r = {};
+        r.dwOSVersionInfoSize = sizeof(r);
         HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
         RtlGetVersionFn fn = ntdll ? (RtlGetVersionFn)(void *)GetProcAddress(ntdll, "RtlGetVersion") : nullptr;
-        before = fn && fn(&v) == 0 && (v.dwMajorVersion < 6 || (v.dwMajorVersion == 6 && v.dwMinorVersion < 2)) ? 1 : 0;
-    }
-    return before == 1;
+        if (!fn || fn(&r) != 0) r = OSVERSIONINFOW{};
+        return r;
+    }();
+    return v;
+}
+
+bool os_before_win8() {
+    const OSVERSIONINFOW &v = os_version();
+    return v.dwMajorVersion != 0 && (v.dwMajorVersion < 6 || (v.dwMajorVersion == 6 && v.dwMinorVersion < 2));
+}
+
+bool os_excludes_from_capture() {
+    const OSVERSIONINFOW &v = os_version();
+    return v.dwMajorVersion > 10 || (v.dwMajorVersion == 10 && v.dwBuildNumber >= 19041);
 }
 
 HMODULE load_system_dll(const wchar_t *name) {

@@ -88,6 +88,8 @@ int64_t now_us();
 // True before Windows 8: no Desktop Duplication, no D3D11 video processor and
 // a software H.264 encoder limited to 1920×1088 (the GDI capture path).
 bool os_before_win8();
+// Windows 10 2004 (build 19041) or later: WDA_EXCLUDEFROMCAPTURE works.
+bool os_excludes_from_capture();
 // LoadLibraryEx from System32 only, also on Windows 7 without KB2533623.
 HMODULE load_system_dll(const wchar_t *name);
 
