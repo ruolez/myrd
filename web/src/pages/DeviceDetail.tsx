@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
-import { api, errorMessage } from "../api/client";
-import type { Device, DevicePatch, SavedCredential } from "../api/types";
+import { api, ApiError, errorMessage } from "../api/client";
+import type { Device, DevicePatch, SavedCredential, VirtualDisplayAction } from "../api/types";
 import { useAuth } from "../app/auth";
 import { useDirectory } from "../app/directory";
 import {
@@ -19,6 +19,7 @@ import {
   Loading,
   Meter,
   PageHeader,
+  Spinner,
   TagChip,
   Toggle,
   useConfirm,
@@ -39,6 +40,7 @@ import { useAsync, useNow, usePaged } from "../lib/hooks";
 import { canRestart } from "../lib/power";
 import { canSaveSignIn } from "../lib/unlock";
 import { updateBadge } from "../lib/update";
+import { virtualDisplayErrorMessage, virtualDisplayView } from "../lib/vdisplay";
 import { NOTES_MAX, useOrgDialog } from "./devices/dialogs";
 
 export function DeviceDetail() {
@@ -256,6 +258,7 @@ export function DeviceDetail() {
               </button>
             </div>
           )}
+          <VirtualDisplayRow device={d} />
           <div>
             <div className="mb-2 text-sm font-medium">Approved browsers</div>
             {d.pinned_clients && d.pinned_clients.length > 0 ? (
@@ -528,6 +531,74 @@ function SavedSignInRow({ device: d }: { device: Device }) {
         <Icon name="key" size={16} />
         {saved ? "Edit" : "Save…"}
       </button>
+    </div>
+  );
+}
+
+/** Install or remove the virtual display of a Windows device without a monitor. */
+function VirtualDisplayRow({ device: d }: { device: Device }) {
+  const confirm = useConfirm();
+  const toast = useToast();
+  // Shown as under way until the next device.info report.
+  const [pending, setPending] = useState<{
+    action: VirtualDisplayAction;
+    infoAt: string | null;
+  } | null>(null);
+  const view = virtualDisplayView(
+    d.info,
+    d.online && d.status !== "disabled",
+    pending && pending.infoAt === d.info_at ? pending.action : null,
+  );
+  if (!view) return null;
+
+  const run = async (action: VirtualDisplayAction) => {
+    if (
+      action === "remove" &&
+      !(await confirm({
+        title: "Remove the virtual display?",
+        message:
+          "Without a monitor attached, the device goes back to Windows' basic screen at 1024×768.",
+        confirm: "Remove",
+        danger: true,
+      }))
+    )
+      return;
+    setPending({ action, infoAt: d.info_at });
+    try {
+      await api.devices.virtualDisplay(d.id, action);
+    } catch (e) {
+      setPending(null);
+      toast(
+        e instanceof ApiError ? virtualDisplayErrorMessage(e.code, e.message) : errorMessage(e),
+        "error",
+      );
+    }
+  };
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <div>
+        <div className="text-sm font-medium">Virtual display</div>
+        <p className={`text-sm ${view.warning ? "text-warning" : "text-muted"}`}>{view.text}</p>
+      </div>
+      <div className="flex shrink-0 gap-2">
+        {view.busy && (
+          <button className="btn-tonal btn-sm" disabled>
+            <Spinner size={16} label="Working" />
+            Working…
+          </button>
+        )}
+        {view.buttons.map((b) => (
+          <button
+            key={b.action}
+            className={b.action === "remove" ? "btn-outline btn-sm text-error" : "btn-tonal btn-sm"}
+            disabled={view.disabled !== null}
+            title={view.disabled ?? undefined}
+            onClick={() => void run(b.action)}
+          >
+            {b.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

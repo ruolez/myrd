@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/ruolez/remotectl/proto"
@@ -16,8 +17,8 @@ const minInfoInterval = 5 * time.Second
 var agentFeatures = []string{proto.FeatureDeviceInfo, proto.FeaturePreview}
 
 // cleanHostInfo bounds a report before it is stored and shown: text is
-// truncated, disks are capped, CPU is clamped and memory used never
-// exceeds the total.
+// truncated, disks are capped, CPU is clamped, memory used never
+// exceeds the total and a virtual display in an unknown state is dropped.
 func cleanHostInfo(in proto.HostInfo) proto.HostInfo {
 	t := func(s string) string { return cleanText(s, proto.MaxHostInfoText) }
 	out := proto.HostInfo{
@@ -36,6 +37,10 @@ func cleanHostInfo(in proto.HostInfo) proto.HostInfo {
 	if in.CPUPct != nil && !math.IsNaN(*in.CPUPct) {
 		v := math.Round(min(max(*in.CPUPct, 0), 100)*10) / 10
 		out.CPUPct = &v
+	}
+	if v := in.VirtualDisplay; v != nil && slices.Contains(proto.VDriverStates, v.Driver) {
+		out.VirtualDisplay = &proto.VirtualDisplayInfo{Supported: v.Supported, Headless: v.Headless,
+			Driver: v.Driver, Active: v.Active, Error: t(v.Error)}
 	}
 	for _, d := range in.Disks {
 		if len(out.Disks) == proto.MaxHostDisks {

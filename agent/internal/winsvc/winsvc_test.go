@@ -7,10 +7,12 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/ruolez/remotectl/agent/internal/vdd"
 	"github.com/ruolez/remotectl/proto"
 )
 
@@ -388,6 +390,42 @@ func TestProxyForwardsDeviceInfoOnlyWhenTheServerTakesIt(t *testing.T) {
 	p.SetServerFeatures([]string{proto.FeatureDeviceInfo})
 	link.Send(proto.TypeDeviceInfo, report)
 	waitFor(t, func() bool { return countInfo() == 1 })
+}
+
+// The service's virtual display job shows in the helper's reports: at once
+// (the last report sent again), on every report while it runs, and a
+// finished job's result only until the helper's next report.
+func TestProxyLaysTheVirtualDisplayJobOverDeviceInfo(t *testing.T) {
+	rec := &recorder{}
+	p := &Proxy{Send: rec.Send}
+	p.SetServerFeatures([]string{proto.FeatureDeviceInfo})
+	link, stop := pair(t, p, &fakeTarget{}, HelperEvents{})
+	defer stop()
+	report := proto.HostInfoReport{Info: proto.HostInfo{OSName: "Windows Server 2019",
+		VirtualDisplay: &proto.VirtualDisplayInfo{Supported: true, Headless: true, Driver: proto.VDriverAbsent}}}
+	drivers := func() []string {
+		var out []string
+		for _, m := range rec.all() {
+			var r proto.HostInfoReport
+			if m.Type == proto.TypeDeviceInfo && json.Unmarshal([]byte(m.JSON), &r) == nil && r.Info.VirtualDisplay != nil {
+				out = append(out, r.Info.VirtualDisplay.Driver)
+			}
+		}
+		return out
+	}
+	link.Send(proto.TypeDeviceInfo, report)
+	waitFor(t, func() bool { return len(drivers()) == 1 })
+	p.SetVirtualDisplayJob(vdd.Job{Driver: proto.VDriverInstalling}, false)
+	link.Send(proto.TypeDeviceInfo, report)
+	waitFor(t, func() bool { return len(drivers()) == 3 })
+	p.SetVirtualDisplayJob(vdd.Job{Driver: proto.VDriverInstalled}, true)
+	link.Send(proto.TypeDeviceInfo, report)
+	waitFor(t, func() bool { return len(drivers()) == 5 })
+	want := []string{proto.VDriverAbsent, proto.VDriverInstalling, proto.VDriverInstalling, proto.VDriverInstalled,
+		proto.VDriverAbsent}
+	if got := drivers(); !slices.Equal(got, want) {
+		t.Fatalf("drivers reported %v, want %v", got, want)
+	}
 }
 
 type previewSink struct{ got [][]byte }

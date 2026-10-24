@@ -22,6 +22,7 @@ import type {
   Tag,
   TagId,
   User,
+  VirtualDisplayAction,
 } from "./types";
 
 import type { SealedPreview } from "../lib/previewCrypto";
@@ -224,6 +225,8 @@ export const api = {
     removeCredential: (id: string) => request<object>("DELETE", `/v1/devices/${id}/credential`),
     requestUpdate: (id: string, force: boolean) =>
       request<{ version: string }>("POST", `/v1/devices/${id}/update`, { force }),
+    virtualDisplay: (id: string, action: VirtualDisplayAction) =>
+      request<object>("POST", `/v1/devices/${id}/virtual-display`, { action }),
     enrollToken: () =>
       request<{ token: string; expires_at: string }>("POST", "/v1/enroll-tokens", {}),
   },

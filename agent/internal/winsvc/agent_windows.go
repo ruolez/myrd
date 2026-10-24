@@ -30,6 +30,7 @@ import (
 	"github.com/ruolez/remotectl/agent/internal/sysinfo"
 	"github.com/ruolez/remotectl/agent/internal/tray"
 	"github.com/ruolez/remotectl/agent/internal/update"
+	"github.com/ruolez/remotectl/agent/internal/vdd"
 	"github.com/ruolez/remotectl/proto"
 )
 
@@ -168,6 +169,8 @@ func runConnected(ctx context.Context, o *Options, p *Proxy) error {
 			OnUpdateCheck: func(m proto.UpdateCheck) {
 				go upd.CheckNow(ctx, update.Trigger{Explicit: m.Explicit, Force: m.Force})
 			},
+			// The service installs the driver; the helper reports what the desktop shows.
+			OnVirtualDisplay: func(m proto.VirtualDisplayRequest) { go vdJobs.run(m.Action, p, o.Log) },
 			// The helper in the console session takes the picture.
 			OnPreviewRequest: func(raw []byte) { p.HandleSignal(proto.TypePreviewRequest, raw) },
 			OnDeviceUpdate: func(u proto.DeviceUpdate) {
@@ -446,7 +449,9 @@ func RunHelper(o Options) error {
 	// The helper runs in the console session, where the console user, idle
 	// time and lock screen are visible; the service drops these reports when
 	// the server does not take them.
-	collector := &sysinfo.Collector{Locked: sysinfo.LockScreenShown}
+	collector := &sysinfo.Collector{Locked: sysinfo.LockScreenShown, VirtualDisplay: vdd.Info}
+	// A headless device's virtual monitor stays its only, primary screen.
+	go vdd.Keep(ctx, o.Log)
 	info := sysinfo.NewReporter(collector.Collect,
 		func(h proto.HostInfo) error { return link.Send(proto.TypeDeviceInfo, proto.HostInfoReport{Info: h}) },
 		func() bool { return true })

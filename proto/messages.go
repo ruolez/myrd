@@ -507,6 +507,8 @@ type HostInfo struct {
 	MemTotal  uint64     `json:"mem_total"` // bytes
 	MemUsed   uint64     `json:"mem_used"`  // bytes
 	Disks     []DiskInfo `json:"disks"`     // fixed disks / local volumes
+	// VirtualDisplay: Windows agents since 0.6.0; absent elsewhere.
+	VirtualDisplay *VirtualDisplayInfo `json:"virtual_display,omitempty"`
 }
 
 // HostInfoReport is sent by the agent after hello_ack and about once a minute.

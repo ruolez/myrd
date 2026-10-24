@@ -122,6 +122,7 @@ Rate limit: 10 failed attempts / 15 min per IP and per email → 429.
 | PUT | `/v1/devices/{id}/credential` | `{username (≤ 256 chars), sealed: SealedCredential}` → `{credential}`; replaces the caller's saved sign-in. 400 when `sealed` is malformed (eph_pub 65 bytes, iv 12, sig 64, unlock_key a SHA-256 hex, ciphertext 17..2112 bytes) or `client_key` is not a live client key of the caller. Audited `device.credential.saved` (meta: client_key_id, label) |
 | DELETE | `/v1/devices/{id}/credential` | → `{}`; audited `device.credential.removed` when one was saved |
 | POST | `/v1/devices/{id}/update` | `{force?:bool}` → 202 `{version}`; sends `update.check{explicit:true,force}`. 409 `device_offline` \| `up_to_date` \| `unsupported` (Linux demo). Audited `agent.update.requested` |
+| POST | `/v1/devices/{id}/virtual-display` | `{action:"install"\|"remove"}` → 202 `{}`; sends `virtual_display{action}`; the outcome arrives in `device.info` (`virtual_display`). 400 `bad_request` (unknown action); 409 `device_offline` \| `unsupported` (not Windows). Audited `device.virtual_display.requested` (meta: action) |
 | POST | `/v1/enroll-tokens` | `{}` → `{token:"XXXX-XXXX", expires_at}` (charset `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`, 15 min, single use, stored hashed) |
 | GET | `/v1/sessions?device_id=&limit=&before=` | → paged `Session` |
 | GET | `/v1/audit?device_id=&limit=&before=` | → paged `AuditEvent` for the caller |
@@ -159,6 +160,7 @@ Rate limit: 10 failed attempts / 15 min per IP and per email → 429.
 | POST | `/v1/admin/releases/{id}/installer` | → `{release}`; the release's file becomes the Add-device download for its os (`/v1/downloads/{macos\|windows}`). Audited `release.installer_set` |
 | DELETE | `/v1/admin/releases/{id}` | → `{}`; removes the file |
 | POST | `/v1/admin/devices/{id}/update` | `{force?:bool}` → 202 `{version}`; as `/v1/devices/{id}/update` for any device |
+| POST | `/v1/admin/devices/{id}/virtual-display` | `{action}` → 202 `{}`; as `/v1/devices/{id}/virtual-display` for any device |
 | POST | `/v1/admin/updates/push` | `{os?:"darwin"\|"windows"}` → `{queued:int}`; "Update all outdated": `update.check{explicit:true}` (never forced) to every online outdated device, spread over up to 10 min |
 | GET / PUT | `/v1/admin/settings` | `{signup_allowed:bool, default_auto_accept:bool, max_session_hours:int, download_macos_url, download_windows_url, screen_previews:bool}`; turning `screen_previews` off drops every stored preview |
 
@@ -236,6 +238,7 @@ Rules:
 ### Agent extras
 - `hello` → `hello_ack{server_time, device{id,name,auto_accept}, update{available,version}, revoked_client_keys:[spki b64]}`. The agent drops revoked keys from its pinned list. `update` comes from the same selection as `/v1/agent/update` (cohort applied); the agent checks for an update on `hello_ack` only when `available`.
 - Server pushes `update.check{explicit?:bool, force?:bool}` (§7). Agent sends `update.status{state, from, version, error}` on every state change (at most one per 2 s); the server stores it on the device, relays it to the owner's browsers and audits it: `agent.update.requested` (meta: version, force; actor user or admin), `agent.update.started` (installing), `agent.update.succeeded` (derived from the next `hello`), `agent.update.failed`, `agent.update.rolled_back` (meta: from, version, error).
+- Server pushes `virtual_display{action:"install"|"remove"}` (Windows devices only; older agents ignore it): install or remove the bundled virtual display driver. The agent reports progress and the result in `device.info` (`virtual_display.driver`), not in a reply.
 - `permissions{permissions}` whenever TCC state changes; `pins.sync{pinned_client_keys}` after any pin change.
 - `token.renew{}` → `token{token,expires_at}` (the agent keeps it for the next reconnect).
 - Server pushes `device.update{name,auto_accept}`, `client_key.revoked{public_key}`.
@@ -255,10 +258,18 @@ HostInfo { "os_name":"macOS","os_version":"15.1","os_build":"24B83",
            "idle_s":int|null, "uptime_s":int, "locked":bool|null,
            "cpu_pct":0..100|null,           // over the last ≥ 1 s
            "cpu_count":int, "mem_total":bytes, "mem_used":bytes,
-           "disks":[{"name","mount","fs","total","free"}] }   // ≤ 32; free = available to the user
+           "disks":[{"name","mount","fs","total","free"}],    // ≤ 32; free = available to the user
+           "virtual_display":{                // Windows agents 0.6.0+; absent elsewhere
+             "supported":bool,                // the driver can run (64-bit Windows 10 1803 / Server 2019+)
+             "headless":bool,                 // no monitor attached (only Windows' generic one)
+             "driver":"absent"|"installing"|"installed"|"removing"|"failed",
+             "active":bool,                   // the virtual monitor is on the desktop
+             "error":"…" } }                  // why the last install or removal failed; omitted when empty
 ```
 
-Sources: macOS sysctl, Mach host statistics (used = app + wired + compressed), CGEventSource idle time, SCDynamicStore console user, the startup volume and local volumes under `/Volumes`. Windows: registry `CurrentVersion` (ProductName shows Windows 11 from build 22000), GetSystemTimes, GlobalMemoryStatusEx, fixed drives with a letter; the console user, idle time and lock state (input desktop other than `Default` with LogonUI running in the session, so a UAC prompt is not a lock) come from the session helper, and the service drops the helper's reports when the server did not list the feature. Linux (demo device): /proc and statfs; no user, idle or lock. The server truncates text to 128 characters, clamps numbers and keeps at most 32 disks with a size.
+Sources: macOS sysctl, Mach host statistics (used = app + wired + compressed), CGEventSource idle time, SCDynamicStore console user, the startup volume and local volumes under `/Volumes`. Windows: registry `CurrentVersion` (ProductName shows Windows 11 from build 22000), GetSystemTimes, GlobalMemoryStatusEx, fixed drives with a letter; the console user, idle time and lock state (input desktop other than `Default` with LogonUI running in the session, so a UAC prompt is not a lock) come from the session helper, and the service drops the helper's reports when the server did not list the feature. Linux (demo device): /proc and statfs; no user, idle or lock. The server truncates text to 128 characters (including `virtual_display.error`), clamps numbers, keeps at most 32 disks with a size and drops a `virtual_display` whose `driver` is not one of the listed states.
+
+Virtual display (Windows 10 1803+ / Server 2019+, x64): the agent carries Virtual Display Driver 25.7.23 (github.com/VirtualDrivers/Virtual-Display-Driver, MIT; an Indirect Display driver signed by the SignPath Foundation through GlobalSign) and never downloads it. On `install` the service writes the driver and `vdd_settings.xml` (one monitor; 1920×1080 first, then common sizes up to 3840×2160, at 60 Hz) to `%SystemDrive%\VirtualDisplayDriver` (the driver host runs as LocalService) and points `HKLM\SOFTWARE\MikeTheTech\VirtualDisplayDriver\VDDPATH` there, adds the SignPath Foundation certificate to LocalMachine TrustedPublisher and GlobalSign Code Signing Root R45 to Root when missing (a service install cannot prompt), creates the root-enumerated device `Root\MttVDD` and installs the driver on it. `remove` removes the device, the driver package (`SetupUninstallOEMInf`), the settings key and folder; the certificates stay. `virtual_display.headless` is true when no monitor besides Windows' generic `Default_Monitor` and the virtual `MTT1337` is listed, `active` when `MTT1337` is. While headless with the virtual monitor on the desktop, the helper makes it the primary and only monitor (saved in the registry; Windows keeps a layout per set of monitors, so removing the driver brings the generic one back). Its modes then appear in the stream state's `display` (§5 "Screen resolution"). The service reports `installing`/`removing` at once and the result at least 6 s later (the server drops reports closer than 5 s); `failed` with `error` stays until the next request.
 
 ### Screen previews (feature `preview`)
 

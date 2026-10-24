@@ -2,6 +2,7 @@ package app
 
 import (
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -38,5 +39,30 @@ func TestCleanHostInfo(t *testing.T) {
 	}
 	if got := *cleanHostInfo(proto.HostInfo{CPUPct: ptr(12.345)}).CPUPct; got != 12.3 {
 		t.Fatalf("cpu rounding: %v", got)
+	}
+}
+
+func TestCleanHostInfoVirtualDisplay(t *testing.T) {
+	long := strings.Repeat("x", proto.MaxHostInfoText+10)
+	cases := []struct {
+		name string
+		in   *proto.VirtualDisplayInfo
+		want *proto.VirtualDisplayInfo
+	}{
+		{"absent", nil, nil},
+		{"valid",
+			&proto.VirtualDisplayInfo{Supported: true, Headless: true, Driver: proto.VDriverInstalled, Active: true},
+			&proto.VirtualDisplayInfo{Supported: true, Headless: true, Driver: proto.VDriverInstalled, Active: true}},
+		{"unknown driver state", &proto.VirtualDisplayInfo{Supported: true, Driver: "broken"}, nil},
+		{"long error",
+			&proto.VirtualDisplayInfo{Supported: true, Driver: proto.VDriverFailed, Error: long},
+			&proto.VirtualDisplayInfo{Supported: true, Driver: proto.VDriverFailed, Error: long[:proto.MaxHostInfoText]}},
+	}
+	for _, c := range cases {
+		got := cleanHostInfo(proto.HostInfo{VirtualDisplay: c.in})
+		want := proto.HostInfo{Disks: []proto.DiskInfo{}, VirtualDisplay: c.want}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s:\n got %+v\nwant %+v", c.name, got, want)
+		}
 	}
 }

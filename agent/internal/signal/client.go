@@ -61,7 +61,9 @@ type Options struct {
 	OnDeviceUpdate func(proto.DeviceUpdate)
 	OnKeyRevoked   func(proto.KeyRevoked)
 	OnUpdateCheck  func(proto.UpdateCheck)
-	OnStatus       func(Status)
+	// OnVirtualDisplay gets virtual_display (install / remove the driver).
+	OnVirtualDisplay func(proto.VirtualDisplayRequest)
+	OnStatus         func(Status)
 	// OnPreviewRequest gets preview.request (raw JSON); it must not block.
 	OnPreviewRequest func(raw []byte)
 }
@@ -275,6 +277,11 @@ func (c *Client) connectOnce(ctx context.Context) error {
 			var m proto.UpdateCheck
 			if json.Unmarshal(data, &m) == nil && c.o.OnUpdateCheck != nil {
 				c.o.OnUpdateCheck(m)
+			}
+		case proto.TypeVirtualDisplay:
+			var m proto.VirtualDisplayRequest
+			if json.Unmarshal(data, &m) == nil && c.o.OnVirtualDisplay != nil {
+				c.o.OnVirtualDisplay(m)
 			}
 		case proto.TypePreviewRequest:
 			if c.o.OnPreviewRequest != nil {

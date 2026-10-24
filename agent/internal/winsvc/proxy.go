@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ruolez/remotectl/agent/internal/session"
+	"github.com/ruolez/remotectl/agent/internal/vdd"
 	"github.com/ruolez/remotectl/proto"
 )
 
@@ -40,6 +41,42 @@ type Proxy struct {
 	// serverFeatures is hello_ack.features: the helper's messages for a
 	// feature the server does not accept are dropped here.
 	serverFeatures atomic.Pointer[[]string]
+
+	// The virtual display job the service runs, laid over the helper's
+	// device.info; vdOnce: until the helper's next report.
+	vdMu     sync.Mutex
+	vdJob    vdd.Job
+	vdOnce   bool
+	lastInfo *proto.HostInfo
+}
+
+// SetVirtualDisplayJob records the service's virtual display job and sends
+// the helper's last report again with it. once: the helper's next report,
+// which sees the result itself, replaces it.
+func (p *Proxy) SetVirtualDisplayJob(j vdd.Job, once bool) {
+	p.vdMu.Lock()
+	p.vdJob, p.vdOnce = j, once
+	last := p.lastInfo
+	p.vdMu.Unlock()
+	if last != nil && p.serverAccepts(proto.FeatureDeviceInfo) {
+		p.sendServer(proto.TypeDeviceInfo, proto.HostInfoReport{Info: j.Apply(*last)})
+	}
+}
+
+// helperInfo is a device.info from the helper with the job laid over it.
+func (p *Proxy) helperInfo(raw json.RawMessage) any {
+	var m proto.HostInfoReport
+	if json.Unmarshal(raw, &m) != nil {
+		return raw
+	}
+	p.vdMu.Lock()
+	defer p.vdMu.Unlock()
+	info := m.Info
+	p.lastInfo = &info
+	if p.vdOnce {
+		p.vdJob, p.vdOnce = vdd.Job{}, false
+	}
+	return proto.HostInfoReport{Info: p.vdJob.Apply(m.Info)}
 }
 
 // SetServerFeatures records what the server accepts (hello_ack.features).
@@ -130,7 +167,10 @@ func (p *Proxy) readLoop(r io.Reader) error {
 			if f.Type == "" || len(f.Data) == 0 {
 				continue
 			}
-			if f.Type == proto.TypeDeviceInfo && !p.serverAccepts(proto.FeatureDeviceInfo) {
+			if f.Type == proto.TypeDeviceInfo {
+				if p.serverAccepts(proto.FeatureDeviceInfo) {
+					p.sendServer(f.Type, p.helperInfo(f.Data))
+				}
 				continue
 			}
 			p.sendServer(f.Type, f.Data)

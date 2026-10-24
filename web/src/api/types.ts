@@ -108,6 +108,25 @@ export type HostInfo = {
   mem_total: number;
   mem_used: number;
   disks: DiskInfo[];
+  /** Windows agents 0.6.0 and later. */
+  virtual_display?: VirtualDisplayInfo;
+};
+
+export type VirtualDisplayAction = "install" | "remove";
+
+export type VirtualDriverState = "absent" | "installing" | "installed" | "removing" | "failed";
+
+/** PROTOCOL §3 device.info virtual_display. */
+export type VirtualDisplayInfo = {
+  /** The driver can run here (64-bit Windows 10 1803 / Server 2019 or later). */
+  supported: boolean;
+  /** No monitor is attached. */
+  headless: boolean;
+  driver: VirtualDriverState;
+  /** The virtual monitor is on the desktop. */
+  active: boolean;
+  /** Why the last install or removal failed (driver "failed"). */
+  error?: string;
 };
 
 export type Folder = {

@@ -389,6 +389,16 @@ func (h *Hub) PushUpdateCheck(deviceID string, explicit, force bool) bool {
 	return true
 }
 
+// PushVirtualDisplay sends virtual_display to the device; false when it is offline.
+func (h *Hub) PushVirtualDisplay(deviceID, action string) bool {
+	ac := h.agent(deviceID)
+	if ac == nil || ac.ctx.Err() != nil {
+		return false
+	}
+	h.sendMsg(ac.wsConn, proto.TypeVirtualDisplay, proto.VirtualDisplayRequest{Action: action})
+	return true
+}
+
 // ScheduleUpdateChecks spreads update.check to ids over spreadWindow,
 // replacing the checks still pending under key. A device that went offline
 // meanwhile is skipped; it asks again on its next hello.

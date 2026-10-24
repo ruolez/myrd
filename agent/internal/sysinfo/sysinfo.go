@@ -28,6 +28,8 @@ const minCPUWindow = time.Second
 type Collector struct {
 	// Locked reports the lock screen; nil when the platform has no notion of it.
 	Locked func() bool
+	// VirtualDisplay reports the virtual display (Windows); nil: none.
+	VirtualDisplay func() *proto.VirtualDisplayInfo
 
 	mu      sync.Mutex
 	prev    *cpuTimes
@@ -43,6 +45,9 @@ func (c *Collector) Collect() proto.HostInfo {
 	if c.Locked != nil {
 		l := c.Locked()
 		info.Locked = &l
+	}
+	if c.VirtualDisplay != nil {
+		info.VirtualDisplay = c.VirtualDisplay()
 	}
 	if cur, ok := readCPU(); ok {
 		c.mu.Lock()
