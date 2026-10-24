@@ -73,12 +73,15 @@ function ScreenResolution({
     const [width = 0, height = 0] = v.split("x").map(Number);
     onDisplay({ kind: "mode", width, height });
   };
+  const fixed = display.modes.length < 2 && !display.original;
   const hint =
     error && error !== "ended"
       ? (DISPLAY_ERRORS[error] ?? DISPLAY_ERRORS.failed)
-      : display.original
-        ? `Changed for this session; back to ${modeLabel(display.original)} when you disconnect.`
-        : "Changes the device's own screen; it goes back when you disconnect.";
+      : fixed
+        ? "This device offers no other screen mode. A computer without a monitor attached usually has only one; a dummy HDMI or VGA plug gives it the full range."
+        : display.original
+          ? `Changed for this session; back to ${modeLabel(display.original)} when you disconnect.`
+          : "Changes the device's own screen; it goes back when you disconnect.";
   return (
     <label className="block">
       <span className="mb-1 flex items-center text-xs text-white/60">
@@ -90,16 +93,18 @@ function ScreenResolution({
         aria-label="Screen resolution"
         value={sizeKey(display.current)}
         onChange={(e) => pick(e.target.value)}
-        disabled={busy}
+        disabled={busy || fixed}
       >
         {display.original && (
           <option value="original" className="text-black">
             Original · {modeLabel(display.original)}
           </option>
         )}
-        <option value="fit" className="text-black">
-          Best fit for this window
-        </option>
+        {!fixed && (
+          <option value="fit" className="text-black">
+            Best fit for this window
+          </option>
+        )}
         {!listed && option(display.current)}
         <optgroup label="Same shape as now" className="text-black">
           {same.map(option)}

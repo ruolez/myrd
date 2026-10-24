@@ -121,6 +121,20 @@ func TestLoopbackDisplayRefusals(t *testing.T) {
 	}
 }
 
+// A monitor with one mode is still reported, so the browser can say why the
+// resolution cannot change.
+func TestLoopbackDisplaySingleMode(t *testing.T) {
+	h := newHarness(t, platform.ConsentOnce)
+	h.backend.SetDisplayModes(testModes[1:2])
+	hello := h.connect(t)
+	st := h.waitDisplayState(t, "[1920,1080]")
+	modes := st["display"].(map[string]any)["modes"].([]any)
+	offered := slices.Contains(hello["features"].([]any), any(proto.FeatureDisplay))
+	if len(modes) != 1 || !offered {
+		t.Fatalf("single mode: %d modes, feature %v", len(modes), offered)
+	}
+}
+
 func TestLoopbackDisplayRestoredAfterTheSessionEnds(t *testing.T) {
 	h := newHarness(t, platform.ConsentOnce)
 	h.mgr.displayDelay = 50 * time.Millisecond

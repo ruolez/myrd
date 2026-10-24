@@ -3,8 +3,10 @@ package session
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -166,17 +168,37 @@ type displayCache struct {
 	current platform.DisplayMode
 }
 
-// readDisplayLocked lists the active monitor's modes; nil when they cannot
-// change (or only one exists). Caller holds mu.
+// readDisplayLocked lists the active monitor's modes; nil when the backend
+// cannot read them. A single mode is kept so the browser can say why the
+// resolution cannot change. Caller holds mu.
 func (p *mediaPipe) readDisplayLocked() *displayCache {
 	if len(p.monitors) == 0 {
 		return nil
 	}
 	modes, cur, err := p.b.DisplayModes(p.monitors[p.active].ID)
-	if err != nil || len(modes) < 2 {
+	if err != nil || len(modes) == 0 {
 		return nil
 	}
 	return &displayCache{modes, cur}
+}
+
+// logDisplayLocked records what the active monitor can switch to, once per
+// session start or monitor change. Caller holds mu.
+func (p *mediaPipe) logDisplayLocked() {
+	if len(p.monitors) == 0 {
+		return
+	}
+	c := p.display
+	if c == nil {
+		p.s.log.Info("display: modes unavailable", "monitor", p.monitors[p.active].ID)
+		return
+	}
+	sizes := make([]string, len(c.modes))
+	for i, m := range c.modes {
+		sizes[i] = fmt.Sprintf("%dx%d", m.Width, m.Height)
+	}
+	p.s.log.Info("display: modes", "monitor", p.monitors[p.active].ID,
+		"current", fmt.Sprintf("%dx%d", c.current.Width, c.current.Height), "modes", strings.Join(sizes, " "))
 }
 
 func (p *mediaPipe) displayInfoLocked() *DisplayInfo {

@@ -453,7 +453,7 @@ Wallpaper (feature `"wallpaper"`, advertised when the agent's platform can hide 
 
 #### Screen resolution (`display`, feature `"display"`)
 
-The agent lists the feature when the active monitor has more than one display mode it can switch to, and the stream state then carries:
+The agent lists the feature when it can read the active monitor's display modes, and the stream state then carries (a single mode means the resolution cannot change: a server without a monitor often offers only one; Windows then lists the driver's raw modes, which it may still refuse to set):
 
 ```json
 "display":{"modes":[{"width":2560,"height":1440,"scale":1},{"width":1920,"height":1080,"scale":1},{"width":1280,"height":720,"scale":1}],

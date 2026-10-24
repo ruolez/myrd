@@ -165,14 +165,21 @@ int display_modes(uint32_t id, rc_display_mode *out, int max, rc_display_mode *c
     // desktop is turned now, as the current mode is.
     bool turn = rotated(now);
     int n = 0;
-    DEVMODEW dm = {};
-    dm.dmSize = sizeof(dm);
-    for (DWORD i = 0; n < max && EnumDisplaySettingsExW(dev, i, &dm, 0); i++) {
-        if (dm.dmBitsPerPel != now.dmBitsPerPel || dm.dmPelsWidth < 800 || dm.dmPelsHeight < 600) continue;
-        uint32_t w = turn ? dm.dmPelsHeight : dm.dmPelsWidth, h = turn ? dm.dmPelsWidth : dm.dmPelsHeight;
-        bool dup = false;
-        for (int j = 0; j < n && !dup; j++) dup = out[j].width == w && out[j].height == h;
-        if (!dup) out[n++] = {w, h, 1.0f};
+    // The monitor's modes first; with only one (a server without a monitor:
+    // Windows assumes a generic one), every mode the driver has.
+    const DWORD passes[] = {0, EDS_RAWMODE};
+    for (DWORD flags : passes) {
+        n = 0;
+        DEVMODEW dm = {};
+        dm.dmSize = sizeof(dm);
+        for (DWORD i = 0; n < max && EnumDisplaySettingsExW(dev, i, &dm, flags); i++) {
+            if (dm.dmBitsPerPel != now.dmBitsPerPel || dm.dmPelsWidth < 800 || dm.dmPelsHeight < 600) continue;
+            uint32_t w = turn ? dm.dmPelsHeight : dm.dmPelsWidth, h = turn ? dm.dmPelsWidth : dm.dmPelsHeight;
+            bool dup = false;
+            for (int j = 0; j < n && !dup; j++) dup = out[j].width == w && out[j].height == h;
+            if (!dup) out[n++] = {w, h, 1.0f};
+        }
+        if (n > 1) break;
     }
     std::sort(out, out + n, [](const rc_display_mode &a, const rc_display_mode &b) {
         uint64_t aa = (uint64_t)a.width * a.height, bb = (uint64_t)b.width * b.height;

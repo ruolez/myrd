@@ -8,7 +8,7 @@ import "github.com/ruolez/remotectl/proto"
 // backend can hide the wallpaper, "unlock" when the device types saved
 // passwords on its lock screen (Options.UnlockOS), "power" when it restarts on
 // request (Options.Restart / RestartAgent), "display" when the backend can
-// switch the monitor's display mode.
+// read (and so possibly switch) the monitor's display modes.
 func helloFeatures(o Options, wallpaper, display bool) []string {
 	f := []string{"stream", "move"}
 	if o.Files != nil {

@@ -169,6 +169,7 @@ func newMediaPipe(s *sess, track *videoTrack) *mediaPipe {
 		}
 	}
 	p.display = p.readDisplayLocked()
+	p.logDisplayLocked()
 	p.resetAutoLocked()
 	go p.reconcileLoop()
 	return p
@@ -619,6 +620,7 @@ func (p *mediaPipe) selectMonitor(idx int) error {
 	}
 	p.active = idx
 	p.display = p.readDisplayLocked()
+	p.logDisplayLocked()
 	p.resetAutoLocked()
 	p.mu.Unlock()
 	err := p.restartLocked()
