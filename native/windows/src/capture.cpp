@@ -703,7 +703,7 @@ enum LoopEnd {
 // session's desktop, as the previews do. Checked while the source looks dark.
 static const int64_t kProbeFirstUs = 1000000, kProbeUs = 2000000;
 
-// The dark fraction of a small GDI copy of the monitor.
+// The black fraction of a small GDI copy of the monitor.
 static float gdi_dark_fraction(const RECT &r) {
     const int w = 32, h = 32;
     attach_input_desktop();
@@ -734,13 +734,23 @@ static float gdi_dark_fraction(const RECT &r) {
     return dark;
 }
 
+// True when the captured frame is black (fraction dup; the "Activate Windows"
+// watermark may show on it) and GDI sees more of a picture. The first probe of
+// a loop is logged.
+static bool blacked_out(Capture *c, float dup, int *probes) {
+    if (dup <= 0.9f) return false;
+    float gdi = gdi_dark_fraction(c->mon.rect);
+    if ((*probes)++ == 0) logf("capture: black probe: captured %.2f, gdi %.2f", dup, gdi);
+    return gdi < dup - 0.1f;
+}
+
 // The GPU pipeline reads its frame back only this long after it starts.
 static const int64_t kProbeForUs = 10000000;
 
-// True when the GPU pipeline has no frame yet or its latest one is dark.
-static bool frame_dark(Capture *c, bool have, Com<ID3D11Texture2D> &probe) {
-    if (!have) return true;
-    if (c->src_fmt != DXGI_FORMAT_B8G8R8A8_UNORM) return false;
+// The black fraction of the GPU pipeline's latest frame, 1 with none yet.
+static float frame_dark(Capture *c, bool have, Com<ID3D11Texture2D> &probe) {
+    if (!have) return 1;
+    if (c->src_fmt != DXGI_FORMAT_B8G8R8A8_UNORM) return 0;
     D3D11_TEXTURE2D_DESC d;
     if (probe) probe->GetDesc(&d);
     if (!probe || d.Width != c->src_w || d.Height != c->src_h) {
@@ -754,14 +764,14 @@ static bool frame_dark(Capture *c, bool have, Com<ID3D11Texture2D> &probe) {
         sd.SampleDesc.Count = 1;
         sd.Usage = D3D11_USAGE_STAGING;
         sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-        if (FAILED(c->dev->CreateTexture2D(&sd, nullptr, probe.put()))) return false;
+        if (FAILED(c->dev->CreateTexture2D(&sd, nullptr, probe.put()))) return 0;
     }
     c->ctx->CopyResource(probe.get(), c->last.get());
     D3D11_MAPPED_SUBRESOURCE m;
-    if (FAILED(c->ctx->Map(probe.get(), 0, D3D11_MAP_READ, 0, &m))) return false;
+    if (FAILED(c->ctx->Map(probe.get(), 0, D3D11_MAP_READ, 0, &m))) return 0;
     float dark = rc_dark_fraction((const uint8_t *)m.pData, (int32_t)c->src_w, (int32_t)c->src_h, (int32_t)m.RowPitch);
     c->ctx->Unmap(probe.get(), 0);
-    return dark > 0.9f;
+    return dark;
 }
 
 // How long Desktop Duplication may fail before its first frame until the
@@ -781,6 +791,7 @@ static LoopEnd run_loop(Capture *c) {
     int idx = 0;
     int failures = 0;
     int64_t next_probe = started + kProbeFirstUs;
+    int probes = 0;
     Com<ID3D11Texture2D> probe;
 
     while (!c->stop) {
@@ -854,7 +865,7 @@ static LoopEnd run_loop(Capture *c) {
         }
         if (now >= next_probe && now - started < kProbeForUs) {
             next_probe = now + kProbeUs;
-            if (frame_dark(c, have, probe) && gdi_dark_fraction(c->mon.rect) < 0.5f) {
+            if (blacked_out(c, frame_dark(c, have, probe), &probes)) {
                 logf("capture: %s shows %s where GDI sees the desktop", c->src->kind(), have ? "black" : "nothing");
                 return kLoopBlack;
             }
@@ -918,6 +929,7 @@ static LoopEnd run_loop_cpu(Capture *c) {
     float changed = 0; // fraction of rows changed since the last encode
     int failures = 0;
     int64_t next_probe = started + kProbeFirstUs;
+    int probes = 0;
 
     while (!c->stop) {
         LONG br = c->bitrate_kbps;
@@ -960,9 +972,10 @@ static LoopEnd run_loop_cpu(Capture *c) {
             if (fallible && now_us() >= next_probe) {
                 next_probe = now_us() + kProbeUs;
                 bool have = c->grab->have();
-                if ((!have || rc_dark_fraction(c->grab->pixels(), (int32_t)c->dst_w, (int32_t)c->dst_h,
-                                               c->grab->stride()) > 0.9f) &&
-                    gdi_dark_fraction(c->mon.rect) < 0.5f) {
+                float dup = have ? rc_dark_fraction(c->grab->pixels(), (int32_t)c->dst_w, (int32_t)c->dst_h,
+                                                    c->grab->stride())
+                                 : 1;
+                if (blacked_out(c, dup, &probes)) {
                     logf("capture: %s shows %s where GDI sees the desktop", c->grab->kind(),
                          have ? "black" : "nothing");
                     return kLoopBlack;

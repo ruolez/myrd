@@ -58,7 +58,7 @@ float rc_dark_fraction(const uint8_t *px, int32_t w, int32_t h, int32_t stride) 
         const uint8_t *row = px + (size_t)((int64_t)(2 * gy + 1) * h / (2 * ny)) * stride;
         for (int32_t gx = 0; gx < nx; gx++) {
             const uint8_t *p = row + (size_t)((int64_t)(2 * gx + 1) * w / (2 * nx)) * 4;
-            if (p[0] < 24 && p[1] < 24 && p[2] < 24) dark++;
+            if (p[0] < 8 && p[1] < 8 && p[2] < 8) dark++;
         }
     }
     return (float)dark / (float)(nx * ny);

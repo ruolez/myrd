@@ -69,9 +69,9 @@ static void test_scale(void) {
     CHECK(three[0] == 5 && three[4] == 25 && three[8] == 50, "ramp 7→3: %d %d %d", three[0], three[4], three[8]);
 }
 
-/* The share of near-black pixels on a sample grid: an all-black frame with a
- * small bright patch (the "Activate Windows" watermark) still reads as dark,
- * a desktop does not, and row padding is never sampled. */
+/* The share of black pixels on a sample grid: an all-black frame with a
+ * small bright patch (the "Activate Windows" watermark) still reads as black,
+ * a desktop does (even a dark one) not, and row padding is never sampled. */
 static void test_dark(void) {
     enum { W = 64, H = 32, STRIDE = W * 4 + 16 };
     static uint8_t img[H * STRIDE];
@@ -87,17 +87,17 @@ static void test_dark(void) {
     for (int y = 0; y < H; y++)
         for (int x = 0; x < W; x++) {
             uint8_t *p = img + y * STRIDE + x * 4;
-            p[0] = 180; /* blue wallpaper */
-            p[1] = 90;
-            p[2] = x < W / 4 ? 10 : 30; /* a dark taskbar strip on the left */
+            p[0] = x < W / 4 ? 16 : 40; /* Server 2019's dark navy wallpaper, a darker taskbar strip */
+            p[1] = x < W / 4 ? 16 : 12;
+            p[2] = x < W / 4 ? 16 : 0;
         }
     f = rc_dark_fraction(img, W, H, STRIDE);
     CHECK(f == 0.0f, "wallpaper dark fraction %f, want 0", f);
 
-    uint8_t px[4] = {23, 23, 23, 255};
-    CHECK(rc_dark_fraction(px, 1, 1, 4) == 1.0f, "a 1×1 near-black image is dark");
-    px[2] = 24;
-    CHECK(rc_dark_fraction(px, 1, 1, 4) == 0.0f, "one channel at 24 is not dark");
+    uint8_t px[4] = {7, 7, 7, 255};
+    CHECK(rc_dark_fraction(px, 1, 1, 4) == 1.0f, "a 1×1 image at 7 is black");
+    px[2] = 8;
+    CHECK(rc_dark_fraction(px, 1, 1, 4) == 0.0f, "one channel at 8 is not black");
 }
 
 int main(void) {
