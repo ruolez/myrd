@@ -109,6 +109,12 @@ type Manager struct {
 	unlockSPKI []byte
 	unlockSig  string
 	sleep      func(context.Context, time.Duration) bool
+	now        func() time.Time
+
+	// signIn serializes raising the password field and unlocking; raisedAt
+	// is the last raise.
+	signIn   sync.Mutex
+	raisedAt time.Time
 
 	mu      sync.Mutex
 	cur     *sess
@@ -142,7 +148,7 @@ func NewManager(o Options) (*Manager, error) {
 	if o.AskNewBrowsers == nil {
 		o.AskNewBrowsers = func() bool { return false }
 	}
-	m := &Manager{o: o, revoked: map[string]bool{}, sleep: sleepCtx, displayDelay: displayRestoreDelay}
+	m := &Manager{o: o, revoked: map[string]bool{}, sleep: sleepCtx, now: time.Now, displayDelay: displayRestoreDelay}
 	m.recoverDisplays()
 	if o.UnlockOS != "" {
 		k, err := proto.DeriveUnlockKey(o.DeviceKey)

@@ -6,10 +6,11 @@ import {
   canSaveSignIn,
   prefillUsername,
   setAskToSave,
+  showUnlocking,
   unlockFailure,
   unlockKeyFailure,
 } from "./unlock";
-import type { AutoUnlockInput } from "./unlock";
+import type { AutoUnlockInput, UnlockingInput } from "./unlock";
 
 const lockedWithSaved: AutoUnlockInput = {
   live: true,
@@ -47,6 +48,32 @@ describe("autoUnlockAction", () => {
     ["the user turned the offer off for this device", { askToSave: false }],
   ])("does not offer to save when %s", (_name, patch) => {
     expect(autoUnlockAction({ ...lockedWithSaved, saved: false, ...patch })).toBeNull();
+  });
+});
+
+describe("showUnlocking", () => {
+  const unlocking: UnlockingInput = {
+    locked: true,
+    due: false,
+    status: "unlocking",
+    dismissed: false,
+  };
+
+  test.each<[string, Partial<UnlockingInput>]>([
+    ["the saved password is about to be sent", { due: true, status: "idle" }],
+    ["the device is typing it", { status: "unlocking" }],
+    ["it was typed and the device is signing in", { status: "typed" }],
+  ])("hides the lock screen while %s", (_name, patch) => {
+    expect(showUnlocking({ ...unlocking, ...patch })).toBe(true);
+  });
+
+  test.each<[string, Partial<UnlockingInput>]>([
+    ["the device unlocked", { locked: false }],
+    ["the unlock failed", { status: "failed" }],
+    ["nothing is under way", { status: "idle" }],
+    ["the user asked to see the screen", { dismissed: true }],
+  ])("shows the screen when %s", (_name, patch) => {
+    expect(showUnlocking({ ...unlocking, ...patch })).toBe(false);
   });
 });
 
@@ -113,13 +140,17 @@ describe("prefillUsername", () => {
 
 describe("unlockFailure", () => {
   test("explains a known code and falls back for an unknown one", () => {
-    expect([unlockFailure("still_locked"), unlockFailure("nonsense"), unlockFailure(null)]).toEqual(
-      [
-        "Still locked. The saved password may be wrong: update it or type it yourself.",
-        "The device could not be unlocked.",
-        "The device could not be unlocked.",
-      ],
-    );
+    expect([
+      unlockFailure("still_locked"),
+      unlockFailure("no_prompt"),
+      unlockFailure("nonsense"),
+      unlockFailure(null),
+    ]).toEqual([
+      "Still locked. The saved password may be wrong: update it or type it yourself.",
+      "The password box did not appear, so nothing was typed. Click the screen, then press Unlock.",
+      "The device could not be unlocked.",
+      "The device could not be unlocked.",
+    ]);
   });
 });
 

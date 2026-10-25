@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,9 +37,67 @@ func keyEvents(km keymap.Table, usages ...uint16) []platform.InputEvent {
 	return out
 }
 
-func noSleep(time.Duration) bool { return true }
+// testClock is a clock that moves only when the code under test sleeps.
+type testClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
 
-func TestRunUnlockTypesThePasswordOnTheLockScreen(t *testing.T) {
+func newTestClock() *testClock { return &testClock{t: time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)} }
+
+func (c *testClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *testClock) sleep(d time.Duration) bool {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+	return true
+}
+
+func (c *testClock) sleepCtx(_ context.Context, d time.Duration) bool { return c.sleep(d) }
+
+func repeat(p platform.UnlockPrompt, n int) []platform.UnlockPrompt {
+	return slices.Repeat([]platform.UnlockPrompt{p}, n)
+}
+
+// centerClick is the click that lifts the Windows lock curtain: the middle of
+// the fake backend's primary monitor.
+var centerClick = []platform.InputEvent{
+	{Type: platform.EvMouseMove, MonitorID: 1, X: 32768, Y: 32768},
+	{Type: platform.EvMouseButton, Button: platform.BtnLeft, Down: true},
+	{Type: platform.EvMouseButton, Button: platform.BtnLeft, Down: false},
+}
+
+type unlockRun struct {
+	backend *fake.Backend
+	sas     int
+	trace   unlockTrace
+	err     error
+}
+
+// runUnlockOn unlocks a locked fake device of goos whose UnlockPrompt
+// returns prompts, the password field last raised at raisedAt (zero: never).
+func runUnlockOn(t *testing.T, goos string, prompts []platform.UnlockPrompt, raisedAt func(now time.Time) time.Time) unlockRun {
+	t.Helper()
+	b := fake.New()
+	b.SetLocked(true)
+	b.SetUnlockPrompt(prompts...)
+	clk := newTestClock()
+	r := unlockRun{backend: b}
+	u := &unlocker{b: b, km: keymap.For(goos), sas: func() { r.sas++ }, sleep: clk.sleep, now: clk.now}
+	var raised time.Time
+	if raisedAt != nil {
+		raised = raisedAt(clk.now())
+	}
+	r.trace, r.err = u.run(unlockPlanFor(goos), "secret", raised)
+	return r
+}
+
+func TestUnlockTypesThePasswordOnTheLockScreen(t *testing.T) {
 	const password = "pä$s ✓"
 	chars := []string{"p", "ä", "$", "s", " ", "✓"}
 	cases := []struct {
@@ -59,12 +118,15 @@ func TestRunUnlockTypesThePasswordOnTheLockScreen(t *testing.T) {
 		t.Run(c.goos, func(t *testing.T) {
 			b := fake.New()
 			b.SetLocked(true)
+			b.SetUnlockPrompt(platform.PromptHidden, platform.PromptReady)
 			sas := 0
 			var hook func()
 			if c.hook {
 				hook = func() { sas++ }
 			}
-			if err := runUnlock(b, c.km, hook, unlockSteps(c.goos, password), noSleep); err != nil {
+			clk := newTestClock()
+			u := &unlocker{b: b, km: c.km, sas: hook, sleep: clk.sleep, now: clk.now}
+			if _, err := u.run(unlockPlanFor(c.goos), password, time.Time{}); err != nil {
 				t.Fatal(err)
 			}
 			if got := b.Texts(); !slices.Equal(got, chars) {
@@ -77,13 +139,83 @@ func TestRunUnlockTypesThePasswordOnTheLockScreen(t *testing.T) {
 	}
 }
 
-func TestRunUnlockTypesNothingOnceTheScreenUnlocks(t *testing.T) {
+func TestUnlockTypesAsSoonAsThePasswordFieldTakesKeys(t *testing.T) {
+	ms := time.Millisecond
+	fresh := func(now time.Time) time.Time { return now.Add(-time.Second) }
+	cases := []struct {
+		name     string
+		goos     string
+		prompts  []platform.UnlockPrompt
+		raisedAt func(time.Time) time.Time
+		wantSAS  int
+		wantWait time.Duration
+	}{
+		{"windows sign-in box already up: no Ctrl+Alt+Delete", "windows",
+			[]platform.UnlockPrompt{platform.PromptReady}, nil, 0, 100 * ms},
+		{"windows sign-in box comes up after Ctrl+Alt+Delete", "windows",
+			[]platform.UnlockPrompt{platform.PromptHidden, platform.PromptHidden, platform.PromptReady}, nil, 1, 200 * ms},
+		{"windows box raised when the session opened", "windows",
+			[]platform.UnlockPrompt{platform.PromptReady}, fresh, 0, 0},
+		{"macOS display awake: Shift, then a short settle", "darwin",
+			[]platform.UnlockPrompt{platform.PromptReady}, nil, 0, 300 * ms},
+		{"macOS display waking up", "darwin",
+			[]platform.UnlockPrompt{platform.PromptHidden, platform.PromptHidden, platform.PromptReady}, nil, 0, 400 * ms},
+		{"windows without UI Automation: the old fixed wait, after a click", "windows",
+			nil, nil, 1, 2700 * ms},
+		{"macOS without the display state: the old fixed wait", "darwin", nil, nil, 0, time.Second},
+		{"linux types right away", "linux", nil, nil, 0, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := runUnlockOn(t, c.goos, c.prompts, c.raisedAt)
+			if r.err != nil || strings.Join(r.backend.Texts(), "") != "secret" {
+				t.Fatalf("err %v, typed %q", r.err, r.backend.Texts())
+			}
+			if r.sas != c.wantSAS || r.trace.waited != c.wantWait {
+				t.Fatalf("secure attention %d, first key after %v; want %d after %v", r.sas, r.trace.waited, c.wantSAS, c.wantWait)
+			}
+		})
+	}
+}
+
+func TestUnlockClicksAwayALockCurtainCtrlAltDeleteLeftUp(t *testing.T) {
+	r := runUnlockOn(t, "windows", append(repeat(platform.PromptHidden, 9), platform.PromptReady), nil)
+	km := keymap.Windows
+	want := slices.Concat(centerClick, keyEvents(km, usageLCtrl, usageA), keyEvents(km, usageEnter))
+	if r.err != nil || !slices.Equal(r.backend.Injected(), want) || !r.trace.clicked {
+		t.Fatalf("err %v, events %+v; want a click in the middle of the screen, then the password", r.err, r.backend.Injected())
+	}
+	if r.trace.waited != 900*time.Millisecond {
+		t.Fatalf("first key after %v, want 900ms (click at 700ms, box up at 800ms, 100ms settle)", r.trace.waited)
+	}
+}
+
+func TestUnlockTypesNothingWhenThePasswordFieldNeverAppears(t *testing.T) {
+	for _, goos := range []string{"darwin", "windows"} {
+		t.Run(goos, func(t *testing.T) {
+			r := runUnlockOn(t, goos, []platform.UnlockPrompt{platform.PromptHidden}, nil)
+			for _, ev := range r.backend.Injected() {
+				if ev.Type == platform.EvKey && ev.Keycode == keymap.For(goos)[usageEnter].Code {
+					t.Fatalf("pressed Enter with no password field: %+v", r.backend.Injected())
+				}
+			}
+			if r.err != errUnlockNoPrompt || len(r.backend.Texts()) != 0 {
+				t.Fatalf("err %v, typed %q; want errUnlockNoPrompt and nothing typed", r.err, r.backend.Texts())
+			}
+		})
+	}
+}
+
+func TestUnlockTypesNothingOnceTheScreenUnlocks(t *testing.T) {
 	for _, goos := range []string{"darwin", "windows"} {
 		t.Run(goos, func(t *testing.T) {
 			b := fake.New()
 			b.SetLocked(true)
-			unlockDuringWait := func(time.Duration) bool { b.SetLocked(false); return true }
-			err := runUnlock(b, keymap.For(goos), func() {}, unlockSteps(goos, "secret"), unlockDuringWait)
+			b.SetUnlockPrompt(platform.PromptHidden)
+			clk := newTestClock()
+			unlockDuringWait := func(d time.Duration) bool { b.SetLocked(false); return clk.sleep(d) }
+			u := &unlocker{b: b, km: keymap.For(goos), sas: func() {}, sleep: unlockDuringWait, now: clk.now}
+			_, err := u.run(unlockPlanFor(goos), "secret", time.Time{})
 			if err != errUnlockNotLocked || len(b.Texts()) != 0 {
 				t.Fatalf("err = %v, typed %q: want nothing typed on an unlocked desktop", err, b.Texts())
 			}
@@ -116,7 +248,8 @@ func newUnlockFixture(t *testing.T) *unlockFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.sleep = func(context.Context, time.Duration) bool { return true }
+	clk := newTestClock()
+	m.sleep, m.now = clk.sleepCtx, clk.now
 	t.Cleanup(m.Close)
 	ck, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	der, _ := x509.MarshalPKIXPublicKey(&ck.PublicKey)
@@ -240,7 +373,8 @@ func TestUnlockKeyIsSignedByTheDeviceKeyAndStable(t *testing.T) {
 
 func TestLoopbackUnlockOverTheControlChannel(t *testing.T) {
 	h := newHarness(t, platform.ConsentRemember, func(o *Options) { o.UnlockOS = "darwin"; o.Keymap = keymap.Mac })
-	h.mgr.sleep = func(context.Context, time.Duration) bool { return true }
+	clk := newTestClock()
+	h.mgr.sleep, h.mgr.now = clk.sleepCtx, clk.now
 	h.backend.SetLocked(true)
 	h.offer(false)
 	if err := <-h.answerOK; err != nil {
@@ -249,6 +383,14 @@ func TestLoopbackUnlockOverTheControlChannel(t *testing.T) {
 	hello := h.waitControl(t, "hello")
 	if !slices.Contains(hello["features"].([]any), any(proto.FeatureUnlock)) || hello["locked"] != true {
 		t.Fatalf("hello features=%v locked=%v", hello["features"], hello["locked"])
+	}
+	shift := keyEvents(keymap.Mac, usageLShift)
+	deadline := time.Now().Add(5 * time.Second)
+	for !slices.Equal(h.backend.Injected(), shift) {
+		if time.Now().After(deadline) {
+			t.Fatalf("opening a session on the lock screen sent %+v, want Shift to raise the password field", h.backend.Injected())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	spki, _ := base64.StdEncoding.DecodeString(hello["unlock_key"].(string))
 	f := &unlockFixture{}
@@ -270,6 +412,10 @@ func TestLoopbackUnlockOverTheControlChannel(t *testing.T) {
 	}
 	if typed := strings.Join(h.backend.Texts(), ""); typed != "hunter2" {
 		t.Fatalf("typed %q", typed)
+	}
+	km := keymap.Mac
+	if want := slices.Concat(shift, keyEvents(km, usageLGUI, usageA), keyEvents(km, usageEnter)); !slices.Equal(h.backend.Injected(), want) {
+		t.Fatalf("keys %+v, want the Shift from the session opening reused, not sent again", h.backend.Injected())
 	}
 	if m := send(2); m["ok"] != false || m["code"] != unlockTooSoon {
 		t.Fatalf("a second attempt right away = %v, want too_soon", m)

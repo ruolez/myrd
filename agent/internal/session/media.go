@@ -2,6 +2,7 @@ package session
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"image"
@@ -35,6 +36,8 @@ const (
 	cursorInterval   = time.Second / 120
 	clipboardPoll    = time.Second
 	lockPoll         = time.Second
+	unlockWatch      = 10 * time.Second
+	unlockWatchPoll  = 150 * time.Millisecond
 	shapeResend      = 3 * time.Second
 	shapeFullResends = 3  // ticks that re-send a new shape in full
 	shapeCacheMax    = 64 // shape ids remembered as sent before the set starts over
@@ -754,6 +757,23 @@ func (p *mediaPipe) pollLock() {
 	}
 }
 
+// watchUnlock polls the lock quickly for a while after a saved password was
+// typed, so the viewer gets the desktop back as soon as it is there.
+func (p *mediaPipe) watchUnlock(ctx context.Context) {
+	for range int(unlockWatch / unlockWatchPoll) {
+		if !sleepCtx(ctx, unlockWatchPoll) {
+			return
+		}
+		p.pollLock()
+		p.mu.Lock()
+		locked := p.locked
+		p.mu.Unlock()
+		if !locked {
+			return
+		}
+	}
+}
+
 func (p *mediaPipe) pollClipboard() {
 	t, err := p.b.ClipboardText()
 	if err != nil {
@@ -815,6 +835,9 @@ func (p *mediaPipe) setControlChannel(dc *webrtc.DataChannel) {
 	}
 	p.sendControl(hello)
 	p.sendStreamState(true)
+	if locked {
+		go p.s.m.raiseSignIn()
+	}
 }
 
 func (p *mediaPipe) setCursorChannel(dc *webrtc.DataChannel) {

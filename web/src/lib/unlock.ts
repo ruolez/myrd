@@ -30,6 +30,25 @@ export function autoUnlockAction(s: AutoUnlockInput): "unlock" | "prompt" | null
   return s.prompted || !s.askToSave ? null : "prompt";
 }
 
+export type UnlockingInput = {
+  locked: boolean;
+  /** autoUnlockAction just said "unlock" and the request is about to go out. */
+  due: boolean;
+  status: "idle" | "unlocking" | "typed" | "failed";
+  /** The user asked to see the lock screen. */
+  dismissed: boolean;
+};
+
+/**
+ * Whether the session covers the lock screen with "Unlocking…": from the
+ * moment the saved password is due until the device unlocks or the attempt
+ * fails.
+ */
+export function showUnlocking(s: UnlockingInput): boolean {
+  if (!s.locked || s.dismissed) return false;
+  return s.due || s.status === "unlocking" || s.status === "typed";
+}
+
 /** Devices whose agent can type a saved password (macOS and Windows, agent 0.5.0 and later). */
 export const canSaveSignIn = (d: { os: string }) => d.os === "darwin" || d.os === "windows";
 
@@ -76,6 +95,8 @@ const failures: Record<string, string> = {
   too_soon: "An unlock just ran. Try again in a few seconds.",
   not_locked: "The device is no longer locked.",
   input_failed: "The device could not type the password.",
+  no_prompt:
+    "The password box did not appear, so nothing was typed. Click the screen, then press Unlock.",
   unsupported: "This device cannot unlock itself. Update its agent.",
   timeout: "The device did not answer.",
 };

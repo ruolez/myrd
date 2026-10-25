@@ -204,6 +204,8 @@ func (b *Backend) HideWallpaper(hide bool) error {
 
 func (b *Backend) ScreenLocked() bool { return screenLocked() }
 
+func (b *Backend) UnlockPrompt() (platform.UnlockPrompt, string) { return unlockPrompt() }
+
 func (b *Backend) DisplayModes(monitorID uint32) ([]platform.DisplayMode, platform.DisplayMode, error) {
 	var buf [128]C.rc_display_mode
 	var cur C.rc_display_mode

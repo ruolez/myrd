@@ -35,6 +35,9 @@ func (Backend) ClipboardText() (string, error)   { return "", platform.ErrUnsupp
 func (Backend) SetClipboardText(string) error    { return platform.ErrUnsupported }
 func (Backend) HideWallpaper(bool) error         { return platform.ErrUnsupported }
 func (Backend) ScreenLocked() bool               { return false }
+func (Backend) UnlockPrompt() (platform.UnlockPrompt, string) {
+	return platform.PromptUnknown, ""
+}
 func (Backend) DisplayModes(uint32) ([]platform.DisplayMode, platform.DisplayMode, error) {
 	return nil, platform.DisplayMode{}, platform.ErrUnsupported
 }

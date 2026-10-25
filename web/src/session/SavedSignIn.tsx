@@ -3,11 +3,13 @@ import { api } from "../api/client";
 import type { SavedCredential } from "../api/types";
 import { CredentialDialog } from "../components/CredentialDialog";
 import { Icon } from "../components/icons";
+import { Spinner } from "../components/ui";
 import {
   askToSave,
   autoUnlockAction,
   prefillUsername,
   setAskToSave,
+  showUnlocking,
   unlockFailure,
 } from "../lib/unlock";
 import type { RemoteSession, Snapshot } from "./RemoteSession";
@@ -28,6 +30,10 @@ export type SavedSignIn = {
   /** undefined while loading. */
   saved: SavedCredential | null | undefined;
   status: UnlockStatus;
+  /** The lock screen is covered by "Unlocking…". */
+  covering: boolean;
+  /** Shows the lock screen under "Unlocking…". */
+  uncover: () => void;
   dialog: { prompted: boolean } | null;
   openDialog: () => void;
   closeDialog: () => void;
@@ -37,9 +43,9 @@ export type SavedSignIn = {
 };
 
 /**
- * Saved sign-in for one session: loads the device's saved credential, types
- * it when the session is opened on a locked device (once per lock), and
- * offers to save one when none is saved.
+ * Saved sign-in for one session: loads the device's saved credential while
+ * the session connects, types it as soon as the session finds the device
+ * locked (once per lock), and offers to save one when none is saved.
  */
 export function useSavedSignIn(
   session: RemoteSession,
@@ -53,11 +59,12 @@ export function useSavedSignIn(
   const [saved, setSaved] = useState<SavedCredential | null | undefined>(undefined);
   const [status, setStatus] = useState<UnlockStatus>({ kind: "idle" });
   const [dialog, setDialog] = useState<{ prompted: boolean } | null>(null);
+  const [uncovered, setUncovered] = useState(false);
   const attempted = useRef(false);
   const prompted = useRef(false);
 
+  // Not waiting for the unlock key: the password is at hand when the device says it is locked.
   useEffect(() => {
-    if (!canUnlock) return;
     let stale = false;
     api.devices
       .credential(deviceId)
@@ -66,7 +73,7 @@ export function useSavedSignIn(
     return () => {
       stale = true;
     };
-  }, [canUnlock, deviceId]);
+  }, [deviceId]);
 
   // A new lock is a new chance: unlock once more, offer saving once more.
   useEffect(() => {
@@ -74,6 +81,7 @@ export function useSavedSignIn(
     attempted.current = false;
     prompted.current = false;
     setStatus({ kind: "idle" });
+    setUncovered(false);
   }, [locked]);
 
   useEffect(() => {
@@ -134,6 +142,15 @@ export function useSavedSignIn(
     canUnlock,
     saved,
     status,
+    covering:
+      live &&
+      showUnlocking({
+        locked,
+        due: action === "unlock",
+        status: status.kind,
+        dismissed: uncovered,
+      }),
+    uncover: () => setUncovered(true),
     dialog,
     openDialog: () => setDialog({ prompted: false }),
     closeDialog: () => setDialog(null),
@@ -202,6 +219,35 @@ export function LockedBanner({ deviceName, signIn }: { deviceName: string; signI
           {saved ? "Edit" : "Save sign-in…"}
         </button>
       )}
+    </div>
+  );
+}
+
+/** Covers the lock screen while the saved password goes in. */
+export function UnlockingOverlay({
+  deviceName,
+  signIn,
+}: {
+  deviceName: string;
+  signIn: SavedSignIn;
+}) {
+  return (
+    <div
+      role="status"
+      aria-hidden={!signIn.covering}
+      className={`absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 bg-black/90 text-white transition-opacity duration-300 motion-reduce:transition-none ${
+        signIn.covering ? "opacity-100" : "pointer-events-none opacity-0"
+      }`}
+    >
+      <Spinner size={36} label={`Unlocking ${deviceName}`} />
+      <div className="text-lg">Unlocking {deviceName}…</div>
+      <button
+        className="rounded-full px-3 py-1 text-sm text-white/70 hover:bg-white/15 hover:text-white"
+        onClick={signIn.uncover}
+        tabIndex={signIn.covering ? 0 : -1}
+      >
+        Show lock screen
+      </button>
     </div>
   );
 }

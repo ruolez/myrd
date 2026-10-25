@@ -58,6 +58,7 @@ type Backend struct {
 	wallpaperHidden  bool
 	wallpaperCalls   []bool
 	locked           bool
+	prompts          []platform.UnlockPrompt
 	snapshot         platform.Image
 	snapshotErr      error
 	snapshots        int
@@ -370,6 +371,28 @@ func (b *Backend) ScreenLocked() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.locked
+}
+
+// SetUnlockPrompt sets what UnlockPrompt returns, one state per call with
+// the last one repeating (PromptUnknown until set).
+func (b *Backend) SetUnlockPrompt(states ...platform.UnlockPrompt) {
+	b.mu.Lock()
+	b.prompts = states
+	b.mu.Unlock()
+}
+
+func (b *Backend) UnlockPrompt() (platform.UnlockPrompt, string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	switch len(b.prompts) {
+	case 0:
+		return platform.PromptUnknown, ""
+	case 1:
+		return b.prompts[0], "fake"
+	}
+	p := b.prompts[0]
+	b.prompts = b.prompts[1:]
+	return p, "fake"
 }
 
 // Snapshot returns the picture set by SetSnapshot (a grey 160×90 by

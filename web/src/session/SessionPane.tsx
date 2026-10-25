@@ -29,7 +29,7 @@ import { MoreMenu } from "./MoreMenu";
 import { END_REASONS } from "./RemoteSession";
 import type { RemoteSession, Snapshot } from "./RemoteSession";
 import { StreamButton, StreamMenu } from "./StreamMenu";
-import { LockedBanner, SignInDialog, useSavedSignIn } from "./SavedSignIn";
+import { LockedBanner, SignInDialog, UnlockingOverlay, useSavedSignIn } from "./SavedSignIn";
 import { useRemoteInput } from "./useRemoteInput";
 
 const HUD_KEY = "remotectl-hud";
@@ -570,7 +570,10 @@ export function SessionPane({
             </div>
           </div>
         </div>
-        {live && snap?.locked && <LockedBanner deviceName={snap.deviceName} signIn={signIn} />}
+        {live && snap && <UnlockingOverlay deviceName={snap.deviceName} signIn={signIn} />}
+        {live && snap?.locked && !signIn.covering && (
+          <LockedBanner deviceName={snap.deviceName} signIn={signIn} />
+        )}
         {signIn.dialog && snap && (
           <SignInDialog
             deviceName={snap.deviceName}

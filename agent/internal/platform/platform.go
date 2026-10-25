@@ -110,6 +110,30 @@ type InputEvent struct {
 	DX, DY    int16
 }
 
+// UnlockPrompt is how ready the unlock screen is for a password.
+type UnlockPrompt int
+
+const (
+	// PromptUnknown: the backend cannot tell.
+	PromptUnknown UnlockPrompt = iota
+	// PromptHidden: no password field yet (the Windows lock curtain, a
+	// sleeping macOS display).
+	PromptHidden
+	// PromptReady: Windows: a password field has the keyboard focus. macOS:
+	// the display is awake.
+	PromptReady
+)
+
+func (p UnlockPrompt) String() string {
+	switch p {
+	case PromptHidden:
+		return "hidden"
+	case PromptReady:
+		return "ready"
+	}
+	return "unknown"
+}
+
 // Consent results from a prompt on the device's own screen.
 type Consent int
 
@@ -178,6 +202,9 @@ type Backend interface {
 	// ScreenLocked reports whether the device shows its unlock screen (a
 	// logged-in session that is locked); false where the backend cannot tell.
 	ScreenLocked() bool
+	// UnlockPrompt reports whether the unlock screen takes a password now,
+	// with what has the keyboard focus for the log (Windows).
+	UnlockPrompt() (UnlockPrompt, string)
 
 	// Indicator shows/hides the native always-on-top session border.
 	Indicator(on bool)
