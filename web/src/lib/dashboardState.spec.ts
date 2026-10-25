@@ -63,7 +63,7 @@ describe("dashboard params", () => {
 
 describe("parseDashPrefs", () => {
   test("round-trips", () => {
-    const p = { layout: "list", size: "l", sort: "name" } as const;
+    const p = { layout: "list", size: "l", sort: "name", zen: true } as const;
     expect(parseDashPrefs(serializeDashPrefs(p))).toEqual(p);
   });
 
@@ -75,7 +75,13 @@ describe("parseDashPrefs", () => {
     ]).toEqual(["last_connected", "last_connected", "status"]);
   });
 
-  test.each([null, "", "not json", "42", '{"layout":"huge","size":9,"sort":"x"}'])(
+  test("zen mode is on only when saved as true", () => {
+    expect(
+      ['{"zen":true}', '{"zen":"yes"}', '{"zen":1}', "{}"].map((raw) => parseDashPrefs(raw).zen),
+    ).toEqual([true, false, false, false]);
+  });
+
+  test.each([null, "", "not json", "42", '{"layout":"huge","size":9,"sort":"x","zen":"on"}'])(
     "falls back to defaults for %j",
     (raw) => {
       expect(parseDashPrefs(raw)).toEqual(DEFAULT_PREFS);

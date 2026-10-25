@@ -6,7 +6,7 @@ import { useDirectory } from "../app/directory";
 import { useWorkspace, useWorkspaceState } from "../app/workspace";
 import { Icon } from "../components/icons";
 import { Popover } from "../components/menu";
-import { EmptyState, ErrorBox, Loading, PageHeader, SegmentedControl } from "../components/ui";
+import { EmptyState, ErrorBox, Loading, SegmentedControl } from "../components/ui";
 import { applyFilter } from "../lib/deviceFilters";
 import type { Chip, DashView, FilterCtx, SortKey } from "../lib/deviceFilters";
 import {
@@ -29,15 +29,26 @@ import { DeviceTable } from "./devices/DeviceTable";
 import { DEVICE_DRAG, DeviceTile } from "./devices/DeviceTile";
 import type { TileProps } from "./devices/DeviceTile";
 
-const CHIPS: { chip: Chip; label: string }[] = [
-  { chip: "online", label: "Online" },
-  { chip: "offline", label: "Offline" },
-  { chip: "in_session", label: "In session" },
-  { chip: "darwin", label: "macOS" },
-  { chip: "windows", label: "Windows" },
-  { chip: "linux", label: "Linux" },
-  { chip: "attention", label: "Needs attention" },
+const CHIP_GROUPS: { title: string; chips: { chip: Chip; label: string }[] }[] = [
+  {
+    title: "Status",
+    chips: [
+      { chip: "online", label: "Online" },
+      { chip: "offline", label: "Offline" },
+      { chip: "in_session", label: "In session" },
+      { chip: "attention", label: "Needs attention" },
+    ],
+  },
+  {
+    title: "System",
+    chips: [
+      { chip: "darwin", label: "macOS" },
+      { chip: "windows", label: "Windows" },
+      { chip: "linux", label: "Linux" },
+    ],
+  },
 ];
+const CHIPS = CHIP_GROUPS.flatMap((g) => g.chips);
 
 // Below this many devices a Favorites row would only repeat the grid.
 const SECTIONS_FROM = 6;
@@ -86,6 +97,33 @@ function onGridKey(e: KeyboardEvent<HTMLElement>) {
 
 type TileOverrides = Pick<TileProps, "media" | "status" | "primary">;
 
+function FilterChip({ label, on, onClick }: { label: string; on: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      onClick={onClick}
+      className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+        on
+          ? "border-primary bg-primary-soft text-primary"
+          : "border-outline text-muted hover:text-text"
+      }`}
+    >
+      {on && <Icon name="check" size={14} className="mr-1 -ml-1 inline" />}
+      {label}
+    </button>
+  );
+}
+
+function OptionRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-sm text-muted">{label}</span>
+      {children}
+    </div>
+  );
+}
+
 export function Devices() {
   const dir = useDirectory();
   const { devices, folders, tags, organization, loading, error } = dir;
@@ -101,6 +139,11 @@ export function Devices() {
   const searchRef = useRef<HTMLInputElement>(null);
   const [paneOpen, setPaneOpen] = useState(false);
   const paneBtn = useRef<HTMLButtonElement>(null);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const filterBtn = useRef<HTMLButtonElement>(null);
+  const [displayOpen, setDisplayOpen] = useState(false);
+  const displayBtn = useRef<HTMLButtonElement>(null);
+  const zen = prefs.zen && prefs.layout === "grid";
 
   const setState = useCallback(
     (patch: Partial<DashParams>) =>
@@ -116,21 +159,24 @@ export function Devices() {
     return () => clearTimeout(t);
   }, [queryDraft, state.query, setState]);
 
-  // "/" focuses search; Escape clears the selection.
+  // "/" focuses search, "z" toggles zen mode; Escape clears the selection.
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
       const t = e.target as HTMLElement;
       const typing = t.closest("input, textarea, select, [contenteditable=true]");
-      if (e.key === "/" && !typing && !e.metaKey && !e.ctrlKey) {
+      const plain = !typing && !e.metaKey && !e.ctrlKey && !e.altKey;
+      if (e.key === "/" && plain) {
         e.preventDefault();
         searchRef.current?.focus();
+      } else if (e.key === "z" && plain) {
+        setPrefs((p) => ({ ...p, layout: "grid", zen: !(p.zen && p.layout === "grid") }));
       } else if (e.key === "Escape" && !typing) {
         setSelected(new Set());
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [setPrefs]);
 
   // Views of folders or tags that no longer exist fall back to all devices.
   const view: DashView = useMemo(() => {
@@ -215,7 +261,7 @@ export function Devices() {
   const grid = (items: Device[], key: string) => (
     <ul
       key={key}
-      className="grid gap-4"
+      className={`grid ${zen ? "gap-5" : "gap-4"}`}
       style={{
         gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${TILE_MIN_WIDTH[prefs.size]}px), 1fr))`,
       }}
@@ -228,6 +274,7 @@ export function Devices() {
             tags={tagMap}
             now={now}
             size={prefs.size}
+            zen={zen}
             selected={selected.has(d.id)}
             selecting={selected.size > 0}
             organization={organization}
@@ -245,6 +292,11 @@ export function Devices() {
   const crumbs =
     typeof view === "object" && "folder" in view ? folderPath(folders, view.folder) : [];
   const online = devices.filter((d) => d.online).length;
+  const heading = crumbs.length > 1 ? crumbs.join(" / ") : title;
+  const count =
+    view === "all" && !filtering
+      ? `${online} of ${devices.length} online`
+      : `${shown.length} of ${devices.length}`;
   const selIds = [...selected];
 
   let body: ReactNode;
@@ -346,26 +398,242 @@ export function Devices() {
 
   return (
     <>
-      <PageHeader
-        title="Devices"
-        subtitle={devices.length ? `${online} of ${devices.length} online` : undefined}
-        actions={
-          <>
+      {devices.length === 0 && <h1 className="mb-5 text-xl font-normal tracking-tight">Devices</h1>}
+      {devices.length > 0 && (
+        <div className="mb-5 flex flex-wrap items-center gap-x-2 gap-y-3">
+          <div className="flex min-w-0 flex-1 items-baseline gap-3">
+            <h1 className="min-w-0 truncate text-xl font-normal tracking-tight">
+              <button
+                ref={paneBtn}
+                className="inline-flex max-w-full items-center gap-1 rounded-lg lg:hidden"
+                aria-haspopup="dialog"
+                aria-expanded={paneOpen}
+                onClick={() => setPaneOpen((o) => !o)}
+              >
+                <span className="truncate">{heading}</span>
+                <Icon name="chevronDown" size={18} className="shrink-0 text-muted" />
+              </button>
+              <span className="hidden lg:inline">{heading}</span>
+            </h1>
+            <span className="shrink-0 text-sm text-muted tabular-nums">{count}</span>
+            {paneOpen && (
+              <Popover
+                anchor={paneBtn}
+                onClose={() => setPaneOpen(false)}
+                className="max-h-[70vh] w-72 overflow-auto p-2"
+                role="dialog"
+                aria-label="Device views"
+              >
+                <DeviceViewsNav onNavigate={() => setPaneOpen(false)} />
+              </Popover>
+            )}
+          </div>
+          <div className="flex w-full items-center gap-1 sm:w-auto">
+            <label className="relative min-w-0 flex-1 sm:w-56 sm:flex-none sm:transition-[width] sm:focus-within:w-72 motion-reduce:transition-none">
+              <span className="sr-only">Search devices</span>
+              <Icon
+                name="search"
+                size={18}
+                className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted"
+              />
+              <input
+                ref={searchRef}
+                className="peer input h-9 rounded-full border-transparent bg-surface-2 py-1.5 pr-8 pl-9 focus:bg-surface"
+                type="search"
+                placeholder="Search"
+                value={queryDraft}
+                onChange={(e) => setQueryDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setQueryDraft("");
+                    setState({ query: "" });
+                    e.currentTarget.blur();
+                  }
+                }}
+              />
+              {!queryDraft && (
+                <kbd className="pointer-events-none absolute top-1/2 right-3 max-sm:hidden -translate-y-1/2 rounded border border-outline px-1.5 font-sans text-[11px] text-muted peer-focus:hidden">
+                  /
+                </kbd>
+              )}
+            </label>
             <button
-              className="btn-text"
-              onClick={() => void dir.reload()}
-              aria-label="Refresh"
-              title="Refresh"
+              ref={filterBtn}
+              className={`btn h-9 shrink-0 px-3 ${
+                state.chips.size
+                  ? "bg-primary-soft text-primary"
+                  : "text-muted hover:bg-surface-2 hover:text-text"
+              }`}
+              aria-haspopup="dialog"
+              aria-expanded={filterOpen}
+              title="Filter"
+              onClick={() => setFilterOpen((o) => !o)}
             >
-              <Icon name="refresh" size={18} />
+              <Icon name="filter" size={18} />
+              <span className="sr-only sm:not-sr-only">Filter</span>
+              {state.chips.size > 0 && (
+                <span className="rounded-full bg-primary px-1.5 text-[11px] leading-4 text-on-primary tabular-nums">
+                  {state.chips.size}
+                </span>
+              )}
             </button>
-            <Link to="/devices/add" className="btn-primary">
+            {filterOpen && (
+              <Popover
+                anchor={filterBtn}
+                align="end"
+                onClose={() => setFilterOpen(false)}
+                className="w-72 space-y-3 p-3"
+                role="dialog"
+                aria-label="Filters"
+              >
+                {CHIP_GROUPS.map((g) => (
+                  <div key={g.title}>
+                    <div className="mb-1.5 text-[11px] font-medium tracking-wide text-muted uppercase">
+                      {g.title}
+                    </div>
+                    <div className="flex flex-wrap gap-1.5" role="group" aria-label={g.title}>
+                      {g.chips.map(({ chip, label }) => (
+                        <FilterChip
+                          key={chip}
+                          label={label}
+                          on={state.chips.has(chip)}
+                          onClick={() => setState({ chips: toggleId(state.chips, chip) })}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+                {state.chips.size > 0 && (
+                  <div className="flex justify-end border-t border-outline pt-2">
+                    <button
+                      className="btn-text btn-sm"
+                      onClick={() => setState({ chips: new Set() })}
+                    >
+                      Clear filters
+                    </button>
+                  </div>
+                )}
+              </Popover>
+            )}
+            {!zen && (
+              <button
+                ref={displayBtn}
+                className="btn h-9 w-9 shrink-0 px-0 text-muted hover:bg-surface-2 hover:text-text"
+                aria-haspopup="dialog"
+                aria-expanded={displayOpen}
+                aria-label="View options"
+                title="View options"
+                onClick={() => setDisplayOpen((o) => !o)}
+              >
+                <Icon name="tune" size={18} />
+              </button>
+            )}
+            {displayOpen && !zen && (
+              <Popover
+                anchor={displayBtn}
+                align="end"
+                onClose={() => setDisplayOpen(false)}
+                className="w-64 space-y-3 p-3"
+                role="dialog"
+                aria-label="View options"
+              >
+                <OptionRow label="Layout">
+                  <SegmentedControl
+                    label="Layout"
+                    value={prefs.layout}
+                    onChange={(layout) => setPrefs((p) => ({ ...p, layout }))}
+                    options={[
+                      { value: "grid", label: "Tiles", icon: "gridView" },
+                      { value: "list", label: "List", icon: "listView" },
+                    ]}
+                  />
+                </OptionRow>
+                {prefs.layout === "grid" && (
+                  <OptionRow label="Tile size">
+                    <SegmentedControl
+                      label="Tile size"
+                      value={prefs.size}
+                      onChange={(size) => setPrefs((p) => ({ ...p, size }))}
+                      options={[
+                        { value: "s", label: "S" },
+                        { value: "m", label: "M" },
+                        { value: "l", label: "L" },
+                      ]}
+                    />
+                  </OptionRow>
+                )}
+                <OptionRow label="Sort by">
+                  <select
+                    className="input w-auto rounded-full py-1"
+                    value={sort}
+                    onChange={(e) => {
+                      setPrefs((p) => ({ ...p, sort: e.target.value as SortKey }));
+                      setState({ sort: null });
+                    }}
+                    aria-label="Sort devices"
+                  >
+                    {SORTS.map((s) => (
+                      <option key={s.value} value={s.value}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </select>
+                </OptionRow>
+                <div className="flex justify-end border-t border-outline pt-2">
+                  <button
+                    className="btn-text btn-sm"
+                    onClick={() => {
+                      setDisplayOpen(false);
+                      void dir.reload();
+                    }}
+                  >
+                    <Icon name="refresh" size={16} />
+                    Refresh now
+                  </button>
+                </div>
+              </Popover>
+            )}
+            <button
+              className={`btn h-9 w-9 shrink-0 px-0 ${
+                zen
+                  ? "bg-primary-soft text-primary"
+                  : "text-muted hover:bg-surface-2 hover:text-text"
+              }`}
+              aria-pressed={zen}
+              aria-label="Zen mode"
+              title={zen ? "Leave zen mode (Z)" : "Zen mode: screens only (Z)"}
+              onClick={() => setPrefs((p) => ({ ...p, layout: "grid", zen: !zen }))}
+            >
+              <Icon name="zen" size={18} />
+            </button>
+            <Link
+              to="/devices/add"
+              className="btn-primary ml-1 h-9 shrink-0 px-3 sm:px-4"
+              aria-label="Add device"
+              title="Add device"
+            >
               <Icon name="add" size={18} />
-              Add device
+              <span className="hidden sm:inline">Add device</span>
             </Link>
-          </>
-        }
-      />
+          </div>
+          {state.chips.size > 0 && (
+            <div className="flex w-full flex-wrap gap-1.5" role="group" aria-label="Active filters">
+              {CHIPS.filter((c) => state.chips.has(c.chip)).map(({ chip, label }) => (
+                <button
+                  key={chip}
+                  type="button"
+                  className="inline-flex items-center gap-1 rounded-full bg-primary-soft py-0.5 pr-1.5 pl-2.5 text-xs font-medium text-primary hover:brightness-110"
+                  aria-label={`Remove filter ${label}`}
+                  onClick={() => setState({ chips: toggleId(state.chips, chip) })}
+                >
+                  {label}
+                  <Icon name="close" size={14} />
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {error && (
         <div className="mb-4">
           <ErrorBox error={error} onRetry={() => void dir.reload()} />
@@ -373,127 +641,6 @@ export function Devices() {
       )}
       <div>
         <div className="min-w-0 space-y-4">
-          {devices.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                ref={paneBtn}
-                className="btn-outline lg:hidden"
-                aria-haspopup="dialog"
-                aria-expanded={paneOpen}
-                onClick={() => setPaneOpen((o) => !o)}
-              >
-                <Icon name="filter" size={18} />
-                {title}
-                <Icon name="chevronDown" size={16} />
-              </button>
-              {paneOpen && (
-                <Popover
-                  anchor={paneBtn}
-                  onClose={() => setPaneOpen(false)}
-                  className="max-h-[70vh] w-72 overflow-auto p-2"
-                  role="dialog"
-                  aria-label="Device views"
-                >
-                  <DeviceViewsNav onNavigate={() => setPaneOpen(false)} />
-                </Popover>
-              )}
-              <label className="relative min-w-48 flex-1">
-                <span className="sr-only">Search devices</span>
-                <Icon
-                  name="search"
-                  size={18}
-                  className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted"
-                />
-                <input
-                  ref={searchRef}
-                  className="input rounded-full pr-8 pl-9"
-                  type="search"
-                  placeholder="Search devices   /"
-                  value={queryDraft}
-                  onChange={(e) => setQueryDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") {
-                      setQueryDraft("");
-                      setState({ query: "" });
-                      e.currentTarget.blur();
-                    }
-                  }}
-                />
-              </label>
-              <label className="flex items-center gap-2 text-sm text-muted">
-                <span className="sr-only sm:not-sr-only">Sort</span>
-                <select
-                  className="input w-auto rounded-full py-1.5"
-                  value={sort}
-                  onChange={(e) => {
-                    setPrefs((p) => ({ ...p, sort: e.target.value as SortKey }));
-                    setState({ sort: null });
-                  }}
-                  aria-label="Sort devices"
-                >
-                  {SORTS.map((s) => (
-                    <option key={s.value} value={s.value}>
-                      {s.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <SegmentedControl
-                label="Layout"
-                value={prefs.layout}
-                onChange={(layout) => setPrefs((p) => ({ ...p, layout }))}
-                options={[
-                  { value: "grid", label: "Tiles", icon: "gridView" },
-                  { value: "list", label: "List", icon: "listView" },
-                ]}
-              />
-              {prefs.layout === "grid" && (
-                <SegmentedControl
-                  label="Tile size"
-                  value={prefs.size}
-                  onChange={(size) => setPrefs((p) => ({ ...p, size }))}
-                  options={[
-                    { value: "s", label: "S" },
-                    { value: "m", label: "M" },
-                    { value: "l", label: "L" },
-                  ]}
-                />
-              )}
-            </div>
-          )}
-          {devices.length > 0 && (
-            <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filters">
-              {CHIPS.map(({ chip, label }) => {
-                const on = state.chips.has(chip);
-                return (
-                  <button
-                    key={chip}
-                    type="button"
-                    aria-pressed={on}
-                    onClick={() => setState({ chips: toggleId(state.chips, chip) })}
-                    className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                      on
-                        ? "border-primary bg-primary-soft text-primary"
-                        : "border-outline text-muted hover:text-text"
-                    }`}
-                  >
-                    {on && <Icon name="check" size={14} className="-ml-1 mr-1 inline" />}
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-
-          {devices.length > 0 && (view !== "all" || crumbs.length > 1) && (
-            <div className="flex items-baseline gap-2">
-              <h2 className="text-lg font-medium">
-                {crumbs.length > 1 ? crumbs.join(" / ") : title}
-              </h2>
-              <span className="text-sm text-muted">{shown.length}</span>
-            </div>
-          )}
-
           {selected.size > 0 && (
             <div
               className="sticky top-2 z-20 flex flex-wrap items-center gap-2 rounded-full border border-primary bg-surface px-4 py-2 shadow-md"

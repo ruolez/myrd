@@ -7,6 +7,7 @@ import { PreviewImage } from "../../components/PreviewImage";
 import { Meter, TagChip } from "../../components/ui";
 import { api } from "../../api/client";
 import { attentionReasons, attentionText } from "../../lib/deviceFilters";
+import { canUpdate, updateBadge } from "../../lib/update";
 import { bytes, osName, timeAgo } from "../../lib/format";
 import {
   diskLabel,
@@ -27,6 +28,8 @@ export type TileProps = {
   tags: Map<string, Tag>;
   now: number;
   size: "s" | "m" | "l";
+  /** Only the screen with the name and status over it. */
+  zen: boolean;
   selected: boolean;
   selecting: boolean;
   organization: boolean;
@@ -55,6 +58,17 @@ export function deviceStatus(d: Device): { label: string; tone: StatusTone } {
   if (!d.online) return { label: "Offline", tone: "offline" };
   if (d.busy) return { label: "In session", tone: "busy" };
   return { label: "Online", tone: "online" };
+}
+
+export function StatusDot({ label, tone }: { label: string; tone: StatusTone }) {
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      title={label}
+      className={`h-2 w-2 shrink-0 rounded-full ${dotClass[tone]}`}
+    />
+  );
 }
 
 export function StatusPill({ label, tone }: { label: string; tone: StatusTone }) {
@@ -127,8 +141,68 @@ export function HealthBars({ device: d, now }: { device: Device; now: number }) 
   );
 }
 
+/** Status line under the name; "Online" goes without saying. */
+function statusLine(d: Device, status: { label: string; tone: StatusTone }, now: number): string {
+  const line = secondLine(d, now);
+  if (status.tone === "online" || status.tone === "offline") return line;
+  return `${status.label} · ${line}`;
+}
+
+/** CPU, memory and the fullest disk as one quiet line; only trouble is colored. */
+function HealthLine({ device: d, now }: { device: Device; now: number }) {
+  const info = d.info;
+  if (!info) return null;
+  const disk = lowestFreeDisk(info.disks);
+  const stats: { label: string; value: number; tone: Severity; detail: string }[] = [];
+  if (info.cpu_pct !== null)
+    stats.push({ label: "CPU", value: info.cpu_pct / 100, tone: "ok", detail: "" });
+  if (info.mem_total > 0)
+    stats.push({
+      label: "Mem",
+      value: info.mem_used / info.mem_total,
+      tone: memSeverity(info),
+      detail: `Memory: ${bytes(info.mem_used)} of ${bytes(info.mem_total)}`,
+    });
+  if (disk)
+    stats.push({
+      label: "Disk",
+      value: 1 - freeFraction(disk),
+      tone: diskSeverity(disk),
+      detail: `${diskLabel(disk)}: ${bytes(disk.free)} free of ${bytes(disk.total)}`,
+    });
+  if (!stats.length) return null;
+  const stale = infoStale(d.info_at, d.online, now);
+  return (
+    <div
+      className={`flex gap-3 text-xs text-muted tabular-nums ${stale ? "opacity-50" : ""}`}
+      title={stale ? `As of ${timeAgo(d.info_at, now)}` : undefined}
+    >
+      {stats.map((s) => (
+        <span key={s.label} className="whitespace-nowrap" title={s.detail || undefined}>
+          {s.label}{" "}
+          <span
+            className={
+              s.tone === "ok"
+                ? "text-text/80"
+                : s.tone === "warning"
+                  ? "font-medium text-warning"
+                  : "font-medium text-error"
+            }
+          >
+            {Math.round(s.value * 100)}%
+          </span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// Hidden until the tile is hovered or focused, always shown on touch screens.
+const onHover =
+  "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 aria-expanded:opacity-100 pointer-coarse:opacity-100";
+
 export function DeviceTile(p: TileProps) {
-  const { device: d, size } = p;
+  const { device: d, size, zen } = p;
   const actions = useDeviceActions();
   const status = p.status ?? deviceStatus(d);
   const primary = p.primary ?? {
@@ -138,13 +212,45 @@ export function DeviceTile(p: TileProps) {
     title: canConnect(d) ? connectTitle(d) : d.online ? connectTitle(d) : `Details of ${d.name}`,
   };
   const attention = attentionReasons(d, p.now);
+  // Low disk already shows as a colored number in the health line.
+  const flagged = zen || size === "s" ? attention : attention.filter((a) => a !== "low_disk");
   const tagList = d.tag_ids.map((t) => p.tags.get(t)).filter((t): t is Tag => !!t);
   const maxTags = size === "s" ? 1 : 3;
+  const update = updateBadge(d);
+  const updatable = canUpdate(d);
+  // "Up to date" is the norm, and "Update available" is said by the button.
+  const updateNote =
+    update && update.tone !== "success" && !(updatable && update.tone === "primary");
+  const line = statusLine(d, status, p.now);
+
+  const warning = flagged.length > 0 && (
+    <span
+      className="shrink-0 text-warning"
+      title={flagged.map((a) => attentionText[a]).join("\n")}
+      aria-label={flagged.map((a) => attentionText[a]).join(". ")}
+      role="img"
+    >
+      <Icon name="warning" size={16} />
+    </span>
+  );
+  const menu = (tone: string) => (
+    <Menu
+      label={`Actions for ${d.name}`}
+      items={actions.menu(d)}
+      className={`btn-sm shrink-0 rounded-full px-1 transition-opacity motion-reduce:transition-none ${tone} ${onHover}`}
+    >
+      <Icon name="moreVert" size={18} />
+    </Menu>
+  );
 
   return (
     <article
-      className={`group relative flex h-full flex-col rounded-2xl border bg-surface transition-shadow hover:shadow-md ${
-        p.selected ? "border-primary ring-2 ring-primary/40" : "border-outline"
+      className={`group relative flex h-full flex-col rounded-2xl border bg-surface transition-shadow hover:shadow-lg ${
+        p.selected
+          ? "border-primary ring-2 ring-primary/40"
+          : zen
+            ? "border-transparent"
+            : "border-outline"
       }`}
       draggable={p.organization}
       onDragStart={p.onDragStart}
@@ -154,13 +260,13 @@ export function DeviceTile(p: TileProps) {
         <button
           type="button"
           data-tile-primary
-          className={`group/media relative block aspect-video w-full overflow-hidden rounded-t-2xl ${
-            d.online ? "bg-primary-soft/60" : "bg-surface-2"
-          }`}
+          className={`group/media relative block aspect-video w-full overflow-hidden ${
+            zen ? "rounded-2xl" : "rounded-t-2xl"
+          } ${d.online ? "bg-primary-soft/60" : "bg-surface-2"}`}
           onClick={(e) =>
             p.selecting || e.metaKey || e.ctrlKey || e.shiftKey ? p.onSelect(e) : primary.onClick()
           }
-          title={primary.title}
+          title={zen ? `${primary.title}\n${line}` : primary.title}
           aria-label={`${primary.label}: ${d.name}`}
         >
           {p.media ?? <PreviewImage device={d} now={p.now} compact={size === "s"} />}
@@ -173,9 +279,18 @@ export function DeviceTile(p: TileProps) {
             </span>
           )}
         </button>
-        <div className="pointer-events-none absolute bottom-2 left-2">
-          <StatusPill {...status} />
-        </div>
+        {zen && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-2 rounded-b-2xl bg-linear-to-t from-black/80 via-black/40 to-transparent px-3 pt-10 pb-2 text-white">
+            <StatusDot {...status} />
+            <span className="min-w-0 flex-1 truncate text-sm font-medium [text-shadow:0_1px_2px_rgb(0_0_0/0.6)]">
+              {d.name}
+            </span>
+            {warning}
+            <span className="pointer-events-auto -mr-1.5">
+              {menu("text-white hover:bg-white/15")}
+            </span>
+          </div>
+        )}
         {p.organization && (
           <label
             className={`absolute top-2 left-2 flex h-7 w-7 cursor-pointer items-center justify-center rounded-full bg-surface/90 shadow-sm ${
@@ -218,60 +333,56 @@ export function DeviceTile(p: TileProps) {
         )}
       </div>
 
-      <div className={`flex flex-1 flex-col gap-2 ${size === "s" ? "p-3" : "p-4"}`}>
-        <div className="flex items-start gap-2">
-          <div className="min-w-0 flex-1">
-            <div className="truncate font-medium" title={d.name}>
+      {!zen && (
+        <div
+          className={`flex flex-1 flex-col gap-1.5 ${size === "s" ? "p-3" : "px-4 pt-3 pb-3.5"}`}
+        >
+          <div className="flex items-center gap-2">
+            <StatusDot {...status} />
+            <span className="min-w-0 flex-1 truncate font-medium" title={d.name}>
               {d.name}
-            </div>
-            <div className="truncate text-xs text-muted">{secondLine(d, p.now)}</div>
-          </div>
-          {attention.length > 0 && (
-            <span
-              className="mt-0.5 text-warning"
-              title={attention.map((a) => attentionText[a]).join("\n")}
-              aria-label={attention.map((a) => attentionText[a]).join(". ")}
-              role="img"
-            >
-              <Icon name="warning" size={18} />
             </span>
-          )}
-          <Menu
-            label={`Actions for ${d.name}`}
-            items={actions.menu(d)}
-            className="btn-text btn-sm -mr-2 -mt-1 px-1.5"
-          >
-            <Icon name="moreVert" size={18} />
-          </Menu>
-        </div>
-        {size !== "s" && <HealthBars device={d} now={p.now} />}
-        {tagList.length > 0 && (
-          <div className="flex min-w-0 flex-wrap gap-1">
-            {tagList.slice(0, maxTags).map((t) => (
-              <TagChip key={t.id} name={t.name} color={t.color} />
-            ))}
-            {tagList.length > maxTags && (
-              <span
-                className="text-xs text-muted"
-                title={tagList
-                  .slice(maxTags)
-                  .map((t) => t.name)
-                  .join(", ")}
-              >
-                +{tagList.length - maxTags}
-              </span>
-            )}
+            {warning}
+            <span className="-my-1 -mr-2">
+              {menu("text-muted hover:bg-surface-2 hover:text-text")}
+            </span>
           </div>
-        )}
-        <div className="mt-auto flex min-h-0 flex-wrap items-center justify-between gap-2 empty:hidden">
-          <DeviceUpdateBadge device={d} />
-          <UpdateButton
-            device={d}
-            request={(force) => api.devices.requestUpdate(d.id, force)}
-            onRequested={p.onKick}
-          />
+          <div className="truncate text-xs text-muted" title={line}>
+            {line}
+          </div>
+          {size !== "s" && <HealthLine device={d} now={p.now} />}
+          {tagList.length > 0 && (
+            <div className="flex min-w-0 flex-wrap gap-1 pt-0.5">
+              {tagList.slice(0, maxTags).map((t) => (
+                <TagChip key={t.id} name={t.name} color={t.color} />
+              ))}
+              {tagList.length > maxTags && (
+                <span
+                  className="text-xs text-muted"
+                  title={tagList
+                    .slice(maxTags)
+                    .map((t) => t.name)
+                    .join(", ")}
+                >
+                  +{tagList.length - maxTags}
+                </span>
+              )}
+            </div>
+          )}
+          {(updateNote || updatable) && (
+            <div className="mt-auto flex flex-wrap items-center gap-2 pt-1">
+              {updateNote && <DeviceUpdateBadge device={d} />}
+              <UpdateButton
+                device={d}
+                request={(force) => api.devices.requestUpdate(d.id, force)}
+                onRequested={p.onKick}
+                className="btn-tonal btn-sm"
+                label={d.latest_version ? `Update to ${d.latest_version}` : undefined}
+              />
+            </div>
+          )}
         </div>
-      </div>
+      )}
     </article>
   );
 }

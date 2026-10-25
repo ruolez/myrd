@@ -71,12 +71,15 @@ export type DashPrefs = {
   layout: Layout;
   size: TileSize;
   sort: SortKey;
+  /** Tiles show only the screen, the name and the status. */
+  zen: boolean;
 };
 
 export const DEFAULT_PREFS: DashPrefs = {
   layout: "grid",
   size: "m",
   sort: "last_connected",
+  zen: false,
 };
 
 // Prefs saved before the default became "last_connected" carry the old
@@ -100,6 +103,7 @@ export function parseDashPrefs(raw: string | null): DashPrefs {
       v.v === PREFS_VERSION && (SORTS as readonly unknown[]).includes(v.sort)
         ? (v.sort as SortKey)
         : DEFAULT_PREFS.sort,
+    zen: v.zen === true,
   };
 }
 
