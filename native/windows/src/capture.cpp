@@ -481,7 +481,7 @@ struct Capture {
     volatile LONG bitrate_kbps = 0;
     volatile LONG fps = 0;
     volatile LONG keyframe_req = 0;
-    volatile LONG refine_qp = 0;  // pending rc_encode_refine, 0 = none, -1 = a repeat pass
+    volatile LONG refine_qp = 0;  // pending rc_encode_refine, 0 = none, -1 = a repeat pass, else its max_qp
     volatile LONG refine_ok = 0;  // the current encoder can refine
     const char *volatile encoder = "mf";
 
@@ -891,7 +891,7 @@ static LoopEnd run_loop(Capture *c) {
         int32_t flags = refine ? RC_FRAME_STATIC : (dirty && changed >= 0 && changed <= 0.02f) ? RC_FRAME_MINOR : 0;
 #ifdef RC_HAVE_VPX
         if (c->vpx)
-            accepted = encode_full_color(c, idx, now, key || !sent_any, refine > 0 ? (int)refine : 0, flags);
+            accepted = encode_full_color(c, idx, now, key || !sent_any, refine == -1 ? 0 : (int)refine, flags);
         else
 #endif
             accepted = encoder_encode(c->enc, c->ring[idx].get(), now, key || !sent_any, &fatal,
@@ -1005,7 +1005,7 @@ static LoopEnd run_loop_cpu(Capture *c) {
 #ifdef RC_HAVE_VPX
         if (c->vpx) {
             rc_vpx_from_bgra(c->vpx, c->grab->pixels(), c->grab->stride());
-            accepted = rc_vpx_encode(c->vpx, now, force, refine > 0 ? (int)refine : 0, flags, c->on_frame, c->user) ==
+            accepted = rc_vpx_encode(c->vpx, now, force, refine == -1 ? 0 : (int)refine, flags, c->on_frame, c->user) ==
                        RC_OK;
         } else
 #endif
@@ -1302,7 +1302,13 @@ int capture_refine(int32_t max_qp) {
     Guard g(g_cap_lock);
     if (!g_cap) return RC_ERR;
     if (max_qp > 0 && !g_cap->refine_ok) return RC_ERR_UNSUPPORTED;
-    InterlockedExchange(&g_cap->refine_qp, max_qp <= 0 ? -1 : max_qp > 51 ? 51 : max_qp);
+    bool lossless = max_qp == RC_REFINE_LOSSLESS;
+#ifdef RC_HAVE_VPX
+    if (lossless && !g_cap->vpx) return RC_ERR_UNSUPPORTED;
+#else
+    if (lossless) return RC_ERR_UNSUPPORTED;
+#endif
+    InterlockedExchange(&g_cap->refine_qp, lossless ? max_qp : max_qp <= 0 ? -1 : max_qp > 51 ? 51 : max_qp);
     return RC_OK;
 }
 

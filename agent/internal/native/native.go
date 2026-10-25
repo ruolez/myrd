@@ -145,6 +145,9 @@ func (b *Backend) ConfigureEncoder(kbps, fps int) {
 }
 func (b *Backend) RequestKeyframe() { C.rc_request_keyframe() }
 func (b *Backend) RefineEncoder(maxQP int) error {
+	if maxQP == platform.RefineLossless {
+		maxQP = C.RC_REFINE_LOSSLESS
+	}
 	return rcErr(C.rc_encode_refine(C.int32_t(maxQP)))
 }
 func (b *Backend) EncoderName() string { return C.GoString(C.rc_encoder_name()) }

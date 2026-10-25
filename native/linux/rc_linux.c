@@ -70,7 +70,7 @@ typedef struct {
     atomic_int want_keyframe;
     atomic_int new_bitrate; /* kbps, 0 = no change */
     atomic_int new_fps;
-    atomic_int refine_qp; /* 0 = none pending, -1 = a repeat pass */
+    atomic_int refine_qp; /* 0 = none pending, -1 = a repeat pass, else rc_encode_refine's */
     rc_capture_config cfg;
     rc_monitor cap_mon;
     rc_frame_fn on_frame;
@@ -720,7 +720,7 @@ static void *capture_main(void *arg) {
             encode_emit(&enc, t, key, 0, key ? 0 : flags);
             last_emit = t;
         } else if (refine && last_emit && t - last_content >= REFINE_QUIET_NS) {
-            encode_emit(&enc, t, 0, refine > 0 ? refine : 0, RC_FRAME_STATIC);
+            encode_emit(&enc, t, 0, refine == -1 ? 0 : refine, RC_FRAME_STATIC);
             last_emit = t;
         } else if (captured && t - last_emit >= IDLE_FRAME_NS) {
             encode_emit(&enc, t, 0, 0, RC_FRAME_STATIC);
@@ -949,7 +949,8 @@ void rc_request_keyframe(void) { atomic_store(&g.want_keyframe, 1); }
 
 int rc_encode_refine(int32_t max_qp) {
     if (!atomic_load(&g.running)) return RC_ERR;
-    atomic_store(&g.refine_qp, max_qp <= 0 ? -1 : max_qp > 51 ? 51 : max_qp);
+    if (max_qp == RC_REFINE_LOSSLESS && g.cfg.codec != RC_CODEC_VP9) return RC_ERR_UNSUPPORTED;
+    atomic_store(&g.refine_qp, max_qp == RC_REFINE_LOSSLESS ? max_qp : max_qp <= 0 ? -1 : max_qp > 51 ? 51 : max_qp);
     return RC_OK;
 }
 

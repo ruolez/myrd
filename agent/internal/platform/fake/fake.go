@@ -203,7 +203,8 @@ func (b *Backend) RefineEncoder(maxQP int) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.refines = append(b.refines, maxQP)
-	if b.noRefine && maxQP > 0 {
+	vp9 := len(b.starts) > 0 && b.starts[len(b.starts)-1].Codec == platform.CodecVP9
+	if (b.noRefine && maxQP > 0) || (maxQP == platform.RefineLossless && !vp9) {
 		return platform.ErrUnsupported
 	}
 	b.refinePend = true

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"math"
 	"slices"
 	"testing"
 	"time"
@@ -23,16 +24,19 @@ func TestRefinerWaitsForAQuietScreen(t *testing.T) {
 	}
 }
 
-// A static screen walks every pass once, each sent after the previous one
-// came back and its bits had time to drain at refineShare of the target.
+// A static screen walks the ladder, then repeats the finest pass until one
+// comes back small; each pass is sent after the previous one came back and
+// its bits had time to drain at refineShare of the target.
 func TestRefinerPacesPassesToTheBitrate(t *testing.T) {
 	const kbps = 4000 // 2 Mbps for refinement: 25 KB takes 100 ms, 100 KB takes 400 ms
 	t0 := time.Unix(1000, 0)
 	var r refiner
 	r.onFrame(t0, 50_000, platform.FrameKey, kbps)
-	sizes := []int{1_000, 25_000, 100_000, 50_000, 10_000, 5_000, 2_000}
-	wantGap := []time.Duration{refineMinGap, refineMinGap, 400 * time.Millisecond, 200 * time.Millisecond,
-		refineMinGap, refineMinGap}
+	sizes := []int{1_000, 25_000, 100_000, 50_000, 10_000, refineSettled - 1}
+	wantGap := []time.Duration{refineMinGap, 100 * time.Millisecond, 400 * time.Millisecond, 200 * time.Millisecond,
+		refineMinGap}
+	finest := refineQPs[len(refineQPs)-1]
+	wantQPs := append(slices.Clone(refineQPs), finest, finest)
 	now := t0.Add(refineIdle)
 	var qps []int
 	for i, size := range sizes {
@@ -53,11 +57,46 @@ func TestRefinerPacesPassesToTheBitrate(t *testing.T) {
 			now = now.Add(wantGap[i])
 		}
 	}
-	if !slices.Equal(qps, refineQPs) {
-		t.Fatalf("passes = %v, want %v", qps, refineQPs)
+	if !slices.Equal(qps, wantQPs) {
+		t.Fatalf("passes = %v, want %v", qps, wantQPs)
 	}
 	if _, ok := r.due(now.Add(time.Hour)); ok {
-		t.Fatal("refined past the finest pass")
+		t.Fatal("refined after a finest pass came back small")
+	}
+}
+
+// Below ~8 Mbps the rate control caps each pass, so the finest one repeats
+// until a pass changes next to nothing: under refineSettled bytes, or one per
+// refineSettledPx pixels on a larger picture.
+func TestRefinerFinestPassRepeatsUntilItConverges(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		px      int
+		settled int // smallest pass size that has not converged
+	}{
+		{"size unknown", 0, refineSettled},
+		{"720p", 1280 * 720, refineSettled},
+		{"1080p", 1920 * 1080, 1920 * 1080 / refineSettledPx},
+		{"4K", 3840 * 2160, 3840 * 2160 / refineSettledPx},
+	} {
+		t0 := time.Unix(1000, 0)
+		r := refiner{px: c.px}
+		r.onFrame(t0, 50_000, 0, 4000)
+		var qps []int
+		n := refineRun(&r, t0, time.Minute, func(i int) (int, platform.FrameFlags) {
+			switch {
+			case i < len(refineQPs):
+				return 15_000, platform.FrameStatic
+			case i == len(refineQPs):
+				return c.settled, platform.FrameStatic
+			}
+			return c.settled - 1, platform.FrameStatic
+		}, nil, &qps)
+		finest := refineQPs[len(refineQPs)-1]
+		want := append(slices.Clone(refineQPs), finest, finest)
+		if n != len(want) || !slices.Equal(qps, want) {
+			t.Fatalf("%s: passes %v, want %v", c.name, qps, want)
+		}
 	}
 }
 
@@ -104,7 +143,7 @@ func TestRefinerCarriesOnAfterASmallChange(t *testing.T) {
 		var r refiner
 		r.onFrame(t0, 50_000, 0, 4000)
 		now := t0.Add(refineIdle)
-		for range 4 { // passes 36, 33, 30, 27
+		for range 2 { // passes 30, 24
 			r.due(now)
 			r.onFrame(now, 500, platform.FrameStatic, 4000)
 			now = now.Add(refineMinGap)
@@ -115,8 +154,8 @@ func TestRefinerCarriesOnAfterASmallChange(t *testing.T) {
 		if _, ok := r.due(now.Add(refineIdle - time.Millisecond)); ok {
 			t.Fatalf("%s: refined before the screen was quiet again", c.name)
 		}
-		if qp, _ := r.due(now.Add(refineIdle)); qp != refineQPs[4] {
-			t.Fatalf("%s: qp %d, want %d (the next pass)", c.name, qp, refineQPs[4])
+		if qp, _ := r.due(now.Add(refineIdle)); qp != refineQPs[2] {
+			t.Fatalf("%s: qp %d, want %d (the next pass)", c.name, qp, refineQPs[2])
 		}
 	}
 }
@@ -257,9 +296,9 @@ func TestRefinerRepeatsStopAtTheLimit(t *testing.T) {
 // refineRun drives a refiner for d: a pass's output comes back 20 ms after
 // it was requested with the flags and size out(i) gives the i-th pass, and
 // change, when set, reports a frame of screen content at that moment. It
-// returns the passes sent.
+// returns the passes sent and appends their quantizers to qps.
 func refineRun(r *refiner, start time.Time, d time.Duration, out func(i int) (int, platform.FrameFlags),
-	change func(at time.Duration) (int, platform.FrameFlags, bool)) int {
+	change func(at time.Duration) (int, platform.FrameFlags, bool), qps ...*[]int) int {
 	const kbps = 4000
 	n := 0
 	var back time.Time // when the pass in flight comes back; zero = none
@@ -275,9 +314,12 @@ func refineRun(r *refiner, start time.Time, d time.Duration, out func(i int) (in
 				r.onFrame(now, size, f, kbps)
 			}
 		}
-		if _, ok := r.due(now); ok {
+		if qp, ok := r.due(now); ok {
 			n++
 			back = now.Add(20 * time.Millisecond)
+			for _, q := range qps {
+				*q = append(*q, qp)
+			}
 		}
 	}
 	return n
@@ -294,11 +336,7 @@ func TestRefinerStillScreenFinishesAndStops(t *testing.T) {
 		}
 		// A picture that never converges: every pass is mid-sized.
 		n := refineRun(&r, t0, 10*time.Minute, func(int) (int, platform.FrameFlags) { return 20_000, platform.FrameStatic }, nil)
-		want := len(refineQPs)
-		if repeat {
-			want = refineRepeatMax
-		}
-		if n != want {
+		if want := refinePasses(repeat); n != want {
 			t.Fatalf("repeat=%v: %d passes on a still screen, want %d", repeat, n, want)
 		}
 	}
@@ -365,8 +403,8 @@ func TestRefinerPassWithoutTheStaticFlagIsStillThePass(t *testing.T) {
 		var r refiner
 		r.onFrame(t0, 50_000, 0, 4000)
 		n := refineRun(&r, t0, 10*time.Minute, func(int) (int, platform.FrameFlags) { return 20_000, c.flags }, nil)
-		if n != len(refineQPs) {
-			t.Fatalf("%s: %d passes on a still screen, want %d", c.name, n, len(refineQPs))
+		if want := refinePasses(false); n != want {
+			t.Fatalf("%s: %d passes on a still screen, want %d", c.name, n, want)
 		}
 		// The same in repeat mode.
 		r.useRepeats(t0)
@@ -389,19 +427,122 @@ func TestRefinerContentAfterAPassStartsOver(t *testing.T) {
 	}
 }
 
-// In repeat mode a small change wins back only the last few passes, not the
-// whole ladder.
-func TestRefinerRepeatMinorChangeRedoesOnlyTheLastPasses(t *testing.T) {
+// On a picture that never converges a small change wins back only the last
+// few passes (finest ones, or repeats), not the whole refinement.
+func TestRefinerMinorChangeRedoesOnlyTheLastPasses(t *testing.T) {
+	for _, repeat := range []bool{false, true} {
+		t0 := time.Unix(1000, 0)
+		var r refiner
+		if repeat {
+			r.useRepeats(t0)
+		} else {
+			r.onFrame(t0, 50_000, 0, 4000)
+		}
+		pass := func(int) (int, platform.FrameFlags) { return 20_000, platform.FrameStatic }
+		if n := refineRun(&r, t0, time.Minute, pass, nil); n != refinePasses(repeat) {
+			t.Fatalf("repeat=%v: %d passes, want %d", repeat, n, refinePasses(repeat))
+		}
+		now := t0.Add(time.Minute)
+		r.onFrame(now, 900, platform.FrameMinor, 4000)
+		var qps []int
+		if n := refineRun(&r, now, time.Minute, pass, nil, &qps); n != refineRepeatRedo {
+			t.Fatalf("repeat=%v: %d passes after a caret blink, want %d", repeat, n, refineRepeatRedo)
+		}
+		if !repeat && slices.Max(qps) != refineQPs[len(refineQPs)-1] {
+			t.Fatalf("passes after a caret blink %v, want only the finest", qps)
+		}
+	}
+}
+
+// losslessKbps is the least bandwidth over which a lossless pass predicted
+// from a first finest pass of finest bytes goes out within refineLosslessSend.
+func losslessKbps(finest int) int {
+	bits := refineLosslessRatio * finest * 8
+	return int(math.Ceil(float64(bits) / refineLosslessSend.Seconds() / 1000))
+}
+
+// A converged refinement ends with one lossless pass when its predicted size
+// fits the bandwidth; the prediction is the first finest pass of the current
+// content, measured again after new content.
+func TestRefinerEndsWithALosslessPassThatFitsTheBandwidth(t *testing.T) {
+	finest := refineQPs[len(refineQPs)-1]
+	ladder := append(slices.Clone(refineQPs), finest)
+	for _, c := range []struct {
+		name      string
+		firstPass int // size of the first finest pass
+		kbps      int
+		lossless  bool
+	}{
+		{"text page at its bandwidth", 5_000, losslessKbps(5_000), true},
+		{"just over the bandwidth", 5_000, losslessKbps(5_000) - 1, false},
+		{"photo on a fast link", 17_000, losslessKbps(17_000), true},
+		{"no lossless encoder", 5_000, 0, false},
+	} {
+		t0 := time.Unix(1000, 0)
+		r := refiner{losslessKbps: c.kbps}
+		r.onFrame(t0, 50_000, 0, 4000)
+		var qps []int
+		out := func(i int) (int, platform.FrameFlags) {
+			switch {
+			case i < len(refineQPs)-1:
+				return 15_000, platform.FrameStatic
+			case i == len(refineQPs)-1:
+				return c.firstPass, platform.FrameStatic
+			case i == len(refineQPs):
+				return refineSettled - 1, platform.FrameStatic
+			}
+			return 400_000, platform.FrameStatic // the lossless pass
+		}
+		refineRun(&r, t0, time.Minute, out, nil, &qps)
+		want := ladder
+		if c.lossless {
+			want = append(slices.Clone(ladder), platform.RefineLossless)
+		}
+		if !slices.Equal(qps, want) {
+			t.Fatalf("%s: passes %v, want %v", c.name, qps, want)
+		}
+	}
+
+	// New content whose first finest pass is twice as large no longer fits.
 	t0 := time.Unix(1000, 0)
-	var r refiner
-	r.useRepeats(t0)
-	pass := func(int) (int, platform.FrameFlags) { return 20_000, platform.FrameStatic }
-	if n := refineRun(&r, t0, time.Minute, pass, nil); n != refineRepeatMax {
-		t.Fatalf("%d repeat passes, want %d", n, refineRepeatMax)
+	r := refiner{losslessKbps: losslessKbps(5_000)}
+	r.onFrame(t0, 50_000, 0, 4000)
+	pass := func(size int) func(int) (int, platform.FrameFlags) {
+		return func(i int) (int, platform.FrameFlags) {
+			if i == len(refineQPs)-1 {
+				return size, platform.FrameStatic
+			}
+			return refineSettled - 1, platform.FrameStatic
+		}
+	}
+	var qps []int
+	refineRun(&r, t0, time.Minute, pass(5_000), nil, &qps)
+	now := t0.Add(time.Minute)
+	r.onFrame(now, 50_000, 0, 4000)
+	qps = nil
+	refineRun(&r, now, time.Minute, pass(10_000), nil, &qps)
+	if slices.Contains(qps, platform.RefineLossless) {
+		t.Fatalf("passes %v after new content with a larger finest pass, want no lossless one", qps)
+	}
+}
+
+// A caret blink after the lossless pass makes the picture lossy again where
+// it changed: the finest pass converges on it and the lossless pass follows.
+func TestRefinerRedoesTheLosslessPassAfterASmallChange(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	r := refiner{losslessKbps: losslessKbps(5_000)}
+	r.onFrame(t0, 50_000, 0, 4000)
+	pass := func(i int) (int, platform.FrameFlags) { return refineSettled - 1, platform.FrameStatic }
+	var qps []int
+	refineRun(&r, t0, time.Minute, pass, nil, &qps)
+	if qps[len(qps)-1] != platform.RefineLossless {
+		t.Fatalf("passes %v, want a lossless one last", qps)
 	}
 	now := t0.Add(time.Minute)
 	r.onFrame(now, 900, platform.FrameMinor, 4000)
-	if n := refineRun(&r, now, time.Minute, pass, nil); n != refineRepeatRedo {
-		t.Fatalf("%d repeat passes after a caret blink, want %d", n, refineRepeatRedo)
+	qps = nil
+	refineRun(&r, now, time.Minute, pass, nil, &qps)
+	if want := []int{refineQPs[len(refineQPs)-1], platform.RefineLossless}; !slices.Equal(qps, want) {
+		t.Fatalf("passes after a caret blink %v, want %v", qps, want)
 	}
 }

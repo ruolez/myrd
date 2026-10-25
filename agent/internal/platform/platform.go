@@ -48,6 +48,10 @@ type CaptureConfig struct {
 	Codec      int // CodecH264 or CodecVP9
 }
 
+// RefineLossless is RefineEncoder's maxQP for a lossless pass
+// (rc_native.h RC_REFINE_LOSSLESS).
+const RefineLossless = -2
+
 // Codecs a capture can encode (rc_native.h RC_CODEC_*).
 const (
 	CodecH264 = 0
@@ -136,8 +140,9 @@ type Backend interface {
 	RequestKeyframe()
 	// RefineEncoder re-encodes the last frame with its quantizer at most
 	// maxQP (static-screen refinement); maxQP 0 is a repeat pass under the
-	// normal rate control. ErrUnsupported when maxQP > 0 and the encoder
-	// cannot bound its quantizer.
+	// normal rate control, RefineLossless a lossless one. ErrUnsupported when
+	// maxQP > 0 and the encoder cannot bound its quantizer, or for a lossless
+	// pass outside VP9.
 	RefineEncoder(maxQP int) error
 	EncoderName() string
 	// SupportsCodec reports whether captures can use codec (Codec*).

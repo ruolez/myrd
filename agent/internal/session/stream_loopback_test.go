@@ -191,7 +191,8 @@ func TestLoopbackStaticScreenIsRefinedOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 		h.waitControl(t, "hello")
-		want := refineQPs
+		// H.264 has no lossless pass: the fake refuses it and the finest stays.
+		want := append(slices.Clone(refineQPs), platform.RefineLossless)
 		if !supported {
 			// The bounded pass is refused; a repeat pass follows, and the
 			// fake's tiny frame says the picture has converged.

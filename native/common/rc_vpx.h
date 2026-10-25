@@ -30,8 +30,8 @@ void rc_vpx_planes(rc_vpx *e, uint8_t *planes[3], int strides[3]);
 
 /* Encodes the current input and passes the frame to emit (flags gain
  * RC_FRAME_KEY on a keyframe). key forces one; max_qp > 0 (H.264 scale,
- * 1..51) bounds the quantizer of this frame only: a refinement pass.
- * Returns RC_OK, or RC_ERR when libvpx failed. */
+ * 1..51) bounds the quantizer of this frame only: a refinement pass;
+ * RC_REFINE_LOSSLESS encodes it losslessly. Returns RC_OK, or RC_ERR when libvpx failed. */
 int rc_vpx_encode(rc_vpx *e, int64_t pts_us, int key, int max_qp, int32_t flags, rc_frame_fn emit, void *user);
 
 /* BT.709 limited-range BGRA → 4:4:4, the conversion rc_vpx_from_bgra uses. */

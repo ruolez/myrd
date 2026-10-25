@@ -412,7 +412,7 @@ JSON text messages, `{"t": "...", ...}`:
 | `stream` | A→B | stream state, see below |
 | `ping` | B→A | `id`, `ts` (ms, browser clock) |
 | `pong` | A→B | `id`, `ts` (echo) |
-| `stats` | A→B every 2 s | `bitrate_kbps`, `fps`, `encoder` (`libvpx-vp9` while full color runs), `width`, `height` (encoded size), `keyframes`, `target_fps`, `target_kbps`, `bwe_kbps`, `loss` (0..1), `refine_qp` (quantizer of the latest static-screen refinement pass, 0 while the screen changes or for repeat passes), `refine_pass` (passes sent since new content), `rtt_ms` (transport feedback round trip), `fec_pct` (repair overhead in use, % of media packets; 0 = off), `fec_packets` (repair packets sent this session) |
+| `stats` | A→B every 2 s | `bitrate_kbps`, `fps`, `encoder` (`libvpx-vp9` while full color runs), `width`, `height` (encoded size), `keyframes`, `target_fps`, `target_kbps`, `bwe_kbps`, `loss` (0..1), `refine_qp` (quantizer of the latest static-screen refinement pass, 0 while the screen changes, for repeat passes or a lossless pass), `refine_lossless` (true when the latest pass was lossless: VP9 ends a refinement with one where the bandwidth carries it), `refine_pass` (passes sent since new content), `rtt_ms` (transport feedback round trip), `fec_pct` (repair overhead in use, % of media packets; 0 = off), `fec_packets` (repair packets sent this session) |
 | `error` | A→B | `code` (`permission_missing`, `capture_failed`, `encoder_failed`), `detail`. Capture that cannot start also ends the session with `session.end{permission_missing}` or `session.end{capture_failed}` (since 0.5.1; `error` before), since the control message can be lost to the closing connection. |
 | `bye` | A→B | `reason` (just before closing) |
 

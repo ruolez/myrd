@@ -27,7 +27,8 @@ struct rc_vpx {
     vpx_codec_enc_cfg_t cfg;
     vpx_image_t *img;
     int fps;
-    int clamped; /* cfg's quantizer range is a refinement pass's */
+    int clamped;  /* cfg's quantizer range is a refinement pass's */
+    int lossless; /* the last frame was a lossless pass */
 };
 
 static int cpu_count(void) {
@@ -154,14 +155,21 @@ static int vpx_q(int qp) { return clampi((qp * 63 + 25) / 51, RC_VPX_MIN_Q, RC_V
 
 int rc_vpx_encode(rc_vpx *e, int64_t pts_us, int key, int max_qp, int32_t flags, rc_frame_fn emit, void *user) {
     if (!e) return RC_ERR;
-    if (max_qp > 0 || e->clamped) {
+    int lossless = max_qp == RC_REFINE_LOSSLESS;
+    if (lossless != e->lossless) {
+        if (vpx_codec_control(&e->codec, VP9E_SET_LOSSLESS, lossless) != VPX_CODEC_OK) return RC_ERR;
+        e->lossless = lossless;
+    }
+    if (max_qp > 0 || lossless || e->clamped) {
         vpx_codec_enc_cfg_t c = e->cfg;
-        if (max_qp > 0) {
+        if (lossless) {
+            c.rc_min_quantizer = c.rc_max_quantizer = 0;
+        } else if (max_qp > 0) {
             c.rc_max_quantizer = (unsigned)vpx_q(max_qp);
             if (c.rc_min_quantizer > c.rc_max_quantizer) c.rc_min_quantizer = c.rc_max_quantizer;
         }
         if (vpx_codec_enc_config_set(&e->codec, &c) != VPX_CODEC_OK) return RC_ERR;
-        e->clamped = max_qp > 0;
+        e->clamped = max_qp > 0 || lossless;
     }
     vpx_codec_err_t err = vpx_codec_encode(&e->codec, e->img, pts_us, (unsigned long)(1000000 / e->fps),
                                            key ? VPX_EFLAG_FORCE_KF : 0, VPX_DL_REALTIME);

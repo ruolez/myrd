@@ -2,7 +2,8 @@
  * Tests the shared full-color encoder (rc_vpx.c) against libvpx's decoder:
  *   native/common/test/run.sh            (host: macOS or Linux)
  * Checks the BT.709 conversion, that the stream decodes as 4:4:4, that
- * refinement passes sharpen a static screen, keyframes on request, and
+ * refinement passes sharpen a static screen, that a lossless pass restores it
+ * exactly and ends with its frame, keyframes on request, and
  * reports real-time speed at desktop sizes.
  */
 #include <math.h>
@@ -204,6 +205,39 @@ static void test_refinement(void) {
     (void)total;
 }
 
+/* A refined static screen, then a lossless pass: the decoder's picture is the
+ * encoder's input exactly, and the next frames are lossy again. */
+static void test_lossless(void) {
+    const int w = 1280, h = 720, fps = 30;
+    rc_vpx *e = rc_vpx_open(w, h, fps, 4000);
+    CHECK(e != NULL, "open %dx%d", w, h);
+    if (!e) return;
+    uint8_t *px = malloc((size_t)w * h * 4);
+    paint_screen(px, w, h, 0);
+    rc_vpx_from_bgra(e, px, w * 4);
+    sink s;
+    sink_init(&s, e, w, h);
+    int64_t t = 0, step = 1000000 / fps;
+    rc_vpx_encode(e, t, 1, 0, 0, on_frame, &s);
+    static const int qps[] = {30, 24, 21, 18};
+    for (size_t i = 0; i < sizeof qps / sizeof qps[0]; i++)
+        rc_vpx_encode(e, t += 100000, 0, qps[i], RC_FRAME_STATIC, on_frame, &s);
+    double refined = s.psnr[0];
+    rc_vpx_encode(e, t += 100000, 0, RC_REFINE_LOSSLESS, RC_FRAME_STATIC, on_frame, &s);
+    int lossless = s.last_size;
+    CHECK(s.psnr[0] == 99 && s.psnr[1] == 99 && s.psnr[2] == 99,
+          "a lossless pass decodes to the exact picture (%.1f dB before, %d bytes)", refined, lossless);
+    paint_screen(px, w, h, 6);
+    rc_vpx_from_bgra(e, px, w * 4);
+    rc_vpx_encode(e, t += 1000000, 0, 0, 0, on_frame, &s);
+    CHECK(s.psnr[0] < 99 && s.last_size < lossless / 4,
+          "new content after it is encoded lossy again (%d bytes, Y %.1f dB)", s.last_size, s.psnr[0]);
+    CHECK(s.bad_fmt == 0, "every frame decoded as %dx%d 4:4:4", w, h);
+    vpx_codec_destroy(&s.dec);
+    rc_vpx_close(e);
+    free(px);
+}
+
 /* Scrolling text at a desktop size: ms per frame and the bitrate it keeps. */
 static void test_speed(int w, int h, int kbps) {
     const int fps = 30, n = 60;
@@ -239,6 +273,7 @@ static void test_speed(int w, int h, int kbps) {
 int main(void) {
     test_conversion();
     test_refinement();
+    test_lossless();
     test_speed(1920, 1080, 8000);
     test_speed(2560, 1440, 12000);
     test_speed(3840, 2160, 20000);

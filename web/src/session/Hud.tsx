@@ -119,7 +119,13 @@ export function Hud({
     ["Encoded", encodeText(stats, stream)],
     [
       "Sharpen",
-      stats.refineQp ? `QP ${stats.refineQp}` : stats.refinePass ? `pass ${stats.refinePass}` : "—",
+      stats.refineLossless
+        ? "lossless"
+        : stats.refineQp
+          ? `QP ${stats.refineQp}`
+          : stats.refinePass
+            ? `pass ${stats.refinePass}`
+            : "—",
     ],
     ["FEC", fecText(stats)],
     ...(stream?.auto ? [["Auto", describeAuto(stream) ?? "—"] as [string, string]] : []),

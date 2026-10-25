@@ -140,7 +140,8 @@ type mediaPipe struct {
 
 	refine     refiner
 	refineOff  bool // the encoder cannot refine
-	refineQP   int  // last pass requested since new content, 0 = none
+	exactOff   bool // the encoder has no lossless pass
+	refineQP   int  // last pass requested since new content, 0 = none (RefineLossless: lossless)
 	refinePass int  // passes sent since new content
 
 	frames, keyframes, bytes atomic.Int64
@@ -563,7 +564,7 @@ func (p *mediaPipe) startCaptureLocked() error {
 	}
 	p.mu.Lock()
 	p.running = true
-	p.refine, p.refineOff, p.refineQP, p.refinePass = refiner{}, false, 0, 0
+	p.refine, p.refineOff, p.exactOff, p.refineQP, p.refinePass = refiner{}, false, false, 0, 0
 	p.mu.Unlock()
 	p.refreshEncoder()
 	return nil
@@ -684,7 +685,7 @@ func (p *mediaPipe) loop() {
 			p.sendControl(map[string]any{"t": "stats", "bitrate_kbps": int(float64(b-lastBytes) * 8 / 1000 / secs),
 				"fps": float64(f-lastFrames) / secs, "encoder": enc, "width": a.w, "height": a.h,
 				"keyframes": p.keyframes.Load(), "target_fps": a.fps, "target_kbps": a.kbps, "bwe_kbps": bwe, "loss": loss,
-				"refine_qp": rqp, "refine_pass": rpass, "rtt_ms": rtt.Milliseconds(), "fec_pct": int(math.Round(fec * 100)),
+				"refine_qp": max(rqp, 0), "refine_lossless": rqp == platform.RefineLossless, "refine_pass": rpass, "rtt_ms": rtt.Milliseconds(), "fec_pct": int(math.Round(fec * 100)),
 				"fec_packets": p.s.fec.repair.Load()})
 			lastBytes, lastFrames = b, f
 		case <-shape.C:
@@ -708,6 +709,11 @@ func (p *mediaPipe) refineStep() {
 		p.mu.Unlock()
 		return
 	}
+	// Speed keeps the link free for what changes next.
+	p.refine.losslessKbps = 0
+	if !p.exactOff && p.settings.Preset != proto.PresetSpeed {
+		p.refine.losslessKbps = p.bweKbps
+	}
 	qp, ok := p.refine.due(p.now())
 	if ok {
 		p.refineQP, p.refinePass = qp, p.refine.pass
@@ -717,9 +723,16 @@ func (p *mediaPipe) refineStep() {
 		return
 	}
 	p.mu.Lock()
-	if qp > 0 {
+	switch {
+	case qp == platform.RefineLossless: // H.264: the finest pass stays
+		p.exactOff = true
+		p.refine.pending, p.refine.await = false, false
+		p.refineQP = refineQPs[len(refineQPs)-1]
+		p.mu.Unlock()
+		return
+	case qp > 0:
 		p.refine.useRepeats(p.now()) // the encoder cannot bound its quantizer
-	} else {
+	default:
 		p.refineOff = true
 	}
 	p.refineQP, p.refinePass = 0, 0
@@ -889,6 +902,7 @@ func (p *mediaPipe) Frame(data []byte, pts int64, flags platform.FrameFlags) {
 	p.mu.Lock()
 	frame := time.Second / time.Duration(max(p.applied.fps, 1))
 	codec := p.applied.codec
+	p.refine.px = int(p.applied.w) * int(p.applied.h)
 	if p.refine.onFrame(p.now(), len(data), flags, p.applied.kbps) {
 		p.refineQP, p.refinePass = 0, 0
 	}

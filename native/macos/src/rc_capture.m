@@ -42,7 +42,9 @@ static CVPixelBufferRef g_last;
 static int64_t g_last_pts;
 static int64_t g_last_content_us; // g_queue only
 static bool g_clamped;            // MaxAllowedFrameQP is set below 51 (g_queue only)
+static int g_vt_fps;              // ExpectedFrameRate g_vt was last given (g_queue only)
 static atomic_bool g_refine_ok;   // the encoder accepts MaxAllowedFrameQP
+static atomic_bool g_lossless_ok; // the encoder is VP9: RC_REFINE_LOSSLESS
 
 // Full color: SCK delivers BGRA and rc_vpx encodes on g_vpx_queue. Encoding
 // takes longer than a frame at large sizes, so only the newest picture waits.
@@ -182,6 +184,22 @@ static void vt_set_rate(VTCompressionSessionRef s, int kbps, int fps) {
     NSArray *limits = @[ @((long long)bps / 8 * 3 / 2), @1.0 ];
     VTSessionSetProperty(s, kVTCompressionPropertyKey_DataRateLimits, (__bridge CFArrayRef)limits);
     VTSessionSetProperty(s, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFNumberRef)@(fps));
+    g_vt_fps = fps;
+}
+
+// The low-latency rate control budgets a frame as bitrate / ExpectedFrameRate
+// and repays an overrun by dropping the next frames, counting frames, not
+// time. A still screen gets refinement passes 50-400 ms apart, so with the
+// target fps as the expected rate a pass's overrun dropped the next content
+// frame too (at 6 Mbps and below on a 1080p desktop). The expected rate
+// follows the real one instead: gap_us since the previous frame, 0 = the
+// target. Within 25% it stays, so jitter in motion does not reconfigure.
+static void vt_follow_rate(int64_t gap_us) {
+    int fps = g_fps;
+    if (gap_us > 0) fps = MAX(2, MIN(g_fps, (int)((1000000 + gap_us / 2) / gap_us)));
+    if (abs(fps - g_vt_fps) * 4 < g_vt_fps) return;
+    VTSessionSetProperty(g_vt, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFNumberRef)@(fps));
+    g_vt_fps = fps;
 }
 
 // Creates a session trying, in order: low-latency hardware rate control
@@ -303,6 +321,8 @@ static void vpx_submit(CVPixelBufferRef pb, bool force_key, int max_qp, int32_t 
 static void encode_pixbuf(CVPixelBufferRef pb, bool force_key, int max_qp, int32_t flags) {
     if (!pb || (!g_vt && !g_vpx)) return;
     int64_t now = rc_now_us();
+    // A keyframe (the first, or a loss recovery) keeps the target's budget.
+    int64_t gap = force_key || g_last_pts == 0 ? 0 : now - g_last_pts;
     if (now <= g_last_pts) now = g_last_pts + 1;
     g_last_pts = now;
     if (max_qp > 0) flags = RC_FRAME_STATIC;
@@ -310,6 +330,7 @@ static void encode_pixbuf(CVPixelBufferRef pb, bool force_key, int max_qp, int32
         vpx_submit(pb, force_key, max_qp, flags, now);
         return;
     }
+    vt_follow_rate(gap);
     if (max_qp > 0 || g_clamped) {
         VTSessionSetProperty(g_vt, kVTCompressionPropertyKey_MaxAllowedFrameQP,
                              (__bridge CFNumberRef)@(max_qp > 0 ? max_qp : 51));
@@ -612,6 +633,7 @@ static void lock_poll_locked(void) {
 static void teardown_locked(void) {
     atomic_store(&g_running, false);
     atomic_store(&g_refine_ok, false);
+    atomic_store(&g_lossless_ok, false);
     lock_stream_stop_locked();
     display_keep_awake(false);
     if (g_cursor_timer) {
@@ -716,6 +738,7 @@ static int start_locked(const rc_capture_config *cfg, rc_frame_fn on_frame, rc_c
         }
         g_codec = full_color ? RC_CODEC_VP9 : RC_CODEC_H264;
         atomic_store(&g_refine_ok, refine_ok);
+        atomic_store(&g_lossless_ok, full_color);
         g_clamped = false;
         g_last_content_us = 0;
 
@@ -831,7 +854,9 @@ void rc_request_keyframe(void) {
 int rc_encode_refine(int32_t max_qp) {
     if (!atomic_load(&g_running) || !g_queue) return RC_ERR;
     if (max_qp > 0 && !atomic_load(&g_refine_ok)) return RC_ERR_UNSUPPORTED;
-    int qp = max_qp > 0 ? MIN(51, max_qp) : 0; // 0: a repeat pass
+    bool lossless = max_qp == RC_REFINE_LOSSLESS;
+    if (lossless && !atomic_load(&g_lossless_ok)) return RC_ERR_UNSUPPORTED;
+    int qp = lossless ? max_qp : max_qp > 0 ? MIN(51, max_qp) : 0; // 0: a repeat pass
     dispatch_async(g_queue, ^{
         if (atomic_load(&g_running) && g_last && rc_now_us() - g_last_content_us >= 100000)
             encode_pixbuf(g_last, false, qp, RC_FRAME_STATIC);

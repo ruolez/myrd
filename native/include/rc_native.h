@@ -137,8 +137,11 @@ void rc_request_keyframe(void);
  * max_qp 0 is a repeat pass: the same re-encode with the normal rate control,
  * which every encoder supports; repeats converge on the picture where the
  * quantizer cannot be bounded. Dropped silently when new content arrived in
- * the last 100 ms. Returns RC_OK, RC_ERR_UNSUPPORTED when max_qp > 0 and the
- * encoder cannot bound its quantizer, or RC_ERR when not capturing. */
+ * the last 100 ms. max_qp RC_REFINE_LOSSLESS is a lossless pass, VP9 only.
+ * Returns RC_OK, RC_ERR_UNSUPPORTED when max_qp > 0 and the encoder cannot
+ * bound its quantizer or for a lossless pass outside VP9, or RC_ERR when not
+ * capturing. */
+#define RC_REFINE_LOSSLESS (-2)
 int  rc_encode_refine(int32_t max_qp);
 /* "videotoolbox" | "mf-hw" | "mf-sw" | "x264" | "openh264" ...; "libvpx-vp9"
  * while an RC_CODEC_VP9 capture runs. */
