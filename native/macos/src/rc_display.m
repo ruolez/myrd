@@ -2,6 +2,7 @@
 #import <AppKit/AppKit.h>
 #import <ApplicationServices/ApplicationServices.h>
 #include <mach/mach_time.h>
+#include <malloc/malloc.h>
 #include <stdatomic.h>
 #include <string.h>
 #include "rc_internal.h"
@@ -23,6 +24,8 @@ void rc_shutdown(void) {
     rc_indicator_show(0);
     rc_input_reset();
 }
+
+void rc_release_memory(void) { malloc_zone_pressure_relief(NULL, 0); }
 
 const char *rc_backend_name(void) { return "macos"; }
 

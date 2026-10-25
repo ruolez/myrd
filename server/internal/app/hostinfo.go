@@ -19,6 +19,7 @@ var agentFeatures = []string{proto.FeatureDeviceInfo, proto.FeaturePreview}
 // cleanHostInfo bounds a report before it is stored and shown: text is
 // truncated, disks are capped, CPU is clamped, memory used never
 // exceeds the total and a virtual display in an unknown state is dropped.
+// The agent's own memory passes as reported.
 func cleanHostInfo(in proto.HostInfo) proto.HostInfo {
 	t := func(s string) string { return cleanText(s, proto.MaxHostInfoText) }
 	out := proto.HostInfo{
@@ -37,6 +38,10 @@ func cleanHostInfo(in proto.HostInfo) proto.HostInfo {
 	if in.CPUPct != nil && !math.IsNaN(*in.CPUPct) {
 		v := math.Round(min(max(*in.CPUPct, 0), 100)*10) / 10
 		out.CPUPct = &v
+	}
+	if in.Agent != nil {
+		a := *in.Agent
+		out.Agent = &a
 	}
 	if v := in.VirtualDisplay; v != nil && slices.Contains(proto.VDriverStates, v.Driver) {
 		out.VirtualDisplay = &proto.VirtualDisplayInfo{Supported: v.Supported, Headless: v.Headless,

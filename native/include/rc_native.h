@@ -67,6 +67,14 @@ typedef void (*rc_log_fn)(const char *line);
 void rc_set_log(rc_log_fn fn);
 int  rc_init(void);
 void rc_shutdown(void);
+/* Instead of rc_init in a capture worker: a child process that only runs
+ * rc_capture_* for the agent process owner_pid. The owner's windows stay out
+ * of the picture (macOS); nothing an agent restores at startup (Windows: a
+ * wallpaper a crashed helper left off) is touched. */
+int  rc_capture_worker_init(int64_t owner_pid);
+/* Hands memory freed since the last call back to the OS where the allocator
+ * keeps it (glibc arenas, macOS malloc zones, the CRT heap). */
+void rc_release_memory(void);
 const char *rc_backend_name(void);   /* "macos" | "windows" | "linux-x11" */
 
 /* Writes up to max monitors; returns the count (>=0) or an RC_ERR_*. */

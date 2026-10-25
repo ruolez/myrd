@@ -428,6 +428,31 @@ func TestProxyLaysTheVirtualDisplayJobOverDeviceInfo(t *testing.T) {
 	}
 }
 
+// The service adds its own memory to the helper's report of the agent's.
+func TestProxyAddsServiceMemoryToDeviceInfo(t *testing.T) {
+	const helper, service = 60 << 20, 18 << 20
+	rec := &recorder{}
+	p := &Proxy{Send: rec.Send, ServiceMemory: func() uint64 { return service }}
+	p.SetServerFeatures([]string{proto.FeatureDeviceInfo})
+	link, stop := pair(t, p, &fakeTarget{}, HelperEvents{})
+	defer stop()
+	link.Send(proto.TypeDeviceInfo, proto.HostInfoReport{Info: proto.HostInfo{Agent: &proto.AgentMemory{Main: helper}}})
+	var got *proto.AgentMemory
+	waitFor(t, func() bool {
+		for _, m := range rec.all() {
+			var r proto.HostInfoReport
+			if m.Type == proto.TypeDeviceInfo && json.Unmarshal([]byte(m.JSON), &r) == nil {
+				got = r.Info.Agent
+				return true
+			}
+		}
+		return false
+	})
+	if want := (proto.AgentMemory{Main: helper, Service: service}); got == nil || *got != want {
+		t.Fatalf("agent memory %+v, want %+v", got, want)
+	}
+}
+
 type previewSink struct{ got [][]byte }
 
 func (p *previewSink) Handle(raw []byte) { p.got = append(p.got, raw) }

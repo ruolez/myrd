@@ -1,7 +1,8 @@
 // Device health from device.info (PROTOCOL §3): compact wording for tiles and
 // thresholds shared by tiles, the list, the device page and "Needs attention".
 
-import type { DiskInfo, HostInfo } from "../api/types";
+import type { AgentMemory, DiskInfo, HostInfo } from "../api/types";
+import { bytes } from "./format";
 
 const GB = 1024 ** 3;
 
@@ -43,6 +44,19 @@ export function diskSeverity(d: DiskInfo): Severity {
 export function memSeverity(info: HostInfo): Severity {
   const f = info.mem_total > 0 ? info.mem_used / info.mem_total : 0;
   return f >= 0.95 ? "error" : f >= 0.85 ? "warning" : "ok";
+}
+
+/** "48 MB", or the total and its processes: "308 MB (agent 48 MB · screen capture 260 MB)". */
+export function agentMemory(m: AgentMemory): string {
+  const parts: [string, number][] = [
+    ["agent", m.main],
+    ["screen capture", m.capture ?? 0],
+    ["service", m.service ?? 0],
+  ];
+  const present = parts.filter(([, n]) => n > 0);
+  const total = present.reduce((sum, [, n]) => sum + n, 0);
+  if (present.length < 2) return bytes(total);
+  return `${bytes(total)} (${present.map(([k, n]) => `${k} ${bytes(n)}`).join(" · ")})`;
 }
 
 /** The fullest disk (least free share; less free space breaks ties). */

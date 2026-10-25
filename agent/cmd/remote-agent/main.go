@@ -6,6 +6,7 @@
 //	remote-agent selftest              capture ~3 s and inject input; prints a report
 //	remote-agent uninstall
 //	remote-agent version
+//	remote-agent capture-worker        spawned by the agent per session: capture and encoding
 package main
 
 import (
@@ -28,7 +29,6 @@ import (
 	"github.com/ruolez/remotectl/agent/internal/buildinfo"
 	"github.com/ruolez/remotectl/agent/internal/config"
 	"github.com/ruolez/remotectl/agent/internal/identity"
-	"github.com/ruolez/remotectl/agent/internal/native"
 	"github.com/ruolez/remotectl/agent/internal/tray"
 )
 
@@ -39,6 +39,9 @@ var version = "dev"
 func init() { runtime.LockOSThread() }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "capture-worker" { // before any log file is opened
+		os.Exit(cmdCaptureWorker(os.Args[2:]))
+	}
 	if platformMain(os.Args[1:]) {
 		return
 	}
@@ -114,7 +117,7 @@ func settings(fs *flag.FlagSet, args []string) (config.Settings, error) {
 
 func newAgent(log *slog.Logger, s config.Settings) (*agent.Agent, error) {
 	return agent.New(agent.Config{Settings: s, Version: version,
-		Backend: native.New(), Keystore: identity.Default(s.DataDir), Log: log})
+		Backend: captureBackend(log), Keystore: identity.Default(s.DataDir), Log: log})
 }
 
 func cmdRun(log *slog.Logger, args []string) error {

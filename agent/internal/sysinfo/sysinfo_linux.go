@@ -47,6 +47,16 @@ func memory() (total, used uint64) {
 	return parseMeminfo(f)
 }
 
+// SelfMemory is this process's resident set in bytes.
+func SelfMemory() uint64 {
+	f, err := os.Open("/proc/self/status")
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	return parseStatusRSS(f)
+}
+
 func readCPU() (cpuTimes, bool) {
 	f, err := os.Open("/proc/stat")
 	if err != nil {

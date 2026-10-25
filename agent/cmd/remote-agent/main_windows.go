@@ -11,6 +11,7 @@ import (
 
 	"github.com/ruolez/remotectl/agent/internal/config"
 	"github.com/ruolez/remotectl/agent/internal/native"
+	"github.com/ruolez/remotectl/agent/internal/platform"
 	"github.com/ruolez/remotectl/agent/internal/winsvc"
 )
 
@@ -73,7 +74,8 @@ func windowsOptions(logName string) (winsvc.Options, func()) {
 	s := config.FromEnv()
 	log, closeLog := fileLogger(s.DataDir, logName)
 	native.SetLogger(log)
-	return winsvc.Options{Settings: s, Version: version, Log: log, NewBackend: native.New}, closeLog
+	return winsvc.Options{Settings: s, Version: version, Log: log,
+		NewBackend: func() platform.Backend { return captureBackend(log) }}, closeLog
 }
 
 func runService() int {

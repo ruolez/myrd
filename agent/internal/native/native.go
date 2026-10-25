@@ -62,6 +62,15 @@ func rcErr(rc C.int) error {
 	return fmt.Errorf("native error %d", int(rc))
 }
 
+// InitCaptureWorker prepares a capture worker process (capproc) that captures
+// for the agent process ownerPID; it replaces Init there.
+func InitCaptureWorker(ownerPID int) error {
+	return rcErr(C.rc_capture_worker_init(C.int64_t(ownerPID)))
+}
+
+// ReleaseMemory hands memory the native side freed back to the OS.
+func ReleaseMemory() { C.rc_release_memory() }
+
 func (b *Backend) Name() string { return C.GoString(C.rc_backend_name()) }
 func (b *Backend) Init() error  { return rcErr(C.rc_init()) }
 func (b *Backend) Shutdown() {

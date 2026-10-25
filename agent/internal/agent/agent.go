@@ -624,6 +624,9 @@ func (a *Agent) runConnected(ctx context.Context) error {
 			})
 		}})
 	collector := &sysinfo.Collector{}
+	if w, ok := a.cfg.Backend.(interface{ Memory() uint64 }); ok { // the capture worker
+		collector.CaptureMemory = w.Memory
+	}
 	if runtime.GOOS == "darwin" {
 		collector.Locked = a.cfg.Backend.ScreenLocked
 	}

@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"io"
 	"runtime"
+	"runtime/metrics"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +31,8 @@ type Collector struct {
 	Locked func() bool
 	// VirtualDisplay reports the virtual display (Windows); nil: none.
 	VirtualDisplay func() *proto.VirtualDisplayInfo
+	// CaptureMemory is the capture worker's memory; nil or 0: none runs.
+	CaptureMemory func() uint64
 
 	mu      sync.Mutex
 	prev    *cpuTimes
@@ -48,6 +51,10 @@ func (c *Collector) Collect() proto.HostInfo {
 	}
 	if c.VirtualDisplay != nil {
 		info.VirtualDisplay = c.VirtualDisplay()
+	}
+	info.Agent = &proto.AgentMemory{Main: SelfMemory(), GoHeap: goHeap()}
+	if c.CaptureMemory != nil {
+		info.Agent.Capture = c.CaptureMemory()
 	}
 	if cur, ok := readCPU(); ok {
 		c.mu.Lock()
@@ -118,6 +125,32 @@ func parseMeminfo(r io.Reader) (total, used uint64) {
 }
 
 // parseProcStat reads the aggregate "cpu" line of /proc/stat.
+// goHeap is the bytes of live and not yet swept Go objects.
+func goHeap() uint64 {
+	s := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
+	metrics.Read(s)
+	if s[0].Value.Kind() != metrics.KindUint64 {
+		return 0
+	}
+	return s[0].Value.Uint64()
+}
+
+// parseStatusRSS reads VmRSS from /proc/<pid>/status.
+func parseStatusRSS(r io.Reader) uint64 {
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		f := strings.Fields(sc.Text())
+		if len(f) >= 2 && f[0] == "VmRSS:" {
+			kb, err := strconv.ParseUint(f[1], 10, 64)
+			if err != nil {
+				return 0
+			}
+			return kb * 1024
+		}
+	}
+	return 0
+}
+
 func parseProcStat(r io.Reader) (cpuTimes, bool) {
 	sc := bufio.NewScanner(r)
 	for sc.Scan() {

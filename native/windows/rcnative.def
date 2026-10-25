@@ -3,6 +3,7 @@ LIBRARY rcnative
 EXPORTS
     rc_backend_name
     rc_capture_start
+    rc_capture_worker_init
     rc_capture_stop
     rc_check_permissions
     rc_clipboard_get_text
@@ -21,6 +22,7 @@ EXPORTS
     rc_input_inject
     rc_input_text
     rc_list_monitors
+    rc_release_memory
     rc_request_keyframe
     rc_request_permission
     rc_screen_locked

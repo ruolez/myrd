@@ -509,6 +509,18 @@ type HostInfo struct {
 	Disks     []DiskInfo `json:"disks"`     // fixed disks / local volumes
 	// VirtualDisplay: Windows agents since 0.6.0; absent elsewhere.
 	VirtualDisplay *VirtualDisplayInfo `json:"virtual_display,omitempty"`
+	// Agent: the agent's own memory; agents since 0.6.1.
+	Agent *AgentMemory `json:"agent,omitempty"`
+}
+
+// AgentMemory is the agent's own memory in bytes, per process, as the OS
+// counts it: macOS physical footprint (Activity Monitor), Windows private
+// bytes, Linux resident set.
+type AgentMemory struct {
+	Main    uint64 `json:"main"`              // the reporting process: the agent, the Windows helper
+	GoHeap  uint64 `json:"go_heap"`           // live Go heap of that process
+	Capture uint64 `json:"capture,omitempty"` // the capture worker of a session, while one runs
+	Service uint64 `json:"service,omitempty"` // Windows: the SYSTEM service
 }
 
 // HostInfoReport is sent by the agent after hello_ack and about once a minute.

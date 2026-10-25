@@ -1,6 +1,7 @@
 // extern "C" entry points of rc_native.h for Windows.
 #include "rc_win.h"
 
+#include <malloc.h>
 #include <stdlib.h>
 
 using namespace rcw;
@@ -13,15 +14,30 @@ extern "C" {
 
 void rc_set_log(rc_log_fn fn) { set_log(fn); }
 
-int rc_init(void) {
-    // Physical-pixel coordinates everywhere (capture, cursor, SendInput).
+// Physical-pixel coordinates everywhere (capture, cursor, SendInput).
+static void dpi_aware() {
     HMODULE user32 = GetModuleHandleW(L"user32.dll");
     SetDpiCtxFn set_ctx = user32 ? (SetDpiCtxFn)(void *)GetProcAddress(user32, "SetProcessDpiAwarenessContext") : nullptr;
     if (!set_ctx || !set_ctx(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) SetProcessDPIAware();
+}
+
+int rc_init(void) {
+    dpi_aware();
     g_probed_encoder = encoder_probe();
     enumerate_monitors(nullptr, 0);
     wallpaper_recover();
     return RC_OK;
+}
+
+int rc_capture_worker_init(int64_t) {
+    dpi_aware();
+    enumerate_monitors(nullptr, 0);
+    return RC_OK;
+}
+
+void rc_release_memory(void) {
+    _heapmin();
+    HeapCompact(GetProcessHeap(), 0);
 }
 
 void rc_shutdown(void) {

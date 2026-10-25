@@ -32,6 +32,9 @@
 #include "rc_vpx.h"
 
 #include <errno.h>
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -395,6 +398,11 @@ int rc_init(void) {
         pthread_mutex_unlock(&g.mu);
         return RC_OK;
     }
+#ifdef __GLIBC__
+    /* A fixed threshold: frame-sized buffers (a 16 MB XGetImage for every
+     * preview) are mapped and unmapped instead of staying in an arena. */
+    mallopt(M_MMAP_THRESHOLD, 1 << 20);
+#endif
     XInitThreads();
     XSetErrorHandler(x_error_handler);
     g.dpy = open_display();
@@ -427,6 +435,17 @@ void rc_shutdown(void) {
     g.dpy = g.in_dpy = NULL;
     g.inited = 0;
     pthread_mutex_unlock(&g.mu);
+}
+
+int rc_capture_worker_init(int64_t owner_pid) {
+    (void)owner_pid;
+    return rc_init();
+}
+
+void rc_release_memory(void) {
+#ifdef __GLIBC__
+    malloc_trim(0);
+#endif
 }
 
 const char *rc_backend_name(void) { return "linux-x11"; }

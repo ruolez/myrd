@@ -21,6 +21,14 @@ static int rc_mem_used(unsigned long long *used) {
 	return 0;
 }
 
+// This process's memory as Activity Monitor shows it.
+static unsigned long long rc_self_footprint(void) {
+	task_vm_info_data_t info;
+	mach_msg_type_number_t n = TASK_VM_INFO_COUNT;
+	if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &n) != KERN_SUCCESS) return 0;
+	return info.phys_footprint;
+}
+
 static int rc_cpu_ticks(unsigned long long *idle, unsigned long long *total) {
 	host_cpu_load_info_data_t c;
 	mach_msg_type_number_t n = HOST_CPU_LOAD_INFO_COUNT;
@@ -85,6 +93,9 @@ func memory() (total, used uint64) {
 	}
 	return total, used
 }
+
+// SelfMemory is this process's physical footprint in bytes.
+func SelfMemory() uint64 { return uint64(C.rc_self_footprint()) }
 
 func readCPU() (cpuTimes, bool) {
 	var idle, total C.ulonglong

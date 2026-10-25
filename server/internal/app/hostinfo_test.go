@@ -66,3 +66,13 @@ func TestCleanHostInfoVirtualDisplay(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanHostInfoAgentMemory(t *testing.T) {
+	mem := &proto.AgentMemory{Main: 48 << 20, GoHeap: 9 << 20, Capture: 260 << 20, Service: 15 << 20}
+	if got := cleanHostInfo(proto.HostInfo{Agent: mem}).Agent; got == nil || *got != *mem || got == mem {
+		t.Fatalf("agent memory %+v, want a copy of %+v", got, mem)
+	}
+	if got := cleanHostInfo(proto.HostInfo{}).Agent; got != nil {
+		t.Fatalf("agent memory %+v from an agent that sent none", got)
+	}
+}

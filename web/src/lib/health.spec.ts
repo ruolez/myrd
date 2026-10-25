@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { DiskInfo, HostInfo } from "../api/types";
 import {
+  agentMemory,
   diskLabel,
   diskSeverity,
   formatIdle,
@@ -122,5 +123,29 @@ describe("diskLabel", () => {
     [disk(1, 1, "/data", ""), "/data"],
   ])("%#", (d, want) => {
     expect(diskLabel(d)).toBe(want);
+  });
+});
+
+describe("agentMemory", () => {
+  const MB = 1024 ** 2;
+  test.each([
+    ["the agent alone", { main: 48 * MB, go_heap: 9 * MB }, "48 MB"],
+    [
+      "with a capture worker",
+      { main: 48 * MB, go_heap: 9 * MB, capture: 260 * MB },
+      "308 MB (agent 48 MB · screen capture 260 MB)",
+    ],
+    [
+      "Windows helper, worker and service",
+      { main: 40 * MB, go_heap: 8 * MB, capture: 200 * MB, service: 16 * MB },
+      "256 MB (agent 40 MB · screen capture 200 MB · service 16 MB)",
+    ],
+    [
+      "Windows idle",
+      { main: 40 * MB, go_heap: 8 * MB, service: 16 * MB },
+      "56 MB (agent 40 MB · service 16 MB)",
+    ],
+  ])("%s", (_, mem, want) => {
+    expect(agentMemory(mem)).toBe(want);
   });
 });

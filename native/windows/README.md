@@ -19,6 +19,7 @@ only, so the same sources build with MSVC and mingw-w64's win32 thread model).
 | Consent | Topmost window on the input desktop with Deny / Allow once / Allow and remember and a countdown; returns 0/1/2. |
 | Permissions | Always granted (no TCC equivalent; the helper runs as SYSTEM). |
 | DPI | Per-monitor-aware v2, so every coordinate is physical pixels. |
+| Capture worker | The helper runs capture and encoding in a `remote-agent capture-worker` child per session (`agent/internal/capproc`); the child calls `rc_capture_worker_init` (DPI awareness and monitors only: no encoder probe, no wallpaper recovery) instead of `rc_init`. `rc_release_memory` runs `_heapmin` and `HeapCompact` after a session. |
 
 ## Builds
 

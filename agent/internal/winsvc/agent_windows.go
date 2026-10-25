@@ -450,6 +450,9 @@ func RunHelper(o Options) error {
 	// time and lock screen are visible; the service drops these reports when
 	// the server does not take them.
 	collector := &sysinfo.Collector{Locked: sysinfo.LockScreenShown, VirtualDisplay: vdd.Info}
+	if w, ok := backend.(interface{ Memory() uint64 }); ok { // the capture worker
+		collector.CaptureMemory = w.Memory
+	}
 	// A headless device's virtual monitor stays its only, primary screen.
 	go vdd.Keep(ctx, o.Log)
 	info := sysinfo.NewReporter(collector.Collect,

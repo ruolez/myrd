@@ -3,12 +3,15 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log/slog"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/ruolez/remotectl/agent/internal/native"
 	"github.com/ruolez/remotectl/agent/internal/platform"
+	"github.com/ruolez/remotectl/agent/internal/sysinfo"
 )
 
 type selftestSink struct {
@@ -72,9 +75,13 @@ func cmdSelftest(args []string) error {
 	secs := fs.Int("seconds", 3, "capture duration")
 	fps := fs.Int("fps", 30, "target fps")
 	fullColor := fs.Bool("full-color", false, "encode full color (VP9 4:4:4) instead of H.264")
+	inProcess := fs.Bool("in-process", false, "capture in this process instead of a capture worker, as RC_CAPTURE_WORKER=0")
 	_ = fs.Parse(args)
 
 	b := native.New()
+	if !*inProcess {
+		b = captureBackend(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	}
 	if err := b.Init(); err != nil {
 		return fmt.Errorf("init %s backend: %w", b.Name(), err)
 	}
@@ -123,6 +130,11 @@ func cmdSelftest(args []string) error {
 		fmt.Printf("first frame: %.1f ms after start; NAL types %v\n", float64(sink.firstFrame.Load())/1e6, nalTypes(sink.firstAU))
 	}
 	fmt.Printf("cursor:      %d shape(s), %d position updates\n", sink.shapes.Load(), sink.positions)
+	if w, ok := b.(interface{ Memory() uint64 }); ok {
+		fmt.Printf("memory:      agent %d MB, capture worker %d MB\n", sysinfo.SelfMemory()>>20, w.Memory()>>20)
+	} else {
+		fmt.Printf("memory:      agent %d MB, capturing in process\n", sysinfo.SelfMemory()>>20)
+	}
 	sink.mu.Lock()
 	dx, dy := int(sink.lastX)-tx, int(sink.lastY)-ty
 	fmt.Printf("input:       inject err=%v; cursor now %d,%d (target %d,%d, Δ %d,%d)\n", injErr, sink.lastX, sink.lastY, tx, ty, dx, dy)

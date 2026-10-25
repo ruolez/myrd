@@ -99,6 +99,28 @@ func TestCollectFillsCommonFields(t *testing.T) {
 	}
 }
 
+func TestParseStatusRSS(t *testing.T) {
+	status := "Name:\tremote-agent\nVmHWM:\t   90280 kB\nVmRSS:\t   37344 kB\nRssAnon:\t   21104 kB\n"
+	if got, want := parseStatusRSS(strings.NewReader(status)), uint64(37344*1024); got != want {
+		t.Fatalf("rss %d, want %d", got, want)
+	}
+	if got := parseStatusRSS(strings.NewReader("VmRSS: lots\n")); got != 0 {
+		t.Fatalf("unparsable rss read as %d", got)
+	}
+}
+
+func TestCollectReportsAgentMemory(t *testing.T) {
+	const capture = 210 << 20
+	c := &Collector{CaptureMemory: func() uint64 { return capture }}
+	a := c.Collect().Agent
+	if a == nil || a.Main == 0 || a.GoHeap == 0 || a.Capture != capture || a.Service != 0 {
+		t.Fatalf("agent memory %+v, want this process measured and the capture worker's %d", a, capture)
+	}
+	if a.GoHeap > a.Main {
+		t.Fatalf("Go heap %d above the process total %d", a.GoHeap, a.Main)
+	}
+}
+
 func TestDistinctDisks(t *testing.T) {
 	in := []proto.DiskInfo{{Mount: "/", Total: 10, Free: 4}, {Mount: "/data", Total: 10, Free: 4}, {Mount: "/mnt", Total: 10, Free: 5}}
 	got := distinctDisks(in)

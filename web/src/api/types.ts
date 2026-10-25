@@ -110,6 +110,19 @@ export type HostInfo = {
   disks: DiskInfo[];
   /** Windows agents 0.6.0 and later. */
   virtual_display?: VirtualDisplayInfo;
+  /** Agents 0.6.1 and later. */
+  agent?: AgentMemory;
+};
+
+/** PROTOCOL §3 device.info agent: the agent's own memory in bytes, per process. */
+export type AgentMemory = {
+  /** The agent (the session helper on Windows). */
+  main: number;
+  go_heap: number;
+  /** The capture worker while a session runs. */
+  capture?: number;
+  /** Windows: the service. */
+  service?: number;
 };
 
 export type VirtualDisplayAction = "install" | "remove";

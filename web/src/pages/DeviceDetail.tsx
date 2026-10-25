@@ -28,6 +28,7 @@ import {
 import { folderPath } from "../lib/folders";
 import { bytes, dateTime, osName, timeAgo } from "../lib/format";
 import {
+  agentMemory,
   diskLabel,
   diskSeverity,
   formatIdle,
@@ -452,6 +453,7 @@ function HealthCard({ device: d }: { device: Device }) {
       `${info.cpu_pct === null ? "—" : `${Math.round(info.cpu_pct)}%`} · ${info.cpu_count} cores`,
     ],
   ];
+  if (info.agent) rows.push(["Agent memory", agentMemory(info.agent)]);
   return (
     <section className="card mt-6 p-6" aria-labelledby="health">
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">

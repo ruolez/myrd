@@ -23,6 +23,7 @@ var (
 	procGetTickCount64          = kernel32.NewProc("GetTickCount64")
 	procGetTickCount            = kernel32.NewProc("GetTickCount")
 	procGlobalMemoryStatusEx    = kernel32.NewProc("GlobalMemoryStatusEx")
+	procGetProcessMemoryInfo    = kernel32.NewProc("K32GetProcessMemoryInfo")
 	procGetSystemTimes          = kernel32.NewProc("GetSystemTimes")
 	procGetLastInputInfo        = user32.NewProc("GetLastInputInfo")
 	procOpenInputDesktop        = user32.NewProc("OpenInputDesktop")
@@ -81,6 +82,32 @@ func memory() (total, used uint64) {
 		return 0, 0
 	}
 	return m.TotalPhys, m.TotalPhys - min(m.AvailPhys, m.TotalPhys)
+}
+
+// processMemoryCountersEx is PROCESS_MEMORY_COUNTERS_EX.
+type processMemoryCountersEx struct {
+	Cb                         uint32
+	PageFaultCount             uint32
+	PeakWorkingSetSize         uintptr
+	WorkingSetSize             uintptr
+	QuotaPeakPagedPoolUsage    uintptr
+	QuotaPagedPoolUsage        uintptr
+	QuotaPeakNonPagedPoolUsage uintptr
+	QuotaNonPagedPoolUsage     uintptr
+	PagefileUsage              uintptr
+	PeakPagefileUsage          uintptr
+	PrivateUsage               uintptr
+}
+
+// SelfMemory is this process's private bytes (commit charge), which counts
+// what drivers allocated for it as well.
+func SelfMemory() uint64 {
+	c := processMemoryCountersEx{Cb: uint32(unsafe.Sizeof(processMemoryCountersEx{}))}
+	if r, _, _ := procGetProcessMemoryInfo.Call(uintptr(windows.CurrentProcess()), uintptr(unsafe.Pointer(&c)),
+		uintptr(c.Cb)); r == 0 {
+		return 0
+	}
+	return uint64(c.PrivateUsage)
 }
 
 func ft(f windows.Filetime) uint64 { return uint64(f.HighDateTime)<<32 | uint64(f.LowDateTime) }

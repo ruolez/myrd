@@ -432,13 +432,24 @@ static void cursor_tick(void) {
 
 // ---------------- content filter ----------------
 
+// In a capture worker the agent is another process: its windows (consent,
+// overlay) stay out of the picture as ours would.
+static pid_t g_owner_pid;
+
+int rc_capture_worker_init(int64_t owner_pid) {
+    g_owner_pid = (pid_t)owner_pid;
+    return RC_OK;
+}
+
+static BOOL own_pid(pid_t pid) { return pid == getpid() || (g_owner_pid > 0 && pid == g_owner_pid); }
+
 // With the wallpaper hidden the filter leaves out everything below the desktop
 // icons (the Dock's Wallpaper-* windows, the wallpaper agent and the
 // WindowServer backdrop, one set per Space), so the background is solid black.
 // Excluding windows rules out excluding our app, so our own windows are left
 // out one by one and the 1 s refresh picks up new ones.
 static BOOL wp_excluded(NSInteger layer, pid_t pid) {
-    return layer < CGWindowLevelForKey(kCGDesktopIconWindowLevelKey) || pid == getpid();
+    return layer < CGWindowLevelForKey(kCGDesktopIconWindowLevelKey) || own_pid(pid);
 }
 
 static NSSet<NSNumber *> *wp_window_ids(void) {
@@ -479,7 +490,7 @@ static SCContentFilter *make_filter(SCShareableContent *content, uint32_t displa
     }
     NSMutableArray *self_apps = [NSMutableArray array]; // never capture our own consent UI
     for (SCRunningApplication *app in content.applications)
-        if (app.processID == getpid()) [self_apps addObject:app];
+        if (own_pid(app.processID)) [self_apps addObject:app];
     return [[SCContentFilter alloc] initWithDisplay:disp excludingApplications:self_apps exceptingWindows:@[]];
 }
 

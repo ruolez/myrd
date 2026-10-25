@@ -42,6 +42,10 @@ type Proxy struct {
 	// feature the server does not accept are dropped here.
 	serverFeatures atomic.Pointer[[]string]
 
+	// ServiceMemory is this process's memory, added to the helper's report
+	// of the agent's; nil: not added.
+	ServiceMemory func() uint64
+
 	// The virtual display job the service runs, laid over the helper's
 	// device.info; vdOnce: until the helper's next report.
 	vdMu     sync.Mutex
@@ -72,11 +76,16 @@ func (p *Proxy) helperInfo(raw json.RawMessage) any {
 	p.vdMu.Lock()
 	defer p.vdMu.Unlock()
 	info := m.Info
+	if info.Agent != nil && p.ServiceMemory != nil {
+		a := *info.Agent
+		a.Service = p.ServiceMemory()
+		info.Agent = &a
+	}
 	p.lastInfo = &info
 	if p.vdOnce {
 		p.vdJob, p.vdOnce = vdd.Job{}, false
 	}
-	return proto.HostInfoReport{Info: p.vdJob.Apply(m.Info)}
+	return proto.HostInfoReport{Info: p.vdJob.Apply(info)}
 }
 
 // SetServerFeatures records what the server accepts (hello_ack.features).

@@ -11,6 +11,9 @@ type Backend struct{}
 
 func New() platform.Backend { return Backend{} }
 
+func InitCaptureWorker(int) error { return platform.ErrUnsupported }
+func ReleaseMemory()              {}
+
 func (Backend) Name() string                          { return "none" }
 func (Backend) Init() error                           { return platform.ErrUnsupported }
 func (Backend) Shutdown()                             {}
