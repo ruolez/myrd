@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type {
   DragEvent as ReactDragEvent,
   PointerEvent as ReactPointerEvent,
@@ -8,7 +9,7 @@ import type {
 import { useSessionSnap } from "../app/workspace";
 import { Icon } from "../components/icons";
 import { PowerDialog } from "../components/PowerDialog";
-import { Badge, Spinner } from "../components/ui";
+import { Spinner } from "../components/ui";
 import { keyFingerprint } from "../lib/devicePins";
 import { displayRect } from "../lib/geometry";
 import { comboInput } from "../lib/combos";
@@ -24,6 +25,7 @@ import { useTransfers } from "./files/TransferList";
 import { TransferPill } from "./files/TransferPill";
 import { Hud } from "./Hud";
 import { KeysButton } from "./KeysMenu";
+import { MoreMenu } from "./MoreMenu";
 import { END_REASONS } from "./RemoteSession";
 import type { RemoteSession, Snapshot } from "./RemoteSession";
 import { StreamButton, StreamMenu } from "./StreamMenu";
@@ -145,8 +147,8 @@ export type PaneProps = {
   /** Ends and removes this session from the workspace. */
   onClose: () => void;
   onBack: () => void;
-  /** Left of the toolbar (back button, session tabs). */
-  leading: ReactNode;
+  /** Where the focused session puts its controls (the workspace bar). */
+  toolbar: HTMLElement | null;
   /** Extra controls in the fullscreen bar (session switching). */
   fullscreenExtras?: ReactNode;
 };
@@ -165,7 +167,7 @@ export function SessionPane({
   onTrust,
   onClose,
   onBack,
-  leading,
+  toolbar,
   fullscreenExtras,
 }: PaneProps) {
   const [hud, setHud] = useState(readHudPref);
@@ -394,9 +396,6 @@ export function SessionPane({
   const monitor = monitors[snap?.activeMonitor ?? 0];
   // Cursor shapes are in native pixels: prefer the agent's native size for this stream.
   const nativeWidth = snap?.streamState?.native_width || monitor?.width || 0;
-  // The agent's relay address can reach the browser as a peer-reflexive
-  // candidate, so trust the agent when it reports a relayed path.
-  const path = snap?.streamState?.relay ? "relay" : snap?.path;
   const filesLabel =
     snap?.filesState === "unsupported" ? "Files (not supported by this device's agent)" : "Files";
 
@@ -405,125 +404,118 @@ export function SessionPane({
       className={`min-h-0 flex-1 flex-col bg-black text-white ${focused ? "flex" : "hidden"}`}
       aria-hidden={!focused}
     >
-      <header
-        className={`flex flex-wrap items-center gap-2 border-b border-white/10 bg-[#1e1f20] px-3 py-2 text-sm ${fullscreen ? "hidden" : ""}`}
-      >
-        {leading}
-        <span className="truncate font-medium">{name}</span>
-        {phase === "connected" && (
-          <Badge tone={path === "relay" ? "relay" : "success"} dot>
-            {path ? `Live · ${path}` : "Live"}
-          </Badge>
-        )}
-        {phase === "reconnecting" && (
-          <Badge tone="warning" dot>
-            Reconnecting
-          </Badge>
-        )}
-        {forceRelay && <Badge tone="relay">relay forced</Badge>}
-        <div className="ml-auto flex flex-wrap items-center gap-1">
-          {monitors.length > 1 && (
-            <label className="flex items-center gap-1">
-              <Icon name="monitor" size={16} className="text-white/70" />
-              <span className="sr-only">Monitor</span>
-              <select
-                className="rounded bg-white/10 px-2 py-1 text-xs"
-                value={snap?.activeMonitor ?? 0}
-                onChange={(e) => session?.selectMonitor(Number(e.target.value))}
-              >
-                {monitors.map((m, i) => (
-                  <option key={m.id} value={i} className="text-black">
-                    {m.name || `Display ${i + 1}`} ({m.width}×{m.height})
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          {snap && (
-            <StreamButton
-              prefs={snap.streamPrefs}
-              state={snap.streamState}
-              open={streamOpen}
-              disabled={!live}
-              onClick={() => (streamOpen ? closePanel("stream") : openPanel("stream"))}
-            />
-          )}
-          <ToolButton
-            label={filesLabel}
-            icon="folder"
-            active={filesOpen}
-            onClick={() => (filesOpen ? closePanel("files") : openPanel("files"))}
-            disabled={!live || !files}
-            text="Files"
-          />
-          {signIn.canUnlock && (
+      {toolbar &&
+        focused &&
+        !fullscreen &&
+        createPortal(
+          <div className="flex items-center gap-0.5">
+            {monitors.length > 1 && (
+              <label className="mr-1 flex items-center gap-1">
+                <Icon name="monitor" size={16} className="text-white/60" />
+                <span className="sr-only">Monitor</span>
+                <select
+                  className="rounded-md bg-white/10 px-2 py-1 text-xs"
+                  value={snap?.activeMonitor ?? 0}
+                  onChange={(e) => session?.selectMonitor(Number(e.target.value))}
+                >
+                  {monitors.map((m, i) => (
+                    <option key={m.id} value={i} className="text-black">
+                      {m.name || `Display ${i + 1}`} ({m.width}×{m.height})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {snap && (
+              <StreamButton
+                prefs={snap.streamPrefs}
+                state={snap.streamState}
+                open={streamOpen}
+                disabled={!live}
+                onClick={() => (streamOpen ? closePanel("stream") : openPanel("stream"))}
+              />
+            )}
             <ToolButton
-              label={signIn.saved ? "Saved sign-in" : "Save sign-in for unlocking"}
-              icon="key"
-              active={!!signIn.saved}
-              onClick={signIn.openDialog}
-              disabled={!live || signIn.saved === undefined}
+              label={filesLabel}
+              icon="folder"
+              active={filesOpen}
+              onClick={() => (filesOpen ? closePanel("files") : openPanel("files"))}
+              disabled={!live || !files}
+              text="Files"
             />
-          )}
-          {!!snap?.powerActions.length && (
-            <ToolButton
-              label="Restart the device or its agent"
-              icon="power"
-              onClick={() => setPowerOpen(true)}
+            <KeysButton
+              os={snap?.agentOs ?? null}
+              open={keysOpen && !fullscreen}
               disabled={!live}
+              align="end"
+              onToggle={() => (keysOpen ? closePanel("keys") : openPanel("keys"))}
+              onSend={sendCombo}
+              onClose={() => closePanel("keys")}
             />
-          )}
-          <ToolButton
-            label="Type clipboard as keystrokes"
-            icon="paste"
-            onClick={() => void typeClipboard()}
-            disabled={!live}
-          />
-          <KeysButton
-            os={snap?.agentOs ?? null}
-            open={keysOpen && !fullscreen}
-            disabled={!live}
-            align="end"
-            onToggle={() => (keysOpen ? closePanel("keys") : openPanel("keys"))}
-            onSend={sendCombo}
-            onClose={() => closePanel("keys")}
-          />
-          <ToolButton
-            label={relative ? "Absolute mouse" : "Relative mouse (pointer lock)"}
-            icon="lock"
-            active={relative}
-            onClick={() => setRelative((r) => !r)}
-            disabled={!live}
-          />
-          <ToolButton
-            label="Request keyframe"
-            icon="refresh"
-            onClick={() => session?.requestKeyframe()}
-            disabled={!live}
-          />
-          <ToolButton
-            label="Latency HUD"
-            icon="speed"
-            active={hud}
-            onClick={toggleHud}
-            text="HUD"
-          />
-          <ToolButton
-            label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
-            icon={fullscreen ? "fullscreenExit" : "fullscreen"}
-            onClick={toggleFullscreen}
-          />
-          <button
-            className="btn btn-sm ml-1 bg-[#d93025] text-white hover:brightness-110"
-            onClick={() => session.end("user_hangup")}
-            disabled={phase === "ended" || phase === "pin_mismatch"}
-            title="End this session (the device is released)"
-          >
-            <Icon name="callEnd" size={16} />
-            End
-          </button>
-        </div>
-      </header>
+            <MoreMenu
+              items={[
+                {
+                  label: "Paste as keystrokes",
+                  icon: "paste",
+                  onSelect: () => void typeClipboard(),
+                  disabled: !live,
+                },
+                ...(signIn.canUnlock
+                  ? [
+                      {
+                        label: signIn.saved ? "Saved sign-in…" : "Save sign-in for unlocking…",
+                        icon: "key" as const,
+                        onSelect: signIn.openDialog,
+                        disabled: !live || signIn.saved === undefined,
+                      },
+                    ]
+                  : []),
+                ...(snap?.powerActions.length
+                  ? [
+                      {
+                        label: "Restart…",
+                        icon: "power" as const,
+                        onSelect: () => setPowerOpen(true),
+                        disabled: !live,
+                      },
+                    ]
+                  : []),
+                {
+                  label: "Lock pointer (games, 3D)",
+                  icon: "lock",
+                  checked: relative,
+                  onSelect: () => setRelative((r) => !r),
+                  disabled: !live,
+                },
+                {
+                  label: "Latency HUD",
+                  icon: "speed",
+                  checked: hud,
+                  onSelect: toggleHud,
+                },
+                {
+                  label: "Refresh picture",
+                  icon: "refresh",
+                  onSelect: () => session?.requestKeyframe(),
+                  disabled: !live,
+                },
+              ]}
+            />
+            <span className="mx-1.5 h-5 w-px bg-white/15" />
+            <ToolButton label="Fullscreen" icon="fullscreen" onClick={toggleFullscreen} />
+            <button
+              className="btn btn-sm ml-1 bg-[#d93025] px-3 text-white hover:brightness-110"
+              onClick={() => session.end("user_hangup")}
+              disabled={phase === "ended" || phase === "pin_mismatch"}
+              aria-label="End session"
+              title="End this session (the device is released)"
+            >
+              <Icon name="callEnd" size={16} />
+              <span className="hidden md:inline">End</span>
+            </button>
+          </div>,
+          toolbar,
+        )}
 
       <div
         ref={stageRef}

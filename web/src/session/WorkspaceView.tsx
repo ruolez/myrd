@@ -31,6 +31,7 @@ export function WorkspaceView() {
   const [fullscreen, setFullscreen] = useState(false);
   const [keyboardLocked, setKeyboardLocked] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const [toolbar, setToolbar] = useState<HTMLDivElement | null>(null);
   const nameOf = (x: DeviceId | null) => (x && labels.get(x)?.name) || "a device";
 
   // The route decides what is in view; leaving it puts every session in the background.
@@ -154,7 +155,7 @@ export function WorkspaceView() {
   const many = st.order.length > 1;
   const back = (
     <button
-      className="btn btn-sm text-white/80 hover:bg-white/10"
+      className="btn btn-sm shrink-0 px-2 text-white/80 hover:bg-white/10"
       aria-label="Devices (sessions keep running)"
       title="Devices (sessions keep running) · Ctrl+Alt+Shift+D"
       onClick={() => navigate("/devices")}
@@ -189,10 +190,11 @@ export function WorkspaceView() {
 
   return (
     <div ref={rootRef} className="flex h-screen flex-col bg-black text-white">
-      {many && !fullscreen && (
-        <div className="flex items-center gap-1 border-b border-white/10 bg-[#121314] px-2">
+      {!fullscreen && (
+        <div className="flex h-12 shrink-0 items-center gap-1 border-b border-white/10 bg-[#161718] pr-2 pl-1.5">
           {back}
           <SessionTabs onSelect={(x) => go(x)} onClose={close} onAdd={() => palette.open()} />
+          <div ref={setToolbar} className="flex shrink-0 items-center" />
         </div>
       )}
       <div className="sr-only" aria-live="polite">
@@ -218,7 +220,7 @@ export function WorkspaceView() {
             onTrust={(key) => ws.replace(x, { trustKey: key })}
             onClose={() => close(x)}
             onBack={() => navigate("/devices")}
-            leading={many ? null : back}
+            toolbar={toolbar}
             fullscreenExtras={switcher}
           />
         );

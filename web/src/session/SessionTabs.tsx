@@ -26,12 +26,14 @@ function Tab({
   id,
   index,
   focused,
+  relayForced,
   onSelect,
   onClose,
 }: {
   id: DeviceId;
   index: number;
   focused: boolean;
+  relayForced: boolean;
   onSelect: () => void;
   onClose: () => void;
 }) {
@@ -42,6 +44,10 @@ function Tab({
   const name = snap?.deviceName || device?.name || "Device";
   const dot = phaseDot[snap?.phase ?? "preparing"];
   const transfers = snap?.files?.activeCount ?? 0;
+  // The agent's relay address can reach the browser as a peer-reflexive
+  // candidate, so trust the agent when it reports a relayed path.
+  const relayed = snap?.phase === "connected" && (snap.streamState?.relay || snap.path === "relay");
+  const status = relayed ? `${dot.label} · relay${relayForced ? " (forced)" : ""}` : dot.label;
   const [over, setOver] = useState(false);
   const shortcut = index < 9 ? ` (Ctrl+Alt+Shift+${index + 1})` : "";
 
@@ -67,31 +73,42 @@ function Tab({
     >
       <button
         type="button"
-        className={`flex items-center gap-2 rounded-lg py-1 pr-7 pl-1 text-left text-xs ${
-          focused ? "bg-white/15 ring-2 ring-[#8ab4f8]" : "hover:bg-white/10"
+        className={`flex items-center gap-2 rounded-lg py-1 pr-7 pl-1 text-left text-xs transition-colors ${
+          focused ? "bg-white/[0.12]" : "text-white/70 hover:bg-white/[0.06]"
         } ${snap?.phase === "ended" ? "opacity-60" : ""}`}
         aria-current={focused ? "page" : undefined}
-        title={`${name}: ${dot.label}${shortcut}`}
+        title={`${name}: ${status}${shortcut}`}
         onClick={onSelect}
       >
-        <LiveThumb session={session} os={device?.os} live={!focused} className="h-9 w-16 rounded" />
-        <span className="flex max-w-36 min-w-0 flex-col">
-          <span className="truncate font-medium text-white">{name}</span>
-          <span className="flex items-center gap-1.5 text-white/60">
-            <span className={`h-1.5 w-1.5 rounded-full ${dot.cls}`} />
+        <LiveThumb
+          session={session}
+          os={device?.os}
+          live={!focused}
+          className={`h-7 w-12 rounded ${focused ? "" : "opacity-70"}`}
+        />
+        <span className="flex max-w-40 min-w-0 flex-col leading-tight">
+          <span className={`truncate font-medium ${focused ? "text-white" : ""}`}>{name}</span>
+          <span className="flex items-center gap-1.5 text-[11px] text-white/55">
+            <span
+              className={`h-1.5 w-1.5 shrink-0 rounded-full ${relayed ? "bg-[#c58af9]" : dot.cls}`}
+            />
             {transfers > 0 ? (
               <>
                 <Icon name="upload" size={12} /> {transfers}
               </>
             ) : (
-              dot.label.split(":")[0]
+              <span className="truncate">{status.split(":")[0]}</span>
             )}
           </span>
         </span>
       </button>
       <button
         type="button"
-        className="absolute top-1 right-1 rounded p-0.5 text-white/50 hover:bg-white/15 hover:text-white"
+        className={`absolute top-1/2 right-1 -translate-y-1/2 rounded p-0.5 text-white/50 hover:bg-white/15 hover:text-white ${
+          focused
+            ? ""
+            : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100"
+        }`}
         aria-label={`Close ${name}`}
         title="Close (ends the session)"
         onClick={onClose}
@@ -114,7 +131,7 @@ export function SessionTabs({
 }) {
   const st = useWorkspaceState();
   return (
-    <nav aria-label="Open sessions" className="flex min-w-0 items-center gap-1">
+    <nav aria-label="Open sessions" className="flex min-w-0 flex-1 items-center gap-1">
       <ul className="flex min-w-0 items-center gap-1 overflow-x-auto py-1">
         {st.order.map((id, i) => (
           <Tab
@@ -122,6 +139,7 @@ export function SessionTabs({
             id={id}
             index={i}
             focused={st.focused === id}
+            relayForced={st.entries[id]?.forceRelay ?? false}
             onSelect={() => onSelect(id)}
             onClose={() => onClose(id)}
           />
