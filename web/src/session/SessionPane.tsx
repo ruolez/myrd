@@ -18,6 +18,8 @@ import { encodeText } from "../lib/input";
 import { powerFailure } from "../lib/power";
 import type { Hotkey } from "../lib/shortcuts";
 import { streamView } from "../lib/stream";
+import type { TouchMode } from "../lib/touch";
+import { viewZoom } from "../lib/zoom";
 import { CursorLayer } from "./CursorLayer";
 import { DropOverlay } from "./files/DropOverlay";
 import { FilesPanel } from "./files/FilesPanel";
@@ -31,8 +33,11 @@ import type { RemoteSession, Snapshot } from "./RemoteSession";
 import { StreamButton, StreamMenu } from "./StreamMenu";
 import { LockedBanner, SignInDialog, UnlockingOverlay, useSavedSignIn } from "./SavedSignIn";
 import { useRemoteInput } from "./useRemoteInput";
+import { touchFirst, useTouchInput } from "./useTouchInput";
 
 const HUD_KEY = "remotectl-hud";
+const TOUCH_KEY = "remotectl-touch";
+const TOUCH_HINT_KEY = "remotectl-touch-hint";
 
 function readHudPref() {
   try {
@@ -41,6 +46,19 @@ function readHudPref() {
     return false;
   }
 }
+
+function readTouchMode(): TouchMode {
+  try {
+    return localStorage.getItem(TOUCH_KEY) === "trackpad" ? "trackpad" : "direct";
+  } catch {
+    return "direct";
+  }
+}
+
+const TOUCH_HINTS: Record<TouchMode, string> = {
+  direct: "Tap to click · Hold to right-click · Swipe to scroll · Pinch to zoom",
+  trackpad: "Drag to move the pointer · Tap to click · Two fingers to scroll · Pinch to zoom",
+};
 
 type Panel = "stream" | "files" | "keys";
 
@@ -171,6 +189,10 @@ export function SessionPane({
   fullscreenExtras,
 }: PaneProps) {
   const [hud, setHud] = useState(readHudPref);
+  const [touchMode, setTouchMode] = useState(readTouchMode);
+  const [coarse] = useState(touchFirst);
+  const [softKeyboard, setSoftKeyboard] = useState(false);
+  const [touchHint, setTouchHint] = useState<string | null>(null);
   const [relative, setRelative] = useState(false);
   const [streamOpen, setStreamOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
@@ -185,6 +207,8 @@ export function SessionPane({
   const relockOnClose = useRef(false);
 
   const stageRef = useRef<HTMLDivElement>(null);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const zoomRef = useRef<HTMLDivElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const kbRef = useRef<HTMLTextAreaElement>(null);
@@ -215,11 +239,32 @@ export function SessionPane({
   const videoSize = useVideoSize(videoRef);
   const scale = snap?.streamPrefs.scale ?? "fit";
   const rect = displayRect(stage.w, stage.h, videoSize.w, videoSize.h, stage.dpr, scale);
+  const monitors = snap?.monitors ?? [];
+  const monitor = monitors[snap?.activeMonitor ?? 0];
+  // Cursor shapes are in native pixels: prefer the agent's native size for this stream.
+  const nativeWidth = snap?.streamState?.native_width || monitor?.width || 0;
+  const touch = useTouchInput(
+    {
+      session: sessionRef,
+      surface: surfaceRef,
+      video: videoRef,
+      zoom: zoomRef,
+      scroller: scrollerRef,
+    },
+    active,
+    snap?.activeMonitor ?? 0,
+    touchMode,
+    { content: rect, stage, nativeWidth, zoomable: scale === "fit" },
+  );
+  // A zoomed-in picture gets a larger stream, in steps, so it stays sharp.
+  const streamZoom = viewZoom(touch.zoom);
   // Only the pane in view measures a real stage; a hidden one keeps its size.
   useEffect(() => {
     if (!focused || stage.w <= 0) return;
-    session.setView(scale === "fit" ? streamView(stage.w, stage.h, stage.dpr) : null);
-  }, [session, focused, scale, stage.w, stage.h, stage.dpr]);
+    session.setView(
+      scale === "fit" ? streamView(stage.w * streamZoom, stage.h * streamZoom, stage.dpr) : null,
+    );
+  }, [session, focused, scale, stage.w, stage.h, stage.dpr, streamZoom]);
   const transfers = useTransfers(snap?.files ?? null);
 
   // In-stage panels release pointer lock; it comes back on close if it was on.
@@ -235,13 +280,66 @@ export function SessionPane({
     if (!other) {
       if (relockOnClose.current) setRelative(true);
       relockOnClose.current = false;
-      kbRef.current?.focus({ preventScroll: true });
+      refocus();
     }
   };
   const onHotkey = useCallback(
     (h: Hotkey) => (h.t === "streamMenu" ? openPanel("stream") : onWorkspaceHotkey(h)),
     [openPanel, onWorkspaceHotkey],
   );
+  // Back to typing on the remote, unless that would raise a phone's keyboard.
+  const refocus = () => {
+    if (!coarse) kbRef.current?.focus({ preventScroll: true });
+  };
+  const toggleSoftKeyboard = () => {
+    const kb = kbRef.current;
+    if (!kb) return;
+    if (document.activeElement === kb) kb.blur();
+    else kb.focus({ preventScroll: true });
+  };
+  useEffect(() => {
+    const kb = kbRef.current;
+    if (!kb || !coarse) return;
+    const onFocus = () => setSoftKeyboard(true);
+    const onBlur = () => {
+      setSoftKeyboard(false);
+      // iOS can leave the page scrolled after its keyboard closes.
+      requestAnimationFrame(() => window.scrollTo(0, 0));
+    };
+    kb.addEventListener("focus", onFocus);
+    kb.addEventListener("blur", onBlur);
+    return () => {
+      kb.removeEventListener("focus", onFocus);
+      kb.removeEventListener("blur", onBlur);
+    };
+  }, [coarse]);
+
+  const chooseTouchMode = (m: TouchMode) => {
+    setTouchMode(m);
+    setTouchHint(TOUCH_HINTS[m]);
+    try {
+      localStorage.setItem(TOUCH_KEY, m);
+    } catch {
+      // storage unavailable
+    }
+  };
+  // The gestures are shown once, the first time a touch session goes live.
+  useEffect(() => {
+    if (!active || !coarse) return;
+    try {
+      if (localStorage.getItem(TOUCH_HINT_KEY)) return;
+      localStorage.setItem(TOUCH_HINT_KEY, "1");
+    } catch {
+      return;
+    }
+    setTouchHint(TOUCH_HINTS[touchMode]);
+  }, [active, coarse, touchMode]);
+  useEffect(() => {
+    if (!touchHint) return;
+    const t = setTimeout(() => setTouchHint(null), 5000);
+    return () => clearTimeout(t);
+  }, [touchHint]);
+
   const sendCombo = (c: Combo) => {
     for (const m of comboInput(c.keys)) session?.sendInput(m);
     closePanel("keys");
@@ -289,6 +387,7 @@ export function SessionPane({
     if (!fullscreen || document.pointerLockElement) return;
     if (e.clientY - e.currentTarget.getBoundingClientRect().top < 40) revealPill(2500);
   };
+  const lastPointer = useRef("");
 
   const onDragEnter = (e: ReactDragEvent<HTMLDivElement>) => {
     if (!hasFiles(e) || !files) return;
@@ -369,7 +468,7 @@ export function SessionPane({
 
   const toggleFullscreen = () => {
     onToggleFullscreen();
-    kbRef.current?.focus();
+    refocus();
   };
 
   const toggleHud = () =>
@@ -385,17 +484,26 @@ export function SessionPane({
   const typeClipboard = async () => {
     const text = await navigator.clipboard?.readText().catch(() => "");
     if (text) for (const m of encodeText(text)) sessionRef.current?.sendInput(m);
-    kbRef.current?.focus();
+    refocus();
   };
 
   const reconnect = (relay = forceRelay) => onReconnect(relay);
 
   const phase = snap?.phase ?? "preparing";
   const name = snap?.deviceName || listName || "Device";
-  const monitors = snap?.monitors ?? [];
-  const monitor = monitors[snap?.activeMonitor ?? 0];
-  // Cursor shapes are in native pixels: prefer the agent's native size for this stream.
-  const nativeWidth = snap?.streamState?.native_width || monitor?.width || 0;
+  // iPhone Safari has no element fullscreen.
+  const canFullscreen = document.fullscreenEnabled;
+  const keyboardButton = coarse && (
+    <ToolButton
+      label={softKeyboard ? "Hide keyboard" : "Show keyboard"}
+      icon="keyboard"
+      active={softKeyboard}
+      disabled={!live}
+      // Keeps focus where it is, so the keyboard does not close and reopen.
+      onPointerDown={(e) => e.preventDefault()}
+      onClick={toggleSoftKeyboard}
+    />
+  );
   const filesLabel =
     snap?.filesState === "unsupported" ? "Files (not supported by this device's agent)" : "Files";
 
@@ -435,15 +543,19 @@ export function SessionPane({
                 onClick={() => (streamOpen ? closePanel("stream") : openPanel("stream"))}
               />
             )}
-            <ToolButton
-              label={filesLabel}
-              icon="folder"
-              active={filesOpen}
-              onClick={() => (filesOpen ? closePanel("files") : openPanel("files"))}
-              disabled={!live || !files}
-              text="Files"
-            />
+            {!coarse && (
+              <ToolButton
+                label={filesLabel}
+                icon="folder"
+                active={filesOpen}
+                onClick={() => (filesOpen ? closePanel("files") : openPanel("files"))}
+                disabled={!live || !files}
+                text="Files"
+              />
+            )}
+            {keyboardButton}
             <KeysButton
+              icon={coarse ? "keyboardCommand" : "keyboard"}
               os={snap?.agentOs ?? null}
               open={keysOpen && !fullscreen}
               disabled={!live}
@@ -454,6 +566,17 @@ export function SessionPane({
             />
             <MoreMenu
               items={[
+                // A phone's toolbar has no room for Files.
+                ...(coarse
+                  ? [
+                      {
+                        label: "Files",
+                        icon: "folder" as const,
+                        onSelect: () => openPanel("files"),
+                        disabled: !live || !files,
+                      },
+                    ]
+                  : []),
                 {
                   label: "Paste as keystrokes",
                   icon: "paste",
@@ -480,13 +603,25 @@ export function SessionPane({
                       },
                     ]
                   : []),
-                {
-                  label: "Lock pointer (games, 3D)",
-                  icon: "lock",
-                  checked: relative,
-                  onSelect: () => setRelative((r) => !r),
-                  disabled: !live,
-                },
+                ...(coarse
+                  ? [
+                      {
+                        label: "Trackpad mode",
+                        icon: "touch" as const,
+                        checked: touchMode === "trackpad",
+                        onSelect: () =>
+                          chooseTouchMode(touchMode === "trackpad" ? "direct" : "trackpad"),
+                      },
+                    ]
+                  : [
+                      {
+                        label: "Lock pointer (games, 3D)",
+                        icon: "lock" as const,
+                        checked: relative,
+                        onSelect: () => setRelative((r) => !r),
+                        disabled: !live,
+                      },
+                    ]),
                 {
                   label: "Latency HUD",
                   icon: "speed",
@@ -501,10 +636,14 @@ export function SessionPane({
                 },
               ]}
             />
-            <span className="mx-1.5 h-5 w-px bg-white/15" />
-            <ToolButton label="Fullscreen" icon="fullscreen" onClick={toggleFullscreen} />
+            {canFullscreen && (
+              <>
+                <span className="mx-1.5 h-5 w-px bg-white/15" />
+                <ToolButton label="Fullscreen" icon="fullscreen" onClick={toggleFullscreen} />
+              </>
+            )}
             <button
-              className="btn btn-sm ml-1 bg-[#d93025] px-3 text-white hover:brightness-110"
+              className="btn btn-sm ml-1 bg-[#d93025] px-3 text-white hover:brightness-110 max-sm:px-2.5"
               onClick={() => session.end("user_hangup")}
               disabled={phase === "ended" || phase === "pin_mismatch"}
               aria-label="End session"
@@ -521,12 +660,14 @@ export function SessionPane({
         ref={stageRef}
         className="session-stage relative min-h-0 flex-1 overflow-hidden"
         onPointerMove={onStagePointerMove}
+        onPointerDown={onStagePointerMove}
         onDragEnter={onDragEnter}
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
         <div
+          ref={scrollerRef}
           className={`absolute inset-0 ${scale === "actual" ? "overflow-auto" : "overflow-hidden"}`}
         >
           <div
@@ -536,15 +677,17 @@ export function SessionPane({
               height: Math.max(stage.h, rect.top + rect.height),
             }}
           >
-            <video
-              ref={videoRef}
-              className="absolute"
-              style={{ left: rect.left, top: rect.top, width: rect.width, height: rect.height }}
-              playsInline
-              autoPlay
-              muted
-              disablePictureInPicture
-            />
+            <div ref={zoomRef} className="absolute inset-0 origin-top-left">
+              <video
+                ref={videoRef}
+                className="absolute"
+                style={{ left: rect.left, top: rect.top, width: rect.width, height: rect.height }}
+                playsInline
+                autoPlay
+                muted
+                disablePictureInPicture
+              />
+            </div>
             <CursorLayer
               session={session}
               video={videoRef}
@@ -554,22 +697,42 @@ export function SessionPane({
             />
             <div
               ref={surfaceRef}
-              className="absolute inset-0 cursor-default touch-none select-none"
-              onClick={() => kbRef.current?.focus({ preventScroll: true })}
-            >
-              <textarea
-                ref={kbRef}
-                aria-label="Remote keyboard input"
-                className="absolute top-0 left-0 h-px w-px resize-none overflow-hidden border-0 p-0 opacity-0"
-                autoCapitalize="off"
-                autoCorrect="off"
-                autoComplete="off"
-                spellCheck={false}
-                tabIndex={0}
-              />
-            </div>
+              className="absolute inset-0 cursor-default touch-none select-none [-webkit-touch-callout:none]"
+              onPointerDownCapture={(e) => (lastPointer.current = e.pointerType)}
+              onClick={() => lastPointer.current !== "touch" && refocus()}
+            />
           </div>
         </div>
+        {/* Outside the zoomed and scrolled content, so focusing it never scrolls
+            the page; 16px text, or iOS zooms in on focus. */}
+        <textarea
+          ref={kbRef}
+          aria-label="Remote keyboard input"
+          className="absolute top-0 left-0 h-px w-px resize-none overflow-hidden border-0 p-0 text-base opacity-0"
+          autoCapitalize="off"
+          autoCorrect="off"
+          autoComplete="off"
+          spellCheck={false}
+          tabIndex={0}
+        />
+        {touch.zoom > 1.01 && live && (
+          <button
+            className="absolute right-3 bottom-3 z-20 flex items-center gap-1.5 rounded-full bg-black/70 px-3 py-1.5 text-xs text-white/90 shadow-lg tabular-nums"
+            aria-label="Zoom out to the whole screen"
+            onClick={touch.resetZoom}
+          >
+            {touch.zoom.toFixed(1)}×
+            <Icon name="close" size={14} />
+          </button>
+        )}
+        {touchHint && live && (
+          <div
+            role="status"
+            className="pointer-events-none absolute bottom-14 left-1/2 z-30 w-max max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-lg bg-black/80 px-4 py-2 text-center text-sm text-white shadow-lg"
+          >
+            {touchHint}
+          </div>
+        )}
         {live && snap && <UnlockingOverlay deviceName={snap.deviceName} signIn={signIn} />}
         {live && snap?.locked && !signIn.covering && (
           <LockedBanner deviceName={snap.deviceName} signIn={signIn} />
@@ -626,7 +789,9 @@ export function SessionPane({
               onClick={() => openPanel("files")}
               disabled={!files}
             />
+            {keyboardButton}
             <KeysButton
+              icon={coarse ? "keyboardCommand" : "keyboard"}
               os={snap?.agentOs ?? null}
               open={keysOpen && fullscreen}
               align="center"
@@ -634,16 +799,18 @@ export function SessionPane({
               onSend={sendCombo}
               onClose={() => closePanel("keys")}
             />
-            <ToolButton
-              label={
-                relative
-                  ? "Absolute mouse"
-                  : "Relative mouse (pointer lock) for games and 3D apps; the cursor follows a round trip behind"
-              }
-              icon="lock"
-              active={relative}
-              onClick={() => setRelative((r) => !r)}
-            />
+            {!coarse && (
+              <ToolButton
+                label={
+                  relative
+                    ? "Absolute mouse"
+                    : "Relative mouse (pointer lock) for games and 3D apps; the cursor follows a round trip behind"
+                }
+                icon="lock"
+                active={relative}
+                onClick={() => setRelative((r) => !r)}
+              />
+            )}
             <ToolButton
               label="Exit fullscreen"
               icon="fullscreenExit"
@@ -791,6 +958,7 @@ function ToolButton({
   label,
   icon,
   onClick,
+  onPointerDown,
   active,
   disabled,
   text,
@@ -798,17 +966,19 @@ function ToolButton({
   label: string;
   icon: Parameters<typeof Icon>[0]["name"];
   onClick: () => void;
+  onPointerDown?: (e: ReactPointerEvent<HTMLButtonElement>) => void;
   active?: boolean;
   disabled?: boolean;
   text?: string;
 }) {
   return (
     <button
-      className={`btn btn-sm text-white/90 hover:bg-white/10 ${active ? "bg-white/15" : ""}`}
+      className={`btn btn-sm text-white/90 hover:bg-white/10 max-sm:px-2 ${active ? "bg-white/15" : ""}`}
       aria-label={label}
       aria-pressed={active}
       title={label}
       onClick={onClick}
+      onPointerDown={onPointerDown}
       disabled={disabled}
     >
       <Icon name={icon} size={18} />

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { hidUsage, KeyState, modifierBit } from "./hid";
+import { hidUsage, KeyState, keyUsage, modifierBit } from "./hid";
 
 describe("hidUsage", () => {
   test.each([
@@ -38,6 +38,35 @@ describe("hidUsage", () => {
 
   test("unknown codes map to undefined", () => {
     expect(hidUsage("Unidentified")).toBeUndefined();
+  });
+});
+
+describe("keyUsage", () => {
+  test.each([
+    ["Backspace", 0x2a],
+    ["Enter", 0x28],
+    ["Tab", 0x2b],
+    ["Escape", 0x29],
+    ["ArrowLeft", 0x50],
+    ["Delete", 0x4c],
+  ])("an on-screen keyboard's %s (no code) maps by its key name", (key, usage) => {
+    expect(keyUsage("", key)).toBe(usage);
+  });
+
+  test("a printable key without a code has no usage (it is sent as text)", () => {
+    expect([keyUsage("", "a"), keyUsage("", " "), keyUsage("", "Unidentified")]).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  test("the code wins over the key name (layout independence)", () => {
+    expect(keyUsage("KeyZ", "y")).toBe(hidUsage("KeyZ"));
+  });
+
+  test("an unknown code is not rescued by its key name", () => {
+    expect(keyUsage("Lang9", "Enter")).toBeUndefined();
   });
 });
 

@@ -1,10 +1,11 @@
-// Captures pointer, wheel and keyboard input on the session stage and
+// Captures mouse, pen, wheel and keyboard input on the session stage and
 // serializes it straight into the `input` and `move` data channels (PROTOCOL §5).
+// Touch has its own gestures (useTouchInput).
 
 import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
 import { normalizePoint } from "../lib/geometry";
-import { hidUsage, KeyState } from "../lib/hid";
+import { keyUsage, KeyState } from "../lib/hid";
 import {
   Button,
   encodeKey,
@@ -16,6 +17,7 @@ import {
 import { workspaceHotkey } from "../lib/shortcuts";
 import type { Hotkey } from "../lib/shortcuts";
 import type { RemoteSession } from "./RemoteSession";
+import { touchFirst } from "./useTouchInput";
 import { videoBox } from "./videoBox";
 
 // DOM MouseEvent.button → protocol button.
@@ -83,6 +85,7 @@ export function useRemoteInput(
     };
 
     const onMove = (e: PointerEvent) => {
+      if (e.pointerType === "touch") return;
       if (document.pointerLockElement === el) {
         if (e.movementX || e.movementY) send(encodeMouseMoveRel(e.movementX, e.movementY));
         return;
@@ -92,6 +95,7 @@ export function useRemoteInput(
     };
 
     const onDown = (e: PointerEvent) => {
+      if (e.pointerType === "touch") return;
       e.preventDefault();
       kb.focus({ preventScroll: true });
       // Reliable, so the click lands where the pointer is, not where a lost move left it.
@@ -107,6 +111,7 @@ export function useRemoteInput(
     };
 
     const onUp = (e: PointerEvent) => {
+      if (e.pointerType === "touch") return;
       e.preventDefault();
       if (e.type === "pointerup" && document.pointerLockElement !== el) moveAbs(e, true);
       const b = domButton[e.button];
@@ -122,7 +127,7 @@ export function useRemoteInput(
     const onKey = (e: KeyboardEvent) => {
       const down = e.type === "keydown";
       if (e.isComposing || e.key === "Process" || e.keyCode === 229) return; // IME owns it
-      const usage = hidUsage(e.code);
+      const usage = keyUsage(e.code, e.key);
       e.preventDefault();
       e.stopPropagation();
       // Workspace shortcuts never reach the remote; their keyups are dropped
@@ -145,6 +150,20 @@ export function useRemoteInput(
     const onCompositionEnd = (e: CompositionEvent) => {
       if (e.data) for (const m of encodeText(e.data)) send(m);
       kb.value = "";
+    };
+    // Android keyboards send editing keys as keyCode 229; only the input says what they were.
+    const onBeforeInput = (e: InputEvent) => {
+      if (e.isComposing) return;
+      const usage =
+        e.inputType === "deleteContentBackward"
+          ? keyUsage("Backspace", "")
+          : e.inputType === "insertLineBreak" || e.inputType === "insertParagraph"
+            ? keyUsage("Enter", "")
+            : undefined;
+      if (usage === undefined) return;
+      e.preventDefault();
+      send(encodeKey(usage, true, 0));
+      send(encodeKey(usage, false, 0));
     };
     const onInputEvt = (e: Event) => {
       // Non-IME text that slipped past keydown (e.g. dictation): forward and clear.
@@ -169,11 +188,13 @@ export function useRemoteInput(
     kb.addEventListener("keydown", onKey);
     kb.addEventListener("keyup", onKey);
     kb.addEventListener("compositionend", onCompositionEnd);
+    kb.addEventListener("beforeinput", onBeforeInput);
     kb.addEventListener("input", onInputEvt);
     kb.addEventListener("blur", releaseAll);
     window.addEventListener("blur", releaseAll);
     document.addEventListener("visibilitychange", onHidden);
-    kb.focus({ preventScroll: true });
+    // On a phone, focus would raise the on-screen keyboard: it has its own button.
+    if (!touchFirst()) kb.focus({ preventScroll: true });
 
     return () => {
       if (settle) clearTimeout(settle);
@@ -188,6 +209,7 @@ export function useRemoteInput(
       kb.removeEventListener("keydown", onKey);
       kb.removeEventListener("keyup", onKey);
       kb.removeEventListener("compositionend", onCompositionEnd);
+      kb.removeEventListener("beforeinput", onBeforeInput);
       kb.removeEventListener("input", onInputEvt);
       kb.removeEventListener("blur", releaseAll);
       window.removeEventListener("blur", releaseAll);

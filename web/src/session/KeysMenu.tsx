@@ -19,6 +19,7 @@ export function KeysButton({
   onToggle,
   onSend,
   onClose,
+  icon = "keyboard",
 }: {
   os: string | null;
   open: boolean;
@@ -28,6 +29,8 @@ export function KeysButton({
   onToggle: () => void;
   onSend: (c: Combo) => void;
   onClose: () => void;
+  /** Where the on-screen keyboard has its own button, this one shows ⌘. */
+  icon?: "keyboard" | "keyboardCommand";
 }) {
   const wrap = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLUListElement>(null);
@@ -63,7 +66,7 @@ export function KeysButton({
   return (
     <div ref={wrap} className="relative">
       <button
-        className={`btn btn-sm text-white/90 hover:bg-white/10 ${open ? "bg-white/15" : ""}`}
+        className={`btn btn-sm text-white/90 hover:bg-white/10 max-sm:px-2 ${open ? "bg-white/15" : ""}`}
         aria-label={LABEL}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -71,7 +74,7 @@ export function KeysButton({
         onClick={onToggle}
         disabled={disabled}
       >
-        <Icon name="keyboard" size={18} />
+        <Icon name={icon} size={18} />
         <span className="hidden sm:inline">Keys</span>
       </button>
       {open && (

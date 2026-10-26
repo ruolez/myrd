@@ -34,6 +34,16 @@ export function WorkspaceView() {
   const [toolbar, setToolbar] = useState<HTMLDivElement | null>(null);
   const nameOf = (x: DeviceId | null) => (x && labels.get(x)?.name) || "a device";
 
+  // No pull-to-refresh or bounce while controlling a device.
+  useEffect(() => {
+    const root = document.documentElement;
+    const prev = root.style.overscrollBehavior;
+    root.style.overscrollBehavior = "none";
+    return () => {
+      root.style.overscrollBehavior = prev;
+    };
+  }, []);
+
   // The route decides what is in view; leaving it puts every session in the background.
   useEffect(() => {
     const r = ws.open(id, relay);
@@ -118,7 +128,7 @@ export function WorkspaceView() {
 
   if (blocked !== false) {
     return (
-      <div className="flex h-screen items-center justify-center bg-[#121314] p-6 text-white">
+      <div className="flex h-dvh items-center justify-center bg-[#121314] p-6 text-white">
         <div className="max-w-md space-y-4 rounded-2xl border border-white/10 bg-[#1e1f20] p-6">
           <h1 className="text-lg font-medium">{MAX_LIVE_SESSIONS} sessions are open</h1>
           <p className="text-sm text-white/70">
@@ -189,7 +199,12 @@ export function WorkspaceView() {
   );
 
   return (
-    <div ref={rootRef} className="flex h-screen flex-col bg-black text-white">
+    // The visible viewport, not 100vh (taller than the screen while a phone's
+    // address bar shows); no browser zoom, which would fight the session's own.
+    <div
+      ref={rootRef}
+      className="flex h-dvh touch-pan-x touch-pan-y flex-col overflow-hidden bg-black text-white"
+    >
       {!fullscreen && (
         <div className="flex h-12 shrink-0 items-center gap-1 border-b border-white/10 bg-[#161718] pr-2 pl-1.5">
           {back}

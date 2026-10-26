@@ -84,6 +84,30 @@ export function hidUsage(code: string): number | undefined {
   return table[code];
 }
 
+// On-screen keyboards (iOS, some Android) send their editing keys with an
+// empty code; those are matched by key name. Printable keys go as text.
+const namedKeys = new Set([
+  "Backspace",
+  "Enter",
+  "Tab",
+  "Escape",
+  "Delete",
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "ArrowDown",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+]);
+
+/** The usage of a key event: by its code, or by key name when it has no code. */
+export function keyUsage(code: string, key: string): number | undefined {
+  if (code) return table[code];
+  return namedKeys.has(key) ? table[key] : undefined;
+}
+
 /** HID modifier byte bit for a usage in 0xE0..0xE7, else 0. */
 export function modifierBit(usage: number): number {
   return usage >= 0xe0 && usage <= 0xe7 ? 1 << (usage - 0xe0) : 0;

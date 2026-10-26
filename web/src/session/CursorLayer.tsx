@@ -2,7 +2,8 @@
 // composites it into the stream). While the controller moves the mouse it is
 // the browser's own cursor over the stage; the canvas draws it where the agent
 // reports it once the remote cursor moves on its own, under Pointer Lock, and
-// while the pointer is outside the stage (lib/cursor.ts).
+// while the pointer is outside the stage (lib/cursor.ts). A finger is never
+// the cursor: under touch it is drawn where the agent reports it.
 
 import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
@@ -17,6 +18,7 @@ import {
 } from "../lib/cursor";
 import { denormalizePoint } from "../lib/geometry";
 import type { RemoteSession } from "./RemoteSession";
+import { VIEW_EVENT } from "./useTouchInput";
 import { videoBox } from "./videoBox";
 
 type Shape = { bmp: ImageBitmap; hotX: number; hotY: number; w: number; h: number };
@@ -179,7 +181,10 @@ export function CursorLayer({
 
     const onPointer = (e: PointerEvent) => {
       const r = el.getBoundingClientRect();
-      pointer = e.type === "pointerleave" ? null : { x: e.clientX - r.left, y: e.clientY - r.top };
+      pointer =
+        e.type === "pointerleave" || e.pointerType === "touch"
+          ? null
+          : { x: e.clientX - r.left, y: e.clientY - r.top };
       schedule();
     };
 
@@ -227,6 +232,7 @@ export function CursorLayer({
     el.addEventListener("pointermove", onPointer);
     el.addEventListener("pointerdown", onPointer);
     el.addEventListener("pointerleave", onPointer);
+    el.addEventListener(VIEW_EVENT, schedule);
     document.addEventListener("pointerlockchange", schedule);
     const ro = new ResizeObserver(schedule);
     ro.observe(el);
@@ -236,6 +242,7 @@ export function CursorLayer({
       el.removeEventListener("pointermove", onPointer);
       el.removeEventListener("pointerdown", onPointer);
       el.removeEventListener("pointerleave", onPointer);
+      el.removeEventListener(VIEW_EVENT, schedule);
       document.removeEventListener("pointerlockchange", schedule);
       ro.disconnect();
       if (raf) cancelAnimationFrame(raf);

@@ -147,7 +147,7 @@ export function SessionTabs({
       </ul>
       <button
         type="button"
-        className="btn btn-sm shrink-0 text-white/80 hover:bg-white/10"
+        className="btn btn-sm shrink-0 text-white/80 hover:bg-white/10 max-sm:hidden"
         aria-label="Open another device (Ctrl+Alt+Shift+K)"
         title="Open another device (Ctrl+Alt+Shift+K)"
         onClick={onAdd}

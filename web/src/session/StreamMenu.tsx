@@ -140,7 +140,7 @@ export function StreamButton({
   const label = streamLabel(prefs, state);
   return (
     <button
-      className={`btn btn-sm text-white/90 hover:bg-white/10 ${open ? "bg-white/15" : ""}`}
+      className={`btn btn-sm text-white/90 hover:bg-white/10 max-sm:px-2 ${open ? "bg-white/15" : ""}`}
       aria-label={`Stream settings: ${label}`}
       aria-haspopup="dialog"
       aria-expanded={open}
