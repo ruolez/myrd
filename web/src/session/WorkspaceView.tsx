@@ -2,7 +2,7 @@
 // switches to it) and shows every open session, the focused one in view.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import type { DeviceId } from "../api/types";
 import { useDeviceLabels } from "../app/directory";
 import { usePalette } from "../app/palette";
@@ -23,6 +23,7 @@ export function WorkspaceView() {
   const [params] = useSearchParams();
   const relay = params.get("relay") === "1";
   const navigate = useNavigate();
+  const location = useLocation();
   const ws = useWorkspace();
   const st = useWorkspaceState();
   const labels = useDeviceLabels();
@@ -125,6 +126,16 @@ export function WorkspaceView() {
     if (document.fullscreenElement) void document.exitFullscreen();
     else void rootRef.current?.requestFullscreen({ navigationUI: "hide" }).catch(() => undefined);
   }, []);
+
+  // "Connect in fullscreen": the click that navigated here still counts as the
+  // user activation requestFullscreen needs. The state is dropped so a reload
+  // or Back does not ask again.
+  const wantsFullscreen = (location.state as { fullscreen?: boolean } | null)?.fullscreen === true;
+  useEffect(() => {
+    if (!wantsFullscreen || blocked !== false) return;
+    if (!document.fullscreenElement) toggleFullscreen();
+    navigate({ pathname: location.pathname, search: location.search }, { replace: true });
+  }, [wantsFullscreen, blocked, toggleFullscreen, navigate, location.pathname, location.search]);
 
   if (blocked !== false) {
     return (

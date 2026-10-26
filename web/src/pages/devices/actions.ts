@@ -13,6 +13,9 @@ import { useOrgDialog } from "./dialogs";
 
 export const canConnect = (d: Device) => d.online && d.status !== "disabled" && !d.busy;
 
+/** iPhone Safari has no element fullscreen. */
+export const canFullscreen = () => document.fullscreenEnabled;
+
 export function connectTitle(d: Device): string {
   if (d.status === "disabled") return "Device is disabled";
   if (!d.online) return "Device is offline";
@@ -31,7 +34,12 @@ export function useDeviceActions() {
   const wsState = useWorkspaceState();
   const openHere = useCallback((d: Device) => d.id in wsState.entries, [wsState]);
 
-  const connect = useCallback((d: Device) => navigate(`/session/${d.id}`), [navigate]);
+  /** Opens the session; with fullscreen, the workspace goes fullscreen as it opens. */
+  const connect = useCallback(
+    (d: Device, fullscreen = false) =>
+      navigate(`/session/${d.id}`, fullscreen ? { state: { fullscreen: true } } : undefined),
+    [navigate],
+  );
   /** Connects without leaving the page; the session waits in the workspace. */
   const openInBackground = useCallback(
     (d: Device) => {
@@ -119,6 +127,15 @@ export function useDeviceActions() {
           disabled: !here && !canConnect(d),
           onSelect: () => connect(d),
         },
+        ...(canFullscreen() && (here || canConnect(d))
+          ? [
+              {
+                label: here ? "Switch in fullscreen" : "Connect in fullscreen",
+                icon: "fullscreen" as const,
+                onSelect: () => connect(d, true),
+              },
+            ]
+          : []),
         ...(here
           ? [
               {

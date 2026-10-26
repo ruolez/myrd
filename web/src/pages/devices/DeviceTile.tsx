@@ -19,7 +19,7 @@ import {
   tileHealthLine,
 } from "../../lib/health";
 import type { Severity } from "../../lib/health";
-import { canConnect, connectTitle, useDeviceActions } from "./actions";
+import { canConnect, canFullscreen, connectTitle, useDeviceActions } from "./actions";
 
 export const DEVICE_DRAG = "application/x-remotectl-devices";
 
@@ -211,6 +211,7 @@ export function DeviceTile(p: TileProps) {
     enabled: true,
     title: canConnect(d) ? connectTitle(d) : d.online ? connectTitle(d) : `Details of ${d.name}`,
   };
+  const fullscreen = !p.selecting && canFullscreen() && (actions.openHere(d) || canConnect(d));
   const attention = attentionReasons(d, p.now);
   // Low disk already shows as a colored number in the health line.
   const flagged = zen || size === "s" ? attention : attention.filter((a) => a !== "low_disk");
@@ -256,11 +257,11 @@ export function DeviceTile(p: TileProps) {
       onDragStart={p.onDragStart}
       aria-label={d.name}
     >
-      <div className="relative">
+      <div className="group/media relative">
         <button
           type="button"
           data-tile-primary
-          className={`group/media relative block aspect-video w-full overflow-hidden ${
+          className={`relative block aspect-video w-full overflow-hidden ${
             zen ? "rounded-2xl" : "rounded-t-2xl"
           } ${d.online ? "bg-primary-soft/60" : "bg-surface-2"}`}
           onClick={(e) =>
@@ -270,15 +271,31 @@ export function DeviceTile(p: TileProps) {
           aria-label={`${primary.label}: ${d.name}`}
         >
           {p.media ?? <PreviewImage device={d} now={p.now} compact={size === "s"} />}
-          {primary.enabled && (
-            <span className="absolute inset-0 flex items-center justify-center bg-black/25 opacity-0 transition-opacity group-hover/media:opacity-100 group-focus-visible/media:opacity-100 motion-reduce:transition-none">
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-sm font-medium text-on-primary shadow">
-                <Icon name={primary.label === "Details" ? "info" : "sessions"} size={16} />
-                {primary.label}
-              </span>
-            </span>
-          )}
         </button>
+        {primary.enabled && (
+          <div
+            className={`pointer-events-none absolute inset-0 flex items-center justify-center gap-2 bg-black/25 opacity-0 transition-opacity group-hover/media:opacity-100 group-has-[[data-tile-primary]:focus-visible]/media:opacity-100 has-focus-visible:opacity-100 motion-reduce:transition-none ${
+              zen ? "rounded-2xl" : "rounded-t-2xl"
+            }`}
+          >
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-sm font-medium text-on-primary shadow">
+              <Icon name={primary.label === "Details" ? "info" : "sessions"} size={16} />
+              {primary.label}
+            </span>
+            {/* Touch has no hover to reveal it, and it would take taps while invisible. */}
+            {fullscreen && (
+              <button
+                type="button"
+                className="pointer-events-auto flex h-8 w-8 items-center justify-center rounded-full bg-black/60 text-white shadow transition-colors hover:bg-black/80 pointer-coarse:hidden"
+                onClick={() => actions.connect(d, true)}
+                title={`${primary.label} in fullscreen`}
+                aria-label={`${primary.label} in fullscreen: ${d.name}`}
+              >
+                <Icon name="fullscreen" size={18} />
+              </button>
+            )}
+          </div>
+        )}
         {zen && (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-2 rounded-b-2xl bg-linear-to-t from-black/80 via-black/40 to-transparent px-3 pt-10 pb-2 text-white">
             <StatusDot {...status} />
