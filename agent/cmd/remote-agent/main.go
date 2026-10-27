@@ -6,6 +6,7 @@
 //	remote-agent selftest              capture ~3 s and inject input; prints a report
 //	remote-agent uninstall
 //	remote-agent version
+//	remote-agent install-code PATH…    prints the install link code in an installer's file name (macOS postinstall)
 //	remote-agent capture-worker        spawned by the agent per session: capture and encoding
 package main
 
@@ -30,6 +31,7 @@ import (
 	"github.com/ruolez/remotectl/agent/internal/config"
 	"github.com/ruolez/remotectl/agent/internal/identity"
 	"github.com/ruolez/remotectl/agent/internal/tray"
+	"github.com/ruolez/remotectl/proto"
 )
 
 // Set with -ldflags "-X main.version=…".
@@ -41,6 +43,9 @@ func init() { runtime.LockOSThread() }
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "capture-worker" { // before any log file is opened
 		os.Exit(cmdCaptureWorker(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "install-code" {
+		os.Exit(cmdInstallCode(os.Args[2:]))
 	}
 	if platformMain(os.Args[1:]) {
 		return
@@ -72,6 +77,18 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+// cmdInstallCode prints the install link code found in the first path that
+// has one (proto.InstallCodeFromPath); exit status 1 when none has.
+func cmdInstallCode(paths []string) int {
+	for _, p := range paths {
+		if code, ok := proto.InstallCodeFromPath(p); ok {
+			fmt.Println(code)
+			return 0
+		}
+	}
+	return 1
 }
 
 func newLogger() *slog.Logger {

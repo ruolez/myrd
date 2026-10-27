@@ -270,6 +270,20 @@ export type Page<T> = { items: T[]; next_before: string | null };
 
 export type DownloadOS = "macos" | "windows" | "windows7";
 
+/** The caller's reusable install link (PROTOCOL §2 "Install links"). */
+export type InstallLink = {
+  code: string;
+  url: string;
+  created_at: string;
+  last_used_at: string | null;
+  use_count: number;
+};
+
+/** What an install link hands out: each installer named for the link. */
+export type InstallInfo = {
+  downloads: Record<DownloadOS, { filename: string; size: number } | null>;
+};
+
 export type AgentDownload = {
   os: DownloadOS;
   filename: string;

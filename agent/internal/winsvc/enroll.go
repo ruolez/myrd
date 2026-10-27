@@ -1,6 +1,10 @@
 package winsvc
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/ruolez/remotectl/proto"
+)
 
 // enrollWaitReason says why the service is not enrolling yet; "" when it has
 // both a token and a server URL. Logged whenever it changes, so service.log
@@ -20,5 +24,30 @@ func enrollWaitReason(token, serverURL string) string {
 		"; install with msiexec /i RemoteAgent.msi ENROLL_TOKEN=XXXX-XXXX SERVER_URL=https://your-server /qn"
 }
 
-// regKey is written by the MSI (EnrollToken, ServerURL).
+// regKey is written by the MSI (EnrollToken, ServerURL, InstallSource).
 const regKey = `SOFTWARE\RemoteAgent`
+
+type enrollSource int
+
+const (
+	fromNone enrollSource = iota
+	fromFlag
+	fromRegistry
+	fromInstallLink
+)
+
+// enrollCode picks what the service enrolls with: the -token flag, the MSI's
+// ENROLL_TOKEN, else the install link code in the name of the MSI it was
+// installed from (InstallSource = [OriginalDatabase]).
+func enrollCode(flag, regToken, installSource string) (string, enrollSource) {
+	switch {
+	case flag != "":
+		return flag, fromFlag
+	case regToken != "":
+		return regToken, fromRegistry
+	}
+	if code, ok := proto.InstallCodeFromPath(installSource); ok {
+		return code, fromInstallLink
+	}
+	return "", fromNone
+}

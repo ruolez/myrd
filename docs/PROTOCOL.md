@@ -124,18 +124,33 @@ Rate limit: 10 failed attempts / 15 min per IP and per email → 429.
 | POST | `/v1/devices/{id}/update` | `{force?:bool}` → 202 `{version}`; sends `update.check{explicit:true,force}`. 409 `device_offline` \| `up_to_date` \| `unsupported` (Linux demo). Audited `agent.update.requested` |
 | POST | `/v1/devices/{id}/virtual-display` | `{action:"install"\|"remove"}` → 202 `{}`; sends `virtual_display{action}`; the outcome arrives in `device.info` (`virtual_display`). 400 `bad_request` (unknown action); 409 `device_offline` \| `unsupported` (not Windows). Audited `device.virtual_display.requested` (meta: action) |
 | POST | `/v1/enroll-tokens` | `{}` → `{token:"XXXX-XXXX", expires_at}` (charset `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`, 15 min, single use, stored hashed) |
+| GET | `/v1/install-link` | → `{link: InstallLink \| null}`, the caller's install link (below) |
+| POST | `/v1/install-link` | `{}` → `{link: InstallLink}`; a new code, the previous one stops working. Audited `install_link.created` |
+| DELETE | `/v1/install-link` | → `{}`; 404 when there is none. Audited `install_link.revoked` |
 | GET | `/v1/sessions?device_id=&limit=&before=` | → paged `Session` |
 | GET | `/v1/audit?device_id=&limit=&before=` | → paged `AuditEvent` for the caller |
 
 ### Agent
 | Method | Path | Body → Response |
 |---|---|---|
-| POST | `/v1/agent/enroll` | `{token, public_key:<b64 raw ed25519>, hostname, os, arch, version}` → `{device_id, name}` (name defaults to hostname) |
+| POST | `/v1/agent/enroll` | `{token, public_key:<b64 raw ed25519>, hostname, os, arch, version}` → `{device_id, name}` (name defaults to hostname). `token` is an enrollment token or an install link code; 401 when it is unknown, used, expired, revoked or its owner is disabled. Audited `device.enrolled` (meta `via`: `token` \| `install_link`) |
 | POST | `/v1/agent/challenge` | `{device_id}` → `{nonce}` (b64 32 bytes, TTL 60 s, single use) |
 | POST | `/v1/agent/auth` | `{device_id, nonce, signature}` → `{token, expires_at}`; signature = Ed25519 over `proto.AuthChallengeMessage`. 403 `{"error":{"code":"device_removed"\|"device_disabled"}}` |
 | GET | `/v1/agent/ws` | WebSocket, Bearer JWT. One socket per device (a new one replaces the old). |
 | GET | `/v1/agent/update?os=&arch=&version=&explicit=0\|1` | Bearer. 204 when nothing newer for this device; else `{version,os,arch,url,sha256,size,signature}` with `url` relative to the server. Selection and cohort are server-side (§7); `explicit=1` ignores `rollout_pct`. |
 | DELETE | `/v1/agent/self` | Bearer → `{}`; device marked removed (uninstall). |
+
+### Install links
+A user's reusable alternative to enrollment tokens: `https://<server>/i/<code>` downloads an installer that enrolls into that user's account with nothing typed on the device. One link per user; the code is `XXXX-XXXX-XXXX` (token charset, 60 bits, no expiry), looked up by hash and stored sealed so the owner can copy it again. Devices get the same defaults as with a token (`auto_accept` from the admin setting; the agent approves new browsers without a prompt unless its owner turned on *Ask before new browsers connect*). `InstallLink = {code, url, created_at, last_used_at, use_count}`.
+
+| Method | Path | Body → Response |
+|---|---|---|
+| GET | `/v1/install/{code}` | public, rate limited per IP → `{downloads: {macos\|windows\|windows7: {filename, size} \| null}}`; 404 unless the code is a live link of an enabled user |
+| GET/HEAD | `/v1/install/{code}/{os}` | public, rate limited → the uploaded installer for `os` as an attachment named for the link; 404 like above or when no installer is uploaded (an external download URL cannot be renamed) |
+
+The served file name is the uploaded one with `.link-<code>` before the extension (`proto.InstallLinkFilename`): `RemoteAgent-0.6.4-x64.link-K7P2-9XQM-ABCD.msi`. Installers find the code in their own file name (`proto.InstallCodeFromPath`, case-insensitive, ignores a browser's ` (1)`):
+- Windows MSI: writes `InstallSource = [OriginalDatabase]` to `HKLM\SOFTWARE\RemoteAgent` and skips the *Add this PC* page when its path contains `.link-`; the service enrolls with the code when there is no `EnrollToken`, and deletes `InstallSource` once the code is rejected.
+- macOS pkg: `postinstall` runs `remote-agent install-code "$1" "$PACKAGE_PATH"` when no `EnrollToken` preference is set and enrolls the console user's agent with what it prints.
 
 ### Admin (`is_admin` only; 403 otherwise; every mutation audited with actor `admin`)
 | Method | Path | Body → Response |

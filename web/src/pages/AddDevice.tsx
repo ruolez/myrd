@@ -3,8 +3,8 @@ import { Link } from "react-router";
 import { api, errorMessage } from "../api/client";
 import { useAuth } from "../app/auth";
 import { Icon, OsIcon } from "../components/icons";
-import { CopyButton, ErrorBox, PageHeader, Spinner } from "../components/ui";
-import { bytes } from "../lib/format";
+import { CopyButton, ErrorBox, PageHeader, Spinner, useConfirm } from "../components/ui";
+import { bytes, timeAgo } from "../lib/format";
 import { installSnippet, macEnrollSnippet } from "../lib/install";
 import { signaling } from "../lib/signaling";
 import { useAsync, useNow } from "../lib/hooks";
@@ -29,6 +29,110 @@ function Snippet({ code }: { code: string }) {
       </div>
       <pre className="overflow-x-auto px-3 pt-1 pb-3 font-mono text-xs leading-relaxed">{code}</pre>
     </div>
+  );
+}
+
+/**
+ * The reusable install link: whoever opens it downloads an installer that
+ * enrolls into this account by itself (PROTOCOL §2 "Install links").
+ */
+function InstallLinkCard() {
+  const confirm = useConfirm();
+  const { data, error, loading, reload, setData } = useAsync(() => api.installLink.get(), []);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const link = data?.link ?? null;
+
+  const act = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setActionError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const create = () => act(async () => setData(await api.installLink.create()));
+  const replace = async () => {
+    if (
+      await confirm({
+        title: "Make a new install link?",
+        message:
+          "The current link stops working, including installers already downloaded with it but not run yet. Devices added with it stay.",
+        confirm: "New link",
+      })
+    )
+      await create();
+  };
+  const revoke = async () => {
+    if (
+      await confirm({
+        title: "Turn off the install link?",
+        message:
+          "Nobody can add devices with it anymore, including installers already downloaded but not run yet. Devices added with it stay.",
+        confirm: "Turn off",
+        danger: true,
+      })
+    )
+      await act(async () => {
+        await api.installLink.revoke();
+        setData({ link: null });
+      });
+  };
+
+  return (
+    <section className="card mb-6 p-6">
+      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="font-medium">Install link</h2>
+        {link && (
+          <span className="text-xs text-muted">
+            {link.use_count === 0
+              ? "Not used yet"
+              : `Added ${link.use_count} ${link.use_count === 1 ? "device" : "devices"}, last ${timeAgo(link.last_used_at)}`}
+          </span>
+        )}
+      </div>
+      <p className="mb-4 text-sm text-muted">
+        Send this link to the person at the computer, or open it there yourself. The download starts
+        by itself, the installer asks nothing, and the computer joins your devices with your usual
+        defaults. The link keeps working until you replace or turn it off, so share it only with
+        people you trust.
+      </p>
+      {(error || actionError) && (
+        <ErrorBox
+          error={(actionError ?? error)!}
+          onRetry={actionError ? undefined : () => void reload()}
+        />
+      )}
+      {loading ? (
+        <Spinner />
+      ) : link ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <a
+            className="min-w-0 flex-1 truncate rounded-lg bg-surface-2 px-3 py-2 font-mono text-sm"
+            href={link.url}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {link.url}
+          </a>
+          <CopyButton text={link.url} label="Copy link" />
+          <button className="btn-outline btn-sm" onClick={() => void replace()} disabled={busy}>
+            New link
+          </button>
+          <button className="btn-text btn-sm" onClick={() => void revoke()} disabled={busy}>
+            Turn off
+          </button>
+        </div>
+      ) : (
+        <button className="btn-primary" onClick={() => void create()} disabled={busy}>
+          <Icon name="add" size={18} />
+          Create install link
+        </button>
+      )}
+    </section>
   );
 }
 
@@ -99,7 +203,7 @@ export function AddDevice() {
     <>
       <PageHeader
         title="Add device"
-        subtitle="Enrollment needs physical access to the computer and a one-time token that expires in 15 minutes."
+        subtitle="Use your install link, or a one-time token that expires in 15 minutes."
         actions={
           <Link to="/devices" className="btn-text">
             <Icon name="back" size={18} />
@@ -107,6 +211,7 @@ export function AddDevice() {
           </Link>
         }
       />
+      <InstallLinkCard />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_1.4fr] [&>*]:min-w-0">
         <section className="card p-6">
           <h2 className="mb-4 font-medium">1. Choose the operating system</h2>

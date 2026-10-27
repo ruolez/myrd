@@ -35,8 +35,9 @@ func (a *App) agentEnroll(w http.ResponseWriter, r *http.Request) error {
 	if err := decode(r, &body); err != nil {
 		return err
 	}
-	norm, ok := security.NormalizeEnrollToken(body.Token)
-	if !ok {
+	norm, isToken := security.NormalizeEnrollToken(body.Token)
+	code, isLink := security.NormalizeInstallCode(body.Token)
+	if !isToken && !isLink {
 		return errf(http.StatusBadRequest, "bad_request", "malformed enrollment token")
 	}
 	pub, err := decodeB64Any(body.PublicKey)
@@ -49,7 +50,15 @@ func (a *App) agentEnroll(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	tokenID, userID, err := store.ConsumeEnrollToken(ctx, tx, security.SHA256(norm))
+	// A token is single use; an install link (PROTOCOL §2 "Install links") enrolls any number of devices.
+	var tokenID, userID string
+	via := "token"
+	if isToken {
+		tokenID, userID, err = store.ConsumeEnrollToken(ctx, tx, security.SHA256(norm))
+	} else {
+		via = "install_link"
+		userID, err = store.UseInstallLink(ctx, tx, security.SHA256(code))
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		return errf(http.StatusUnauthorized, "unauthorized", "enrollment token is invalid, used or expired")
 	}
@@ -69,11 +78,13 @@ func (a *App) agentEnroll(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	if err := store.SetEnrollTokenDevice(ctx, tx, tokenID, deviceID); err != nil {
-		return err
+	if isToken {
+		if err := store.SetEnrollTokenDevice(ctx, tx, tokenID, deviceID); err != nil {
+			return err
+		}
 	}
 	if err := store.InsertAudit(ctx, tx, store.Audit{Actor: "agent", Event: "device.enrolled", UserID: userID, DeviceID: deviceID,
-		IP: a.clientIP(r), Meta: map[string]any{"hostname": body.Hostname, "os": body.OS, "arch": body.Arch, "version": body.Version}}); err != nil {
+		IP: a.clientIP(r), Meta: map[string]any{"via": via, "hostname": body.Hostname, "os": body.OS, "arch": body.Arch, "version": body.Version}}); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {

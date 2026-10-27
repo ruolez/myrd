@@ -124,7 +124,12 @@ func (a *App) adminDeleteDownload(w http.ResponseWriter, r *http.Request) error 
 // serveDownload is public: the installer is opened on the machine being
 // enrolled, often before anyone signs in there. Enrolling still needs a token.
 func (a *App) serveDownload(w http.ResponseWriter, r *http.Request) error {
-	osName := chi.URLParam(r, "os")
+	return a.sendDownload(w, r, chi.URLParam(r, "os"), func(name string) string { return name })
+}
+
+// sendDownload serves the installer for osName under the file name rename
+// gives the uploaded one.
+func (a *App) sendDownload(w http.ResponseWriter, r *http.Request, osName string, rename func(string) string) error {
 	if _, ok := downloadExts[osName]; !ok {
 		return errNotFound
 	}
@@ -145,7 +150,7 @@ func (a *App) serveDownload(w http.ResponseWriter, r *http.Request) error {
 	defer f.Close()
 	hdr := w.Header()
 	hdr.Set("Content-Type", "application/octet-stream")
-	hdr.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": d.Filename}))
+	hdr.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": rename(d.Filename)}))
 	hdr.Set("Cache-Control", "no-cache")
 	hdr.Set("ETag", `"`+d.SHA256+`"`)
 	hdr.Set("X-Content-SHA256", d.SHA256)

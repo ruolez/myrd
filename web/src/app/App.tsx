@@ -12,6 +12,7 @@ import { AddDevice } from "../pages/AddDevice";
 import { DeviceDetail } from "../pages/DeviceDetail";
 import { Devices } from "../pages/Devices";
 import { DeviceDialogs } from "../pages/devices/dialogs";
+import { Install } from "../pages/Install";
 import { Login } from "../pages/Login";
 import { NotFound } from "../pages/NotFound";
 import { Settings } from "../pages/Settings";
@@ -77,6 +78,7 @@ const router = createBrowserRouter([
     children: [
       { path: "/login", element: <Login /> },
       { path: "/signup", element: <Signup /> },
+      { path: "/i/:code", element: <Install /> },
       {
         element: <RequireAuth />,
         children: [

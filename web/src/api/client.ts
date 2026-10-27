@@ -11,6 +11,8 @@ import type {
   DownloadOS,
   Folder,
   FolderId,
+  InstallInfo,
+  InstallLink,
   LoginSession,
   Page,
   Release,
@@ -230,6 +232,15 @@ export const api = {
     enrollToken: () =>
       request<{ token: string; expires_at: string }>("POST", "/v1/enroll-tokens", {}),
   },
+
+  installLink: {
+    get: () => request<{ link: InstallLink | null }>("GET", "/v1/install-link"),
+    create: () => request<{ link: InstallLink }>("POST", "/v1/install-link", {}),
+    revoke: () => request<object>("DELETE", "/v1/install-link"),
+  },
+
+  /** Public: the landing page of an install link. */
+  install: (code: string) => request<InstallInfo>("GET", `/v1/install/${encodeURIComponent(code)}`),
 
   folders: {
     list: () => request<{ items: Folder[] }>("GET", "/v1/folders"),

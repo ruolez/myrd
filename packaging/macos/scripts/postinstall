@@ -2,6 +2,8 @@
 # Sets up the update daemon, loads the LaunchAgent for the logged-in user and
 # enrolls when a token was provided via:
 #   defaults write /Library/Preferences/@BUNDLE_ID@ EnrollToken XXXX-XXXX
+# or the package came from an install link (its file name carries the code:
+# RemoteAgent-1.2.3.link-XXXX-XXXX-XXXX.pkg; $1 is the package path).
 LABEL="@BUNDLE_ID@"
 APP="/Applications/@APP_NAME@.app"
 BIN="$APP/Contents/MacOS/@EXECUTABLE@"
@@ -59,6 +61,9 @@ home=$(dscl . -read "/Users/$user" NFSHomeDirectory | sed 's/^NFSHomeDirectory: 
 server=$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:RC_SERVER_URL" "$PLIST" 2>/dev/null)
 
 token=$(defaults read "$PREFS" EnrollToken 2>/dev/null || true)
+if [ -z "$token" ]; then
+  token=$("$BIN" install-code "$1" "${PACKAGE_PATH:-}" 2>/dev/null || true)
+fi
 if [ -n "$token" ]; then
   # As the user with their HOME, so config and device key land in their data
   # dir (~/Library/Application Support/@APP_NAME@), owned by them.

@@ -12,6 +12,10 @@
   (pre-filled from ServerUrl) and the enrollment token.
   Scripted install (no UI):
     msiexec /i RemoteAgent.msi ENROLL_TOKEN=XXXX-XXXX SERVER_URL=https://remote.example.com /qn
+  Install link (docs/PROTOCOL.md §2 "Install links"): the server names the MSI it hands out
+  RemoteAgent-x.y.z-x64.link-XXXX-XXXX-XXXX.msi. Such a file skips the
+  "Add this PC" page, and the service enrolls with the code in that name
+  (registry InstallSource = [OriginalDatabase]).
 
   -d Win7=yes builds the Windows 7 installer around the Windows 7 exe
   (packaging/windows/win7) without WiX's custom-action DLL: the service sets
@@ -133,6 +137,10 @@
                Condition="SERVER_URL" Bitness="always64">
       <RegistryValue Root="HKLM" Key="$(RegKey)" Name="ServerURL" Type="string" Value="[SERVER_URL]" KeyPath="yes" />
     </Component>
+    <!-- Where the MSI was opened from: an install link's code is in its file name. -->
+    <Component Id="InstallSourceValue" Directory="INSTALLFOLDER" Guid="995EB470-ABF2-449B-8062-ACD925A61CCB" Bitness="always64">
+      <RegistryValue Root="HKLM" Key="$(RegKey)" Name="InstallSource" Type="string" Value="[OriginalDatabase]" KeyPath="yes" />
+    </Component>
     <Component Id="RegKeyCleanup" Directory="INSTALLFOLDER" Guid="B2E6C9A4-0D3F-4A71-8B5E-1F4C7A9D2E60" Bitness="always64">
       <RegistryKey Root="HKLM" Key="$(RegKey)" ForceDeleteOnUninstall="yes">
         <RegistryValue Name="Product" Type="string" Value="$(ProductName)" KeyPath="yes" />
@@ -157,6 +165,7 @@
       <ComponentRef Id="DataDirCleanup" />
       <ComponentRef Id="EnrollTokenValue" />
       <ComponentRef Id="ServerUrlValue" />
+      <ComponentRef Id="InstallSourceValue" />
       <ComponentRef Id="RegKeyCleanup" />
     </Feature>
   </Package>
@@ -210,7 +219,8 @@
       </Dialog>
 
       <InstallUISequence>
-        <Show Dialog="EnrollDlg" Before="ProgressDlg" Condition="NOT Installed" />
+        <!-- ~>< is a case-insensitive "contains": an install link's MSI asks nothing. -->
+        <Show Dialog="EnrollDlg" Before="ProgressDlg" Condition="NOT Installed AND NOT (OriginalDatabase ~&gt;&lt; &quot;.link-&quot;)" />
       </InstallUISequence>
     </UI>
     <UIRef Id="WixUI_Common" />

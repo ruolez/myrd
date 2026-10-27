@@ -83,11 +83,17 @@ func SHA256(s string) []byte {
 const EnrollCharset = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 // NewEnrollToken returns "XXXX-XXXX" drawn uniformly from EnrollCharset.
-func NewEnrollToken() string {
-	out := make([]byte, 0, 9)
+func NewEnrollToken() string { return newCode(2) }
+
+// NewInstallCode returns an install link code "XXXX-XXXX-XXXX": unlike a
+// token it does not expire, so it is longer.
+func NewInstallCode() string { return newCode(3) }
+
+func newCode(groups int) string {
+	out := make([]byte, 0, groups*5-1)
 	buf := make([]byte, 1)
-	for len(out) < 9 {
-		if len(out) == 4 {
+	for len(out) < cap(out) {
+		if len(out)%5 == 4 {
 			out = append(out, '-')
 			continue
 		}
@@ -101,7 +107,12 @@ func NewEnrollToken() string {
 }
 
 // NormalizeEnrollToken uppercases, strips separators/whitespace and validates.
-func NormalizeEnrollToken(s string) (string, bool) {
+func NormalizeEnrollToken(s string) (string, bool) { return normalizeCode(s, 8) }
+
+// NormalizeInstallCode is NormalizeEnrollToken for install link codes.
+func NormalizeInstallCode(s string) (string, bool) { return normalizeCode(s, 12) }
+
+func normalizeCode(s string, n int) (string, bool) {
 	var b strings.Builder
 	for _, r := range strings.ToUpper(s) {
 		if r == '-' || r == ' ' || r == '\t' {
@@ -112,7 +123,7 @@ func NormalizeEnrollToken(s string) (string, bool) {
 		}
 		b.WriteRune(r)
 	}
-	if b.Len() != 8 {
+	if b.Len() != n {
 		return "", false
 	}
 	return b.String(), true

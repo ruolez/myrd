@@ -42,6 +42,27 @@ func TestEnrollTokenFormatAndNormalize(t *testing.T) {
 	}
 }
 
+func TestInstallCodeFormatAndNormalize(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		code := NewInstallCode()
+		if len(code) != 14 || code[4] != '-' || code[9] != '-' {
+			t.Fatalf("bad format %q", code)
+		}
+		norm, ok := NormalizeInstallCode(strings.ToLower(code))
+		if !ok || norm != strings.ReplaceAll(code, "-", "") {
+			t.Fatalf("normalize %q → %q %v", code, norm, ok)
+		}
+		if _, ok := NormalizeEnrollToken(code); ok {
+			t.Fatalf("install code %q taken for an enrollment token", code)
+		}
+	}
+	for _, bad := range []string{"ABCD-EFGH", "ABCD-EFGH-JKL", "ABCD-EFGH-JKLI", "ABCD-EFGH-JKLMN", ""} {
+		if _, ok := NormalizeInstallCode(bad); ok {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
 func TestSealOpen(t *testing.T) {
 	key := make([]byte, 32)
 	s, err := Seal(key, []byte("JBSWY3DPEHPK3PXP"))

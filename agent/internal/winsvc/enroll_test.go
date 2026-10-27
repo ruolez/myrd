@@ -16,3 +16,24 @@ func TestEnrollWaitReason(t *testing.T) {
 		}
 	}
 }
+
+func TestEnrollCode(t *testing.T) {
+	const linkMSI = `C:\Users\ann\Downloads\RemoteAgent-0.6.4-x64.link-K7P2-9XQM-ABCD.msi`
+	cases := []struct {
+		flag, regToken, installSource string
+		code                          string
+		from                          enrollSource
+	}{
+		{"AB12-CD34", "EF56-GH78", linkMSI, "AB12-CD34", fromFlag},
+		{"", "EF56-GH78", linkMSI, "EF56-GH78", fromRegistry},
+		{"", "", linkMSI, "K7P2-9XQM-ABCD", fromInstallLink},
+		{"", "", `C:\Users\ann\Downloads\RemoteAgent-0.6.4-x64.msi`, "", fromNone},
+		{"", "", "", "", fromNone},
+	}
+	for _, c := range cases {
+		code, from := enrollCode(c.flag, c.regToken, c.installSource)
+		if code != c.code || from != c.from {
+			t.Errorf("enrollCode(%q, %q, %q) = %q, %v; want %q, %v", c.flag, c.regToken, c.installSource, code, from, c.code, c.from)
+		}
+	}
+}

@@ -200,8 +200,9 @@ func runConnected(ctx context.Context, o *Options, p *Proxy) error {
 }
 
 // ensureEnrolled returns the persisted state and device key, enrolling with
-// the registry token (msiexec ENROLL_TOKEN=...) or RC_ENROLL_TOKEN when not
-// enrolled yet. Without a token it waits, polling the registry.
+// the registry token (msiexec ENROLL_TOKEN=...), RC_ENROLL_TOKEN or the
+// install link code in the MSI's file name when not enrolled yet. Without
+// one it waits, polling the registry.
 func ensureEnrolled(ctx context.Context, o *Options) (config.State, ed25519.PrivateKey, error) {
 	ks := identity.Default(o.Settings.DataDir)
 	lastReason := ""
@@ -220,12 +221,7 @@ func ensureEnrolled(ctx context.Context, o *Options) (config.State, ed25519.Priv
 			}
 			return st, key, nil
 		}
-		token := o.Settings.EnrollToken
-		fromRegistry := false
-		if token == "" {
-			token = regString("EnrollToken")
-			fromRegistry = token != ""
-		}
+		token, from := enrollCode(o.Settings.EnrollToken, regString("EnrollToken"), regString("InstallSource"))
 		url := serverURL(o)
 		if reason := enrollWaitReason(token, url); reason != lastReason {
 			lastReason = reason
@@ -235,10 +231,14 @@ func ensureEnrolled(ctx context.Context, o *Options) (config.State, ed25519.Priv
 		}
 		if token != "" && url != "" {
 			st, key, err := enroll(ctx, o, ks, url, token)
-			if err == nil || api.IsCode(err, "not_found", "bad_request", "conflict", "forbidden") {
-				// Single-use token: drop it whether it worked or was rejected.
-				if fromRegistry {
+			if err == nil || api.IsCode(err, "not_found", "bad_request", "conflict", "forbidden", "unauthorized") {
+				// Drop it whether it worked or was rejected: a token is single use,
+				// and a rejected link code (revoked, replaced) never comes back.
+				switch from {
+				case fromRegistry:
 					regDelete("EnrollToken")
+				case fromInstallLink:
+					regDelete("InstallSource")
 				}
 				o.Settings.EnrollToken = ""
 			}
