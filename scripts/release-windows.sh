@@ -4,9 +4,11 @@
 # -x64-win7.msi, each with .sig and .sha256.
 #   scripts/release-windows.sh             # start agent-windows.yml (release=true), wait, collect
 #   scripts/release-windows.sh <run-id>    # collect the artifacts of a finished run
+#   SERVER_URL   address each MSI must pre-fill (default https://myrd.site)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WF=agent-windows.yml
+SERVER_URL="${SERVER_URL:-https://myrd.site}"
 
 run="${1:-}"
 if [ -z "$run" ]; then
@@ -15,7 +17,7 @@ if [ -z "$run" ]; then
   [ "$(git -C "$ROOT" rev-parse '@{u}' 2>/dev/null)" = "$head" ] ||
     { echo "push first: CI builds what is on the remote" >&2; exit 1; }
   before="$(gh run list --workflow "$WF" --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
-  gh workflow run "$WF" -f release=true
+  gh workflow run "$WF" -f release=true -f server_url="$SERVER_URL"
   for _ in $(seq 1 30); do
     run="$(gh run list --workflow "$WF" --event workflow_dispatch --limit 1 --json databaseId,headSha \
       --jq ".[] | select(.databaseId != $before and .headSha == \"$head\") | .databaseId")"
@@ -36,6 +38,8 @@ for msi in $msis; do
   (cd "$(dirname "$msi")" && shasum -a 256 -c "$(basename "$msi").sha256" >/dev/null) ||
     { echo "checksum mismatch: $msi" >&2; exit 1; }
   [ -f "$msi.sig" ] || { echo "missing release signature: $msi.sig" >&2; exit 1; }
+  # The MSI string pool keeps property values as plain bytes.
+  grep -qaF "$SERVER_URL" "$msi" || { echo "$msi does not pre-fill $SERVER_URL" >&2; exit 1; }
   version="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$msi.sig")"
   rel="$ROOT/dist/releases/$version"
   mkdir -p "$rel"

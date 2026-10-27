@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       server_url:
-        description: "Server address pre-filled in the MSI (default: repo variable SERVER_URL)"
+        description: "Server address pre-filled in the MSI (default: repo variable SERVER_URL, else https://myrd.site)"
         required: false
       release:
         description: "Release build: version = VERSION file (else <VERSION>-dev.<run>)"
@@ -50,7 +50,7 @@ jobs:
   msi:
     runs-on: windows-latest
     env:
-      SERVER_URL: ${{ inputs.server_url || vars.SERVER_URL }}
+      SERVER_URL: ${{ inputs.server_url || vars.SERVER_URL || 'https://myrd.site' }}
       HAS_AZURE_SIGNING: ${{ secrets.AZURE_CLIENT_ID != '' }}
       HAS_RELEASE_KEY: ${{ secrets.RELEASE_PRIVATE_KEY != '' }}
     steps:
@@ -206,7 +206,7 @@ jobs:
     runs-on: windows-latest
     env:
       VERSION: ${{ needs.win7-exe.outputs.version }}
-      SERVER_URL: ${{ inputs.server_url || vars.SERVER_URL }}
+      SERVER_URL: ${{ inputs.server_url || vars.SERVER_URL || 'https://myrd.site' }}
       HAS_AZURE_SIGNING: ${{ secrets.AZURE_CLIENT_ID != '' }}
       HAS_RELEASE_KEY: ${{ secrets.RELEASE_PRIVATE_KEY != '' }}
     steps:

@@ -70,7 +70,7 @@ jobs:
 
       - name: Build RemoteAgent.app (universal)
         env:
-          SERVER_URL: ${{ vars.SERVER_URL || 'https://remote.example.com' }}
+          SERVER_URL: ${{ vars.SERVER_URL || 'https://myrd.site' }}
           DEVELOPER_ID_APP: ${{ secrets.DEVELOPER_ID_APP }}
         run: packaging/macos/build-app.sh
 

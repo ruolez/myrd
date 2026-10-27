@@ -13,7 +13,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck disable=SC1091
 source "$HERE/product.env"
 export VERSION="${VERSION:-$(tr -d '[:space:]' < "$ROOT/VERSION")}"
-export SERVER_URL="${SERVER_URL:-https://remote.example.com}"
+export SERVER_URL="${SERVER_URL:-https://myrd.site}"
 GO="${GO:-$ROOT/scripts/gohost.sh}"
 if [[ "${UNIVERSAL:-0}" == "1" ]]; then ARCHS="arm64 x86_64"; fi
 ARCHS="${ARCHS:-$(uname -m)}"
