@@ -33,6 +33,10 @@ const picker = () =>
 /** Whether this browser can open a local folder for reading and writing. */
 export const canPickFolders = () => typeof picker() === "function";
 
+/** Brave hides the folder picker behind a flag that a page cannot turn on. */
+export const BRAVE_FOLDERS_FLAG = "brave://flags/#file-system-access-api";
+export const isBrave = () => "brave" in navigator;
+
 /** Opens the folder picker; must run in a click handler. Rejects when dismissed. */
 export async function pickFolder(): Promise<FileSystemDirectoryHandle> {
   const show = picker();

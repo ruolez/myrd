@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "../../components/icons";
-import { SegmentedControl, useConfirm, usePrompt, useToast } from "../../components/ui";
+import { CopyButton, SegmentedControl, useConfirm, usePrompt, useToast } from "../../components/ui";
 import { baseName, breadcrumbs, describeFileError, FileError, joinPath } from "../../lib/files";
 import type { FileEntry } from "../../lib/files";
 import { EMPTY_SELECTION, pruneSelection } from "../../lib/fileSelection";
@@ -17,7 +17,14 @@ import type { Ask } from "./batches";
 import { useLocalBrowser, useRemoteBrowser } from "./browsers";
 import { FilePane, PaneButton } from "./FilePane";
 import type { Side } from "./FilePane";
-import { browserDownloads, folderTarget, nodesFromInput, nodesIn } from "./localFs";
+import {
+  BRAVE_FOLDERS_FLAG,
+  browserDownloads,
+  folderTarget,
+  isBrave,
+  nodesFromInput,
+  nodesIn,
+} from "./localFs";
 import { TransferQueue, useBatches, useTransfers } from "./TransferQueue";
 
 const codeOf = (e: unknown) => (e instanceof FileError ? e.code : "io");
@@ -223,10 +230,22 @@ export function FileManager({
         return box(
           <>
             <Icon name="download" size={32} className="text-[#8ab4f8]" />
-            <p>
-              This browser can't open folders on this computer, so downloads go to its Downloads
-              folder. Chrome and Edge can show a folder here.
-            </p>
+            {isBrave() ? (
+              <>
+                <p>
+                  Brave keeps folder access switched off, so downloads go to its Downloads folder.
+                  To show a folder here, open{" "}
+                  <span className="font-mono text-white/80">{BRAVE_FOLDERS_FLAG}</span>, set it to
+                  Enabled and relaunch Brave.
+                </p>
+                <CopyButton text={BRAVE_FOLDERS_FLAG} label="Copy address" />
+              </>
+            ) : (
+              <p>
+                This browser can't open folders on this computer, so downloads go to its Downloads
+                folder. Chrome and Edge can show a folder here.
+              </p>
+            )}
             <div className="flex flex-wrap justify-center gap-2">
               <button
                 className="btn-primary"
