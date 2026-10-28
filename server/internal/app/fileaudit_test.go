@@ -57,6 +57,60 @@ func TestValidFileRecord(t *testing.T) {
 		{"failed with sha", failed(func(r *proto.FileRecord) { r.SHA256 = helloSHA }), false},
 		{"error not a code", failed(func(r *proto.FileRecord) { r.Error = "disk full!" }), false},
 		{"error too long", failed(func(r *proto.FileRecord) { r.Error = strings.Repeat("x", 33) }), false},
+		{"replacing upload", with(func(r *proto.FileRecord) { r.Replaced = true }), true},
+		{"replacing download", with(func(r *proto.FileRecord) { r.Direction, r.Replaced = "download", true }), false},
+		{"upload with to", with(func(r *proto.FileRecord) { r.To = "b.txt" }), false},
+	}
+	for _, c := range cases {
+		if got := validFileRecord(c.r); got != c.want {
+			t.Errorf("%s: validFileRecord = %v, want %v (%+v)", c.name, got, c.want, c.r)
+		}
+	}
+}
+
+func okOp(op string) proto.FileRecord {
+	r := proto.FileRecord{Xfer: 3, Direction: op, Name: "Reports", Dir: "/home/device", Kind: "dir", Result: "ok", DurationMS: 2}
+	if op == "rename" {
+		r.To = "Reports 2025"
+	}
+	return r
+}
+
+func TestValidFileOpRecord(t *testing.T) {
+	with := func(op string, f func(*proto.FileRecord)) proto.FileRecord {
+		r := okOp(op)
+		f(&r)
+		return r
+	}
+	failed := func(op string, f func(*proto.FileRecord)) proto.FileRecord {
+		return with(op, func(r *proto.FileRecord) {
+			r.Result, r.Error = "error", "exists"
+			f(r)
+		})
+	}
+	cases := []struct {
+		name string
+		r    proto.FileRecord
+		want bool
+	}{
+		{"mkdir", okOp("mkdir"), true},
+		{"rename", okOp("rename"), true},
+		{"delete", okOp("delete"), true},
+		{"delete a file", with("delete", func(r *proto.FileRecord) { r.Kind = "file" }), true},
+		{"failed before the kind was known", failed("delete", func(r *proto.FileRecord) { r.Kind = "" }), true},
+		{"failed rename before the new name was checked", failed("rename", func(r *proto.FileRecord) { r.To = "" }), true},
+		{"rename without new name", with("rename", func(r *proto.FileRecord) { r.To = "" }), false},
+		{"mkdir with new name", with("mkdir", func(r *proto.FileRecord) { r.To = "x" }), false},
+		{"new name too long", with("rename", func(r *proto.FileRecord) { r.To = strings.Repeat("n", 1025) }), false},
+		{"new name not utf-8", with("rename", func(r *proto.FileRecord) { r.To = "a\xff" }), false},
+		{"unknown kind", with("delete", func(r *proto.FileRecord) { r.Kind = "pipe" }), false},
+		{"cancelled", failed("delete", func(r *proto.FileRecord) { r.Result = "cancelled" }), false},
+		{"with size", with("delete", func(r *proto.FileRecord) { r.Size = 5 }), false},
+		{"with sha", with("delete", func(r *proto.FileRecord) { r.SHA256 = helloSHA }), false},
+		{"replaced", with("delete", func(r *proto.FileRecord) { r.Replaced = true }), false},
+		{"without name", with("delete", func(r *proto.FileRecord) { r.Name = "" }), false},
+		{"ok with error", with("mkdir", func(r *proto.FileRecord) { r.Error = "io" }), false},
+		{"failed without error", failed("mkdir", func(r *proto.FileRecord) { r.Error = "" }), false},
 	}
 	for _, c := range cases {
 		if got := validFileRecord(c.r); got != c.want {
@@ -73,6 +127,12 @@ func TestFileEvent(t *testing.T) {
 		{"download", "ok", "file.downloaded"},
 		{"download", "cancelled", "file.download_failed"},
 		{"download", "error", "file.download_failed"},
+		{"mkdir", "ok", "file.folder_created"},
+		{"mkdir", "error", "file.folder_create_failed"},
+		{"rename", "ok", "file.renamed"},
+		{"rename", "error", "file.rename_failed"},
+		{"delete", "ok", "file.deleted"},
+		{"delete", "error", "file.delete_failed"},
 	}
 	for _, c := range cases {
 		if got := fileEvent(proto.FileRecord{Direction: c.dir, Result: c.result}); got != c.want {

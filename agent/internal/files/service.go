@@ -20,7 +20,7 @@ import (
 
 const (
 	MaxActive    = 4 // concurrent transfers per session
-	MaxRequests  = 2 // concurrent roots/list requests per session
+	MaxRequests  = 2 // concurrent roots/list/mkdir/rename/delete requests per session
 	StallTimeout = 60 * time.Second
 	RelayRate    = 4 << 20 // file bytes/s on relayed sessions
 
@@ -198,6 +198,12 @@ func (s *Service) Handle(isString bool, data []byte) {
 		s.start(m, DirDownload)
 	case "put":
 		s.start(m, DirUpload)
+	case OpMkdir:
+		s.request(m.ID, func() any { return s.fileOp(m, s.mkdir) })
+	case OpRename:
+		s.request(m.ID, func() any { return s.fileOp(m, s.rename) })
+	case OpDelete:
+		s.request(m.ID, func() any { return s.fileOp(m, s.deleteEntry) })
 	case "ack":
 		if t := s.transfer(m.Xfer); t != nil {
 			if t.kind != DirDownload {
@@ -504,8 +510,9 @@ func (s *Service) fold(p string) string {
 }
 
 // reserveName picks a free final name in dir (on disk and among running
-// uploads) and holds it until release. Call inside Host.Do.
-func (s *Service) reserveName(dir, name string) (string, error) {
+// uploads) and holds it until release. With replace, name itself counts as
+// free while it is a regular file. Call inside Host.Do.
+func (s *Service) reserveName(dir, name string, replace bool) (string, error) {
 	s.resMu.Lock()
 	defer s.resMu.Unlock()
 	final, err := UniqueName(name, func(c string) bool {
@@ -513,7 +520,10 @@ func (s *Service) reserveName(dir, name string) (string, error) {
 		if s.reserved[s.fold(full)] {
 			return true
 		}
-		_, err := os.Lstat(full)
+		st, err := os.Lstat(full)
+		if replace && c == name && err == nil && st.Mode().IsRegular() {
+			return false
+		}
 		return !errors.Is(err, os.ErrNotExist)
 	})
 	if err != nil {

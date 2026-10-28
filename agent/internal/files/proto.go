@@ -41,6 +41,8 @@ const (
 	CodeAuditUnavailable = "audit_unavailable"
 	CodeStalled          = "stalled"
 	CodeCancelled        = "cancelled"
+	CodeExists           = "exists"
+	CodeProtected        = "protected"
 )
 
 var (
@@ -81,6 +83,10 @@ type Msg struct {
 	Size   int64  `json:"size"`
 	Bytes  int64  `json:"bytes"`
 	SHA256 string `json:"sha256"`
+	// Replace lets an upload replace a regular file of the same name.
+	Replace bool `json:"replace"`
+	// ExistOK makes mkdir of an existing folder succeed.
+	ExistOK bool `json:"exist_ok"`
 }
 
 // required lists the keys each browser → agent frame must carry.
@@ -92,6 +98,9 @@ var required = map[string][]string{
 	"ack":    {"xfer", "bytes"},
 	"end":    {"xfer", "sha256"},
 	"cancel": {"xfer"},
+	"mkdir":  {"id", "dir", "name"},
+	"rename": {"id", "path", "name"},
+	"delete": {"id", "path"},
 }
 
 // DecodeMsg parses and range-checks a browser → agent JSON frame.
@@ -202,6 +211,14 @@ type doneMsg struct {
 	Path   string `json:"path"`
 	Size   int64  `json:"size"`
 	SHA256 string `json:"sha256"`
+}
+
+// okMsg answers mkdir, rename and delete with the entry's path afterwards.
+type okMsg struct {
+	T       string `json:"t"`
+	ID      uint32 `json:"id"`
+	Path    string `json:"path"`
+	Existed bool   `json:"existed,omitempty"`
 }
 
 type errorMsg struct {

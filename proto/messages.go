@@ -452,15 +452,24 @@ func Encode(typ string, msg any) ([]byte, error) {
 
 // ---------- file transfer audit (A→S) ----------
 
+// FeatureFileOps: the agent's `file` channel also takes mkdir, rename,
+// delete and replacing uploads (docs/PROTOCOL.md §5 "`file`").
+const FeatureFileOps = "file_ops"
+
 // MaxFileRecords caps the records in one SessionFile message.
 const MaxFileRecords = 50
 
-// FileRecord describes one finished file transfer of a session.
+// FileRecord describes one finished file transfer or file operation of a
+// session. Operations (feature "file_ops") carry the request id as Xfer, no
+// size or checksum, and Result "ok" or "error".
 type FileRecord struct {
 	Xfer       uint32 `json:"xfer"`
-	Direction  string `json:"direction"` // "upload" (browser → device) | "download"
+	Direction  string `json:"direction"` // "upload" (browser → device) | "download" | "mkdir" | "rename" | "delete"
 	Name       string `json:"name"`
 	Dir        string `json:"dir"`
+	To         string `json:"to,omitempty"`       // rename: the new name
+	Kind       string `json:"kind,omitempty"`     // operations: "dir" | "file" | "other"
+	Replaced   bool   `json:"replaced,omitempty"` // upload replaced a file of the same name
 	Size       int64  `json:"size"`
 	Bytes      int64  `json:"bytes"`
 	SHA256     string `json:"sha256,omitempty"`

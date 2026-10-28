@@ -58,7 +58,11 @@ export type FileMsg =
   | { t: "end"; xfer: TransferId; size: number; sha256: string }
   | { t: "done"; xfer: TransferId; name: string; path: string; size: number; sha256: string }
   | { t: "cancel"; xfer: TransferId }
+  | OkReply
   | FileErrorMsg;
+
+/** Answer to mkdir, rename and delete: the entry's path afterwards. */
+export type OkReply = { t: "ok"; id: FileRequestId; path: string; existed: boolean };
 
 export class FileError extends Error {
   constructor(
@@ -94,8 +98,19 @@ export const listRequest = (id: FileRequestId, path: string, offset: number, hid
   JSON.stringify({ t: "list", id, path, offset, hidden });
 export const getRequest = (xfer: TransferId, path: string) =>
   JSON.stringify({ t: "get", xfer, path });
-export const putRequest = (xfer: TransferId, dir: string, name: string, size: number) =>
-  JSON.stringify({ t: "put", xfer, dir, name, size });
+export const putRequest = (
+  xfer: TransferId,
+  dir: string,
+  name: string,
+  size: number,
+  replace = false,
+) => JSON.stringify({ t: "put", xfer, dir, name, size, ...(replace && { replace }) });
+export const mkdirRequest = (id: FileRequestId, dir: string, name: string, existOk: boolean) =>
+  JSON.stringify({ t: "mkdir", id, dir, name, ...(existOk && { exist_ok: true }) });
+export const renameRequest = (id: FileRequestId, path: string, name: string) =>
+  JSON.stringify({ t: "rename", id, path, name });
+export const deleteRequest = (id: FileRequestId, path: string) =>
+  JSON.stringify({ t: "delete", id, path });
 export const ackMsg = (xfer: TransferId, bytes: number) =>
   JSON.stringify({ t: "ack", xfer, bytes });
 export const endMsg = (xfer: TransferId, sha: string) =>
@@ -212,6 +227,9 @@ export function parseFileMsg(text: string): FileMsg | null {
       return { t: "done", xfer, name: m.name, path: m.path, size: m.size, sha256: m.sha256 };
     case "cancel":
       return isU(xfer) ? { t: "cancel", xfer } : null;
+    case "ok":
+      if (!isU(id) || !isStr(m.path)) return null;
+      return { t: "ok", id, path: m.path, existed: m.existed === true };
     case "error": {
       if (!isStr(m.code)) return null;
       const detail = isStr(m.detail) ? m.detail : "";
@@ -309,6 +327,47 @@ export class RateMeter {
 export const joinPath = (dir: string, name: string, sep: Sep) =>
   dir.endsWith(sep) ? dir + name : dir + sep + name;
 
+/** The folder holding `path` (a root's parent is the root itself). */
+export function parentPath(path: string, sep: Sep): string {
+  const i = path.lastIndexOf(sep);
+  if (i < 0) return path;
+  const parent = path.slice(0, i);
+  if (sep === "\\") return parent.length <= 2 ? `${parent}\\` : parent;
+  return parent || "/";
+}
+
+export const baseName = (path: string, sep: Sep) => path.slice(path.lastIndexOf(sep) + 1);
+
+const MULTI_EXTS = [
+  ".tar.gz",
+  ".tar.bz2",
+  ".tar.xz",
+  ".tar.zst",
+  ".tar.lz",
+  ".tar.lzma",
+  ".tar.br",
+];
+
+/** Stem and extension, keeping compound archive extensions whole (matches the agent). */
+function splitExt(name: string): [string, string] {
+  const lower = name.toLowerCase();
+  const multi = MULTI_EXTS.find((e) => lower.endsWith(e) && name.length > e.length);
+  if (multi) return [name.slice(0, -multi.length), name.slice(-multi.length)];
+  const i = name.lastIndexOf(".");
+  if (i <= 0 || i === name.length - 1) return [name, ""];
+  return [name.slice(0, i), name.slice(i)];
+}
+
+/** `name`, or "stem (N)ext" with the smallest N ≥ 1 that is not taken (the agent's rule). */
+export function uniqueName(name: string, taken: (candidate: string) => boolean): string {
+  if (!taken(name)) return name;
+  const [stem, ext] = splitExt(name);
+  for (let i = 1; ; i++) {
+    const c = `${stem} (${i})${ext}`;
+    if (!taken(c)) return c;
+  }
+}
+
 const within = (path: string, base: string, sep: Sep) =>
   path === base || path.startsWith(base.endsWith(sep) ? base : base + sep);
 
@@ -387,7 +446,20 @@ const ERROR_TEXT: Record<string, string> = {
   cancelled: "Cancelled.",
   closed: "The session's file channel closed.",
   unsupported: "This device's agent does not support file transfer.",
+  exists: "Something with that name is already there.",
+  protected: "Top-level folders like Home, Desktop or a drive can't be renamed or deleted.",
+  skipped: "Skipped.",
+  local_exists: "A folder with that name is in the way on this computer.",
+  local_denied: "This browser no longer has access to the local folder. Choose it again.",
+  link_skipped: "A link to a folder; links inside a folder are not followed.",
+  truncated: "This folder has more entries than can be listed; some were left out.",
+  folders_unsupported:
+    "Folders can't be copied here. Update the device's agent, or use Chrome or Edge.",
 };
+
+/** The agent takes mkdir, rename, delete and replacing uploads. */
+export const fileOpsAvailable = (features: readonly string[] | null) =>
+  features?.includes("file_ops") ?? false;
 
 export function describeFileError(code: string): string {
   return ERROR_TEXT[code] ?? `The transfer failed (${code}).`;

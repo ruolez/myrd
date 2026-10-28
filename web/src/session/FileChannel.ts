@@ -9,19 +9,30 @@ import {
   createSha256,
   CreditWindow,
   decodeFileData,
+  deleteRequest,
   encodeFileData,
   endMsg,
   FileError,
   getRequest,
   listRequest,
   MAX_FILE_PAYLOAD,
+  mkdirRequest,
   parseFileMsg,
   putRequest,
   RateMeter,
+  renameRequest,
   rootsRequest,
   SLICE_BYTES,
 } from "../lib/files";
-import type { FileMsg, FileRequestId, Listing, RootsReply, TransferId } from "../lib/files";
+import type { Brand } from "../api/types";
+import type {
+  FileMsg,
+  FileRequestId,
+  Listing,
+  OkReply,
+  RootsReply,
+  TransferId,
+} from "../lib/files";
 
 /** The subset of RTCDataChannel the file channel uses (fakeable in tests). */
 export type Chan = {
@@ -55,8 +66,11 @@ export type DownloadSink = {
 export type TransferStatus =
   "queued" | "waiting" | "active" | "verifying" | "done" | "failed" | "cancelled";
 
+export type BatchId = Brand<number, "BatchId">;
+
 export type Transfer = {
   xfer: TransferId;
+  batch: BatchId | null;
   direction: "upload" | "download";
   name: string;
   /** Remote path: the source of a download, the destination of an upload once known. */
@@ -70,7 +84,37 @@ export type Transfer = {
   sink: SinkKind | null;
 };
 
+export type BatchPhase = "scanning" | "asking" | "running" | "failed" | "cancelled";
+export type BatchProblem = { name: string; code: string };
+
+/** One user action (a selection, a drop) that may expand into many transfers. */
+export type Batch = {
+  id: BatchId;
+  direction: Transfer["direction"];
+  /** What was picked: one name, or "3 items". */
+  name: string;
+  /** Where it goes, for display. */
+  dest: string;
+  phase: BatchPhase;
+  /** Files and bytes planned once scanning is done. */
+  files: number;
+  bytes: number;
+  skipped: number;
+  /** Failures outside transfers: folders that could not be read or created. */
+  problems: readonly BatchProblem[];
+};
+
+/** Finished: given up, or running with every transfer final. */
+export const batchFinished = (b: Batch, transfers: readonly Transfer[]) =>
+  b.phase === "failed" ||
+  b.phase === "cancelled" ||
+  (b.phase === "running" && transfers.every((t) => t.batch !== b.id || isFinal(t)));
+
 export const BUFFER_HIGH = 4 * 1024 * 1024;
+/** Transfers running at once per direction; the agent allows 4 in all. */
+export const PER_DIRECTION = 2;
+/** Requests in flight at once; the agent allows 2. */
+export const MAX_REQUESTS = 2;
 export const BUFFER_LOW = 1024 * 1024;
 const EMIT_EVERY_MS = 150;
 
@@ -103,6 +147,7 @@ type Job = {
   finished: Deferred<void>;
   file?: FileSource;
   dir?: string | null;
+  replace?: boolean;
   source?: string;
   sink?: DownloadSink;
   received: number;
@@ -114,12 +159,18 @@ type Options = { now?: () => number };
 
 export class FileChannel {
   private seq = 0;
+  private batchSeq = 0;
   private requests = new Map<number, Deferred<FileMsg>>();
+  private waitingRequests: { build: (id: FileRequestId) => string; d: Deferred<FileMsg> }[] = [];
   private jobs = new Map<number, Job>();
   private queues = { upload: [] as Job[], download: [] as Job[] };
-  private active: { upload: Job | null; download: Job | null } = { upload: null, download: null };
+  private active = { upload: new Set<Job>(), download: new Set<Job>() };
   private waiters = new Set<() => void>();
-  private items: readonly Transfer[] = [];
+  /** Transfers by id in insertion order; `getTransfers` snapshots it when read after a change. */
+  private store = new Map<TransferId, Transfer>();
+  private snapshot: readonly Transfer[] = [];
+  private dirty = false;
+  private batches: readonly Batch[] = [];
   private listeners = new Set<() => void>();
   private emitTimer: ReturnType<typeof setTimeout> | null = null;
   private lastEmit = 0;
@@ -144,16 +195,59 @@ export class FileChannel {
     return () => this.listeners.delete(fn);
   };
 
-  getTransfers = (): readonly Transfer[] => this.items;
+  getTransfers = (): readonly Transfer[] => {
+    if (this.dirty) {
+      this.snapshot = [...this.store.values()];
+      this.dirty = false;
+    }
+    return this.snapshot;
+  };
+
+  getBatches = (): readonly Batch[] => this.batches;
 
   get activeCount() {
-    return this.items.filter((t) => !isFinal(t)).length;
+    return this.getTransfers().filter((t) => !isFinal(t)).length;
   }
 
-  /** Removes finished transfers from the list. */
+  /** Removes finished batches and transfers from the list. */
   clearFinished() {
-    this.items = this.items.filter((t) => !isFinal(t));
+    this.batches = this.batches.filter((b) => !batchFinished(b, this.getTransfers()));
+    const kept = new Set(this.batches.map((b) => b.id));
+    for (const t of this.getTransfers()) {
+      if (isFinal(t) && (t.batch === null || !kept.has(t.batch))) this.store.delete(t.xfer);
+    }
+    this.dirty = true;
     this.emit(true);
+  }
+
+  // ---------- batches ----------
+
+  createBatch(init: Pick<Batch, "direction" | "name" | "dest">): BatchId {
+    this.batchSeq++;
+    const id = this.batchSeq as BatchId;
+    this.batches = [
+      ...this.batches,
+      { ...init, id, phase: "scanning", files: 0, bytes: 0, skipped: 0, problems: [] },
+    ];
+    this.emit(true);
+    return id;
+  }
+
+  updateBatch(id: BatchId, patch: Partial<Omit<Batch, "id">>) {
+    this.batches = this.batches.map((b) => (b.id === id ? { ...b, ...patch } : b));
+    this.emit(true);
+  }
+
+  batch(id: BatchId): Batch | undefined {
+    return this.batches.find((b) => b.id === id);
+  }
+
+  /** Stops a batch: no more planning, and its running transfers are cancelled. */
+  cancelBatch(id: BatchId) {
+    const b = this.batch(id);
+    if (!b || batchFinished(b, this.getTransfers())) return;
+    this.updateBatch(id, { phase: "cancelled" });
+    for (const t of this.getTransfers()) if (t.batch === id) this.cancel(t.xfer);
   }
 
   // ---------- browsing ----------
@@ -166,15 +260,39 @@ export class FileChannel {
     return this.request((id) => listRequest(id, path, offset, hidden)) as Promise<Listing>;
   }
 
+  // ---------- file operations (feature "file_ops") ----------
+
+  mkdir(dir: string, name: string, existOk = false): Promise<OkReply> {
+    return this.request((id) => mkdirRequest(id, dir, name, existOk)) as Promise<OkReply>;
+  }
+
+  rename(path: string, name: string): Promise<OkReply> {
+    return this.request((id) => renameRequest(id, path, name)) as Promise<OkReply>;
+  }
+
+  /** Deletes a file, link or folder (with everything in it) on the device, permanently. */
+  remove(path: string): Promise<OkReply> {
+    return this.request((id) => deleteRequest(id, path)) as Promise<OkReply>;
+  }
+
   // ---------- transfers ----------
 
-  /** Queues an upload into `dir` (null = the agent's default, the user's Downloads). */
-  upload(file: FileSource, dir: string | null): TransferId {
+  /**
+   * Queues an upload into `dir` (null = the agent's default, the user's Downloads).
+   * `replace` lets it replace a file of the same name (agents with "file_ops").
+   */
+  upload(
+    file: FileSource,
+    dir: string | null,
+    opts: { replace?: boolean; batch?: BatchId } = {},
+  ): TransferId {
     const job = this.newJob();
     job.file = file;
     job.dir = dir;
+    job.replace = opts.replace ?? false;
     return this.enqueue(job, {
       direction: "upload",
+      batch: opts.batch ?? null,
       name: file.name,
       path: null,
       size: file.size,
@@ -183,12 +301,17 @@ export class FileChannel {
   }
 
   /** Queues a download of the regular file at `path` into `sink`. */
-  download(entry: { path: string; name: string; size: number }, sink: DownloadSink): TransferId {
+  download(
+    entry: { path: string; name: string; size: number },
+    sink: DownloadSink,
+    opts: { batch?: BatchId } = {},
+  ): TransferId {
     const job = this.newJob();
     job.source = entry.path;
     job.sink = sink;
     return this.enqueue(job, {
       direction: "download",
+      batch: opts.batch ?? null,
       name: entry.name,
       path: entry.path,
       size: entry.size,
@@ -210,7 +333,9 @@ export class FileChannel {
     this.disposed = true;
     const err = new FileError(reason);
     for (const r of this.requests.values()) r.reject(err);
+    for (const r of this.waitingRequests) r.d.reject(err);
     this.requests.clear();
+    this.waitingRequests = [];
     for (const job of this.jobs.values()) {
       const t = this.find(job.xfer);
       if (!t || isFinal(t)) continue;
@@ -238,11 +363,20 @@ export class FileChannel {
     if (this.disposed || this.chan.readyState !== "open") {
       return Promise.reject(new FileError(this.disposed ? "closed" : "unsupported"));
     }
-    const id = this.next();
     const d = deferred<FileMsg>();
-    this.requests.set(id, d);
-    this.chan.send(build(id as FileRequestId));
+    this.waitingRequests.push({ build, d });
+    this.sendRequests();
     return d.promise;
+  }
+
+  private sendRequests() {
+    while (this.requests.size < MAX_REQUESTS && !this.disposed) {
+      const r = this.waitingRequests.shift();
+      if (!r) return;
+      const id = this.next();
+      this.requests.set(id, r.d);
+      this.chan.send(r.build(id as FileRequestId));
+    }
   }
 
   private newJob(): Job {
@@ -263,7 +397,7 @@ export class FileChannel {
 
   private enqueue(
     job: Job,
-    t: Pick<Transfer, "direction" | "name" | "path" | "size" | "sink">,
+    t: Pick<Transfer, "direction" | "batch" | "name" | "path" | "size" | "sink">,
   ): TransferId {
     this.jobs.set(job.xfer, job);
     const transfer: Transfer = {
@@ -275,7 +409,8 @@ export class FileChannel {
       speed: null,
       eta: null,
     };
-    this.items = [...this.items, transfer];
+    this.store.set(job.xfer, transfer);
+    this.dirty = true;
     this.emit(true);
     if (this.disposed) {
       this.stop(job, "failed", new FileError("closed"));
@@ -288,17 +423,18 @@ export class FileChannel {
 
   private pump() {
     for (const dir of ["upload", "download"] as const) {
-      if (this.active[dir] || this.disposed) continue;
-      const job = this.queues[dir].shift();
-      if (!job) continue;
-      this.active[dir] = job;
-      const run = dir === "upload" ? this.runUpload(job) : this.runDownload(job);
-      void run
-        .catch((e: unknown) => this.fail(job, e))
-        .finally(() => {
-          if (this.active[dir] === job) this.active[dir] = null;
-          this.pump();
-        });
+      while (this.active[dir].size < PER_DIRECTION && !this.disposed) {
+        const job = this.queues[dir].shift();
+        if (!job) break;
+        this.active[dir].add(job);
+        const run = dir === "upload" ? this.runUpload(job) : this.runDownload(job);
+        void run
+          .catch((e: unknown) => this.fail(job, e))
+          .finally(() => {
+            this.active[dir].delete(job);
+            this.pump();
+          });
+      }
     }
   }
 
@@ -306,7 +442,7 @@ export class FileChannel {
     const file = job.file as FileSource;
     job.started = true;
     this.patch(job.xfer, { status: "waiting" }, true);
-    this.chan.send(putRequest(job.xfer, job.dir ?? "", file.name, file.size));
+    this.chan.send(putRequest(job.xfer, job.dir ?? "", file.name, file.size, job.replace));
     const ready = (await job.opened.promise) as Extract<FileMsg, { t: "ready" }>;
     job.credits = new CreditWindow(ready.window);
     this.patch(job.xfer, { status: "active", name: ready.name, path: ready.path }, true);
@@ -339,6 +475,8 @@ export class FileChannel {
       try {
         await sink.ready;
       } catch (e) {
+        // A dismissed save dialog is a cancel; a sink may say what went wrong.
+        if (e instanceof FileError) throw e;
         throw new FileError("cancelled", e instanceof Error ? e.message : "");
       }
       this.patch(job.xfer, { sink: sink.kind }, true);
@@ -364,12 +502,13 @@ export class FileChannel {
     if (typeof data !== "string") return;
     const m = parseFileMsg(data);
     if (!m) return;
-    if (m.t === "roots" || m.t === "listing" || (m.t === "error" && "id" in m)) {
+    if (m.t === "roots" || m.t === "listing" || m.t === "ok" || (m.t === "error" && "id" in m)) {
       const req = this.requests.get(m.id);
       if (!req) return;
       this.requests.delete(m.id);
       if (m.t === "error") req.reject(new FileError(m.code, m.detail));
       else req.resolve(m);
+      this.sendRequests();
       return;
     }
     const job = this.jobs.get(m.xfer);
@@ -522,11 +661,14 @@ export class FileChannel {
   }
 
   private find(xfer: TransferId) {
-    return this.items.find((t) => t.xfer === xfer);
+    return this.store.get(xfer);
   }
 
   private patch(xfer: TransferId, p: Partial<Transfer>, force = false) {
-    this.items = this.items.map((t) => (t.xfer === xfer ? { ...t, ...p } : t));
+    const t = this.store.get(xfer);
+    if (!t) return;
+    this.store.set(xfer, { ...t, ...p });
+    this.dirty = true;
     this.emit(force);
   }
 

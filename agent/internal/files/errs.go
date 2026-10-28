@@ -26,6 +26,10 @@ func errCode(err error) string {
 		return CodeNotDir
 	case errors.Is(err, errNotFile):
 		return CodeNotFile
+	case errors.Is(err, errExists):
+		return CodeExists
+	case errors.Is(err, errProtected):
+		return CodeProtected
 	}
 	if c := platformCode(err); c != "" {
 		return c
@@ -35,6 +39,8 @@ func errCode(err error) string {
 		return CodeNotFound
 	case errors.Is(err, fs.ErrPermission):
 		return CodeDenied
+	case errors.Is(err, fs.ErrExist):
+		return CodeExists
 	}
 	return CodeIO
 }

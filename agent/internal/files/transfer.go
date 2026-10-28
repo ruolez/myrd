@@ -26,6 +26,7 @@ type transfer struct {
 	name, dir   string
 	size, bytes int64
 	sha         string
+	replaced    bool
 	progress    time.Time
 	shown       bool
 	lastShown   time.Time
@@ -74,6 +75,12 @@ func (t *transfer) setMeta(name, dir string, size int64) {
 	t.mu.Unlock()
 }
 
+func (t *transfer) setReplaced() {
+	t.mu.Lock()
+	t.replaced = true
+	t.mu.Unlock()
+}
+
 func fail(err error) (code, detail string) { return errCode(err), err.Error() }
 
 func (t *transfer) run(m Msg) {
@@ -98,7 +105,7 @@ func (t *transfer) finish(code, detail string) {
 		Result: StateOK, Error: code, DurationMS: s.c.Now().Sub(t.started).Milliseconds()}
 	switch code {
 	case "":
-		rec.SHA256 = t.sha
+		rec.SHA256, rec.Replaced = t.sha, t.replaced
 	case CodeCancelled:
 		rec.Result = StateCancelled
 	default:

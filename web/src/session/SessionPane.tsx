@@ -14,6 +14,7 @@ import { keyFingerprint } from "../lib/devicePins";
 import { displayRect } from "../lib/geometry";
 import { comboInput } from "../lib/combos";
 import type { Combo } from "../lib/combos";
+import { fileOpsAvailable } from "../lib/files";
 import { encodeText } from "../lib/input";
 import { powerFailure } from "../lib/power";
 import type { Hotkey } from "../lib/shortcuts";
@@ -21,9 +22,12 @@ import { streamView } from "../lib/stream";
 import type { TouchMode } from "../lib/touch";
 import { viewZoom } from "../lib/zoom";
 import { CursorLayer } from "./CursorLayer";
+import { startUpload } from "./files/batches";
+import { useConflictPrompt } from "./files/ConflictDialog";
 import { DropOverlay } from "./files/DropOverlay";
-import { FilesPanel } from "./files/FilesPanel";
-import { useTransfers } from "./files/TransferList";
+import { FileManager } from "./files/FileManager";
+import { nodesFromDrop } from "./files/localFs";
+import { useTransfers } from "./files/TransferQueue";
 import { TransferPill } from "./files/TransferPill";
 import { Hud } from "./Hud";
 import { KeysButton } from "./KeysMenu";
@@ -62,23 +66,8 @@ const TOUCH_HINTS: Record<TouchMode, string> = {
 
 type Panel = "stream" | "files" | "keys";
 
-const FOLDER_HINT = "Folders can't be uploaded. Drop files, or zip the folder first.";
-
-/** Splits dropped items into files and folders (folders are not supported). */
-function droppedFiles(dt: DataTransfer): { files: File[]; folders: number } {
-  const files: File[] = [];
-  let folders = 0;
-  for (const item of Array.from(dt.items)) {
-    if (item.kind !== "file") continue;
-    if (item.webkitGetAsEntry?.()?.isDirectory) {
-      folders++;
-      continue;
-    }
-    const f = item.getAsFile();
-    if (f) files.push(f);
-  }
-  return { files, folders };
-}
+const FOLDER_HINT =
+  "This device's agent can't receive folders yet. Drop files, or zip the folder first.";
 
 const hasFiles = (e: { dataTransfer: DataTransfer | null }) =>
   !!e.dataTransfer && Array.from(e.dataTransfer.types).includes("Files");
@@ -232,6 +221,8 @@ export function SessionPane({
   const live = snap?.phase === "connected" || snap?.phase === "reconnecting";
   const active = live && focused;
   const files = snap?.filesState === "ready" ? snap.files : null;
+  const fileOps = fileOpsAvailable(snap?.features ?? null);
+  const conflicts = useConflictPrompt();
 
   // The stream is sized to the stage in device pixels and drawn 1:1 (fit),
   // or kept native and scrolled (actual).
@@ -410,9 +401,15 @@ export function SessionPane({
     dragDepth.current = 0;
     setDragging(false);
     if (!files) return;
-    const dropped = droppedFiles(e.dataTransfer);
-    for (const f of dropped.files) files.upload(f, filesOpen ? filesFolder : null);
-    if (dropped.folders > 0) setHint(FOLDER_HINT);
+    const to = filesOpen ? filesFolder : null;
+    // Read synchronously: the dropped items are gone once this handler returns.
+    void nodesFromDrop(e.dataTransfer)
+      .then((nodes) => {
+        if (nodes.length === 0) return;
+        if (!fileOps && nodes.some((n) => n.kind === "dir")) setHint(FOLDER_HINT);
+        startUpload(files, { nodes, to, ops: fileOps, ask: conflicts.ask });
+      })
+      .catch(() => undefined);
   };
 
   // Clipboard: push local clipboard to the remote when the session regains focus.
@@ -821,11 +818,18 @@ export function SessionPane({
         )}
 
         {filesOpen && files && (
-          <FilesPanel files={files} onClose={() => closePanel("files")} onFolder={setFilesFolder} />
+          <FileManager
+            files={files}
+            ops={fileOps}
+            deviceName={name}
+            ask={conflicts.ask}
+            onClose={() => closePanel("files")}
+            onFolder={setFilesFolder}
+          />
         )}
         {streamOpen && snap && live && (
           <StreamMenu
-            className={`top-3 ${filesOpen ? "right-3 sm:right-[25rem]" : "right-3"}`}
+            className="top-3 right-3"
             prefs={snap.streamPrefs}
             state={snap.streamState}
             feature={snap.streamFeature}
@@ -842,7 +846,8 @@ export function SessionPane({
         {!filesOpen && live && (
           <TransferPill transfers={transfers} onOpen={() => openPanel("files")} />
         )}
-        {dragging && <DropOverlay target={filesOpen ? filesFolder : null} />}
+        {dragging && <DropOverlay target={filesOpen ? filesFolder : null} folders={fileOps} />}
+        {conflicts.dialog}
         {hint && (
           <div
             role="status"

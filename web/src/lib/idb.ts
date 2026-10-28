@@ -1,8 +1,8 @@
 // Minimal IndexedDB key/value helper. DB "remotectl", stores per PROTOCOL §4.
 
 const DB_NAME = "remotectl";
-const STORES = ["client_keys", "device_pins", "preview_keys"] as const;
-const VERSION = 2; // 2: preview_keys
+const STORES = ["client_keys", "device_pins", "preview_keys", "local_folders"] as const;
+const VERSION = 3; // 2: preview_keys, 3: local_folders
 export type StoreName = (typeof STORES)[number];
 
 let dbPromise: Promise<IDBDatabase> | null = null;

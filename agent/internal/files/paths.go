@@ -117,25 +117,35 @@ type Policy struct {
 // lies under one. Comparison ignores case except on Linux, matching the
 // default file systems of macOS and Windows.
 func (pl Policy) Denied(p, goos string) bool {
-	sep := "/"
-	if goos == "windows" {
-		sep = `\`
-	}
-	fold := func(s string) string {
-		if goos == "linux" {
-			return s
-		}
-		return strings.ToLower(s)
-	}
-	p = fold(p)
 	for _, d := range pl.Deny {
-		if d == "" {
-			continue
-		}
-		d = strings.TrimSuffix(fold(d), sep)
-		if d == "" || p == d || strings.HasPrefix(p, d+sep) {
+		if d != "" && within(p, d, goos) {
 			return true
 		}
 	}
 	return false
+}
+
+// Covers reports whether p is denied or contains a denied path, so that
+// renaming or deleting p would take the denied path with it.
+func (pl Policy) Covers(p, goos string) bool {
+	for _, d := range pl.Deny {
+		if d != "" && (within(p, d, goos) || within(d, p, goos)) {
+			return true
+		}
+	}
+	return false
+}
+
+// within reports whether p is base or lies under it, ignoring case except
+// on Linux.
+func within(p, base, goos string) bool {
+	sep := "/"
+	if goos == "windows" {
+		sep = `\`
+	}
+	if goos != "linux" {
+		p, base = strings.ToLower(p), strings.ToLower(base)
+	}
+	base = strings.TrimSuffix(base, sep)
+	return base == "" || p == base || strings.HasPrefix(p, base+sep)
 }

@@ -111,11 +111,14 @@ var agentFrames = map[string]func() any{
 	"done":               func() any { return &doneMsg{} },
 	"error for transfer": func() any { return &errorMsg{} },
 	"error for request":  func() any { return &errorMsg{} },
+	"ok":                 func() any { return &okMsg{} },
+	"error exists":       func() any { return &errorMsg{} },
 }
 
 // browserFrames are decoded by DecodeMsg.
 var browserFrames = map[string]bool{
 	"roots request": true, "list": true, "get": true, "put": true, "ack": true, "end upload": true, "cancel": true,
+	"put replace": true, "mkdir": true, "rename": true, "delete": true,
 }
 
 func generic(t *testing.T, b []byte) map[string]any {
@@ -165,23 +168,28 @@ func TestMessageVectorsRoundTrip(t *testing.T) {
 func TestDecodeMsgRejects(t *testing.T) {
 	sha := "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
 	cases := map[string]string{
-		"not json":         `{"t":`,
-		"unknown t":        `{"t":"delete","xfer":1}`,
-		"no t":             `{"xfer":1}`,
-		"list without id":  `{"t":"list","path":"/"}`,
-		"list null path":   `{"t":"list","id":1,"path":null}`,
-		"get without path": `{"t":"get","xfer":1}`,
-		"put without size": `{"t":"put","xfer":1,"name":"a"}`,
-		"negative size":    `{"t":"put","xfer":1,"name":"a","size":-1}`,
-		"negative offset":  `{"t":"list","id":1,"path":"/","offset":-5}`,
-		"xfer over u32":    `{"t":"cancel","xfer":4294967296}`,
-		"xfer negative":    `{"t":"cancel","xfer":-1}`,
-		"xfer string":      `{"t":"cancel","xfer":"1"}`,
-		"ack negative":     `{"t":"ack","xfer":1,"bytes":-1}`,
-		"end short sha":    `{"t":"end","xfer":1,"sha256":"abcd"}`,
-		"end upper sha":    `{"t":"end","xfer":1,"sha256":"` + "2CF24DBA5FB0A30E26E83B2AC5B9E29E1B161E5C1FA7425E73043362938B9824" + `"}`,
-		"end non-hex sha":  `{"t":"end","xfer":1,"sha256":"` + sha[:63] + `g"}`,
-		"hidden not bool":  `{"t":"list","id":1,"path":"/","hidden":1}`,
+		"not json":            `{"t":`,
+		"unknown t":           `{"t":"chmod","id":1}`,
+		"delete without id":   `{"t":"delete","path":"/a"}`,
+		"delete without path": `{"t":"delete","id":1}`,
+		"mkdir without dir":   `{"t":"mkdir","id":1,"name":"a"}`,
+		"rename without name": `{"t":"rename","id":1,"path":"/a"}`,
+		"replace not bool":    `{"t":"put","xfer":1,"name":"a","size":1,"replace":"yes"}`,
+		"no t":                `{"xfer":1}`,
+		"list without id":     `{"t":"list","path":"/"}`,
+		"list null path":      `{"t":"list","id":1,"path":null}`,
+		"get without path":    `{"t":"get","xfer":1}`,
+		"put without size":    `{"t":"put","xfer":1,"name":"a"}`,
+		"negative size":       `{"t":"put","xfer":1,"name":"a","size":-1}`,
+		"negative offset":     `{"t":"list","id":1,"path":"/","offset":-5}`,
+		"xfer over u32":       `{"t":"cancel","xfer":4294967296}`,
+		"xfer negative":       `{"t":"cancel","xfer":-1}`,
+		"xfer string":         `{"t":"cancel","xfer":"1"}`,
+		"ack negative":        `{"t":"ack","xfer":1,"bytes":-1}`,
+		"end short sha":       `{"t":"end","xfer":1,"sha256":"abcd"}`,
+		"end upper sha":       `{"t":"end","xfer":1,"sha256":"` + "2CF24DBA5FB0A30E26E83B2AC5B9E29E1B161E5C1FA7425E73043362938B9824" + `"}`,
+		"end non-hex sha":     `{"t":"end","xfer":1,"sha256":"` + sha[:63] + `g"}`,
+		"hidden not bool":     `{"t":"list","id":1,"path":"/","hidden":1}`,
 	}
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {

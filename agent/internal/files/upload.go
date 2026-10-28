@@ -12,7 +12,8 @@ import (
 
 // upload receives a file into dir: written to a hidden part file, verified
 // against the browser's SHA-256 and only then renamed to its final name,
-// never replacing an existing file.
+// never replacing an existing file unless the browser asked to replace a
+// regular file of that name.
 func (t *transfer) upload(m Msg) (code, detail string) {
 	s := t.s
 	t.setMeta(truncUTF8(m.Name, maxNameBytes), truncUTF8(m.Dir, 4096), m.Size)
@@ -46,7 +47,7 @@ func (t *transfer) upload(m Msg) (code, detail string) {
 		} else if !st.IsDir() {
 			return errNotDir
 		}
-		if final, err = s.reserveName(real, name); err != nil {
+		if final, err = s.reserveName(real, name, m.Replace); err != nil {
 			return err
 		}
 		part := filepath.Join(real, PartName(final, t.xfer))
@@ -125,13 +126,23 @@ func (t *transfer) upload(m Msg) (code, detail string) {
 			return CodeCancelled, ""
 		}
 		err = s.c.Host.Do(func() error {
+			if m.Replace && final == name {
+				st, err := os.Lstat(filepath.Join(real, final))
+				if err == nil && st.Mode().IsRegular() {
+					if err := os.Rename(part, filepath.Join(real, final)); err != nil {
+						return err
+					}
+					t.setReplaced()
+					return nil
+				}
+			}
 			for i := 0; ; i++ {
 				err := renameNoReplace(part, filepath.Join(real, final))
 				if err == nil || !errors.Is(err, fs.ErrExist) || i == 4 {
 					return err
 				}
 				// Someone created the name since `ready`: take the next free one.
-				next, rerr := s.reserveName(real, name)
+				next, rerr := s.reserveName(real, name, false)
 				if rerr != nil {
 					return rerr
 				}

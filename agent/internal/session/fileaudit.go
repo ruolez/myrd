@@ -64,7 +64,7 @@ func (a *fileAudit) record(sessionID string, r proto.FileRecord) {
 func (a *fileAudit) ok() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return len(a.queue)+files.MaxActive < a.capacity
+	return len(a.queue)+files.MaxActive+files.MaxRequests < a.capacity
 }
 
 func (a *fileAudit) pending(sessionID string) int {

@@ -145,6 +145,87 @@ describe("FileChannel requests", () => {
   });
 });
 
+describe("FileChannel file operations", () => {
+  test.each([
+    [
+      "mkdir",
+      (fc: FileChannel) => fc.mkdir("/home", "New", true),
+      { t: "mkdir", id: 1, dir: "/home", name: "New", exist_ok: true },
+    ],
+    [
+      "rename",
+      (fc: FileChannel) => fc.rename("/home/a", "b"),
+      { t: "rename", id: 1, path: "/home/a", name: "b" },
+    ],
+    ["delete", (fc: FileChannel) => fc.remove("/home/a"), { t: "delete", id: 1, path: "/home/a" }],
+  ])("%s sends its request and resolves with the agent's ok", async (_name, run, sent) => {
+    const { chan, fc } = setup();
+    const p = run(fc);
+    chan.deliver({ t: "ok", id: 1, path: "/home/x" });
+    expect({ sent: chan.json(), reply: await p }).toEqual({
+      sent: [sent],
+      reply: { t: "ok", id: 1, path: "/home/x", existed: false },
+    });
+  });
+
+  test("keeps at most two requests in flight and sends the next when one is answered", async () => {
+    const { chan, fc } = setup();
+    const first = fc.list("/a");
+    void fc.list("/b");
+    void fc.list("/c");
+    const before = chan.json().map((m) => m.path);
+    chan.deliver({ t: "error", id: 1, code: "not_found", detail: "" });
+    await expect(first).rejects.toEqual(new FileError("not_found"));
+    expect({ before, after: chan.json().map((m) => m.path) }).toEqual({
+      before: ["/a", "/b"],
+      after: ["/a", "/b", "/c"],
+    });
+  });
+});
+
+describe("FileChannel batches", () => {
+  test("transfers carry their batch and cancelBatch() cancels the ones still running", async () => {
+    const { chan, fc } = setup();
+    const batch = fc.createBatch({ direction: "upload", name: "docs", dest: "/d" });
+    const a = fc.upload(memFile("a.txt", text("a")), "/d", { batch });
+    const b = fc.upload(memFile("b.txt", text("b")), "/d", { batch });
+    const other = fc.upload(memFile("c.txt", text("c")), "/d");
+    chan.deliver({ t: "error", xfer: a, code: "no_space", detail: "" });
+    await vi.waitFor(() => expect(fc.getTransfers()[0]?.status).toEqual("failed"));
+    fc.cancelBatch(batch);
+    await settle();
+    expect({
+      transfers: fc.getTransfers().map((t) => [t.xfer, t.batch, t.status]),
+      batch: fc.getBatches()[0]?.phase,
+      cancels: chan.json().filter((m) => m.t === "cancel"),
+    }).toEqual({
+      transfers: [
+        [a, batch, "failed"],
+        [b, batch, "cancelled"],
+        [other, null, "waiting"],
+      ],
+      batch: "cancelled",
+      cancels: [{ t: "cancel", xfer: b }],
+    });
+  });
+
+  test("clearFinished() drops finished batches with their transfers", async () => {
+    const { chan, fc } = setup();
+    const done = fc.createBatch({ direction: "upload", name: "a", dest: "/d" });
+    const running = fc.createBatch({ direction: "upload", name: "b", dest: "/d" });
+    const a = fc.upload(memFile("a.txt", text("a")), "/d", { batch: done });
+    fc.updateBatch(done, { phase: "running" });
+    fc.updateBatch(running, { phase: "scanning" });
+    chan.deliver({ t: "error", xfer: a, code: "io", detail: "" });
+    await vi.waitFor(() => expect(fc.getTransfers()[0]?.status).toEqual("failed"));
+    fc.clearFinished();
+    expect({
+      batches: fc.getBatches().map((x) => x.id),
+      transfers: fc.getTransfers().length,
+    }).toEqual({ batches: [running], transfers: 0 });
+  });
+});
+
 describe("FileChannel uploads", () => {
   test("streams the file and ends with the SHA-256 of the shared vector", async () => {
     const { chan, fc } = setup();
@@ -226,17 +307,26 @@ describe("FileChannel uploads", () => {
     });
   });
 
-  test("runs one upload at a time", async () => {
+  test("runs two uploads at a time", async () => {
     const { chan, fc } = setup();
     const a = fc.upload(memFile("a.txt", text("a")), null);
     fc.upload(memFile("b.txt", text("b")), null);
+    fc.upload(memFile("c.txt", text("c")), null);
     const putsBefore = chan.json().filter((m) => m.t === "put").length;
     chan.deliver({ t: "error", xfer: a, code: "no_space", detail: "disk full" });
-    await vi.waitFor(() => expect(chan.json().filter((m) => m.t === "put").length).toEqual(2));
+    await vi.waitFor(() => expect(chan.json().filter((m) => m.t === "put").length).toEqual(3));
     expect({ putsBefore, first: fc.getTransfers()[0]?.error }).toEqual({
-      putsBefore: 1,
+      putsBefore: 2,
       first: { code: "no_space", detail: "disk full" },
     });
+  });
+
+  test("asks the agent to replace when told to", () => {
+    const { chan, fc } = setup();
+    fc.upload(memFile("a.txt", text("a")), "/d", { replace: true });
+    expect(chan.json()).toEqual([
+      { t: "put", xfer: 1, dir: "/d", name: "a.txt", size: 1, replace: true },
+    ]);
   });
 
   test("cancel() tells the agent and marks the transfer cancelled", async () => {

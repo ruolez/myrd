@@ -109,7 +109,13 @@
     { "name": "done", "json": { "t": "done", "xfer": 7, "name": "a (1).txt", "path": "/home/device/Downloads/a (1).txt", "size": 5, "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" } },
     { "name": "cancel", "json": { "t": "cancel", "xfer": 7 } },
     { "name": "error for transfer", "json": { "t": "error", "xfer": 7, "code": "no_space", "detail": "disk full" } },
-    { "name": "error for request", "json": { "t": "error", "id": 2, "code": "not_found", "detail": "" } }
+    { "name": "error for request", "json": { "t": "error", "id": 2, "code": "not_found", "detail": "" } },
+    { "name": "put replace", "json": { "t": "put", "xfer": 9, "dir": "/home/device/Docs", "name": "a.txt", "size": 5, "replace": true } },
+    { "name": "mkdir", "json": { "t": "mkdir", "id": 3, "dir": "/home/device", "name": "Reports", "exist_ok": true } },
+    { "name": "rename", "json": { "t": "rename", "id": 4, "path": "/home/device/notes.txt", "name": "old notes.txt" } },
+    { "name": "delete", "json": { "t": "delete", "id": 5, "path": "/home/device/Reports" } },
+    { "name": "ok", "json": { "t": "ok", "id": 3, "path": "/home/device/Reports", "existed": true } },
+    { "name": "error exists", "json": { "t": "error", "id": 4, "code": "exists", "detail": "already exists" } }
   ],
   "file_sha256": [
     { "name": "hello in 2 chunks", "chunks_hex": ["68656c", "6c6f"], "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" }

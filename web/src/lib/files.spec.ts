@@ -9,19 +9,26 @@ import {
   contentDisposition,
   createSha256,
   CreditWindow,
+  baseName,
   decodeFileData,
+  deleteRequest,
   describeFileError,
   encodeFileData,
   endMsg,
+  fileOpsAvailable,
   filesAvailability,
   getRequest,
   joinPath,
   listRequest,
   MAX_FILE_PAYLOAD,
+  mkdirRequest,
+  parentPath,
   parseFileMsg,
   putRequest,
   RateMeter,
+  renameRequest,
   rootsRequest,
+  uniqueName,
 } from "./files";
 import type { FileRequestId, Root, TransferId } from "./files";
 
@@ -76,6 +83,10 @@ describe("outgoing file messages", () => {
       endMsg(xid(7), "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"),
     ],
     ["cancel", cancelMsg(xid(7))],
+    ["put replace", putRequest(xid(9), "/home/device/Docs", "a.txt", 5, true)],
+    ["mkdir", mkdirRequest(rid(3), "/home/device", "Reports", true)],
+    ["rename", renameRequest(rid(4), "/home/device/notes.txt", "old notes.txt")],
+    ["delete", deleteRequest(rid(5), "/home/device/Reports")],
   ])("%s matches the shared vector", (name, json) => {
     expect(JSON.parse(json)).toEqual(vec(name));
   });
@@ -93,6 +104,8 @@ describe("parseFileMsg", () => {
     "cancel",
     "error for transfer",
     "error for request",
+    "ok",
+    "error exists",
   ])("%s round-trips the shared vector", (name) => {
     expect(parseFileMsg(JSON.stringify(vec(name)))).toEqual(vec(name));
   });
@@ -109,6 +122,7 @@ describe("parseFileMsg", () => {
     ],
     ["roots with a bad separator", JSON.stringify({ ...vec("roots reply"), sep: ":" })],
     ["a B→A list request", JSON.stringify(vec("list"))],
+    ["ok without a path", JSON.stringify({ t: "ok", id: 3 })],
   ])("rejects %s", (_name, text) => {
     expect(parseFileMsg(text)).toBeNull();
   });
@@ -317,5 +331,68 @@ describe("describeFileError", () => {
     ["something_new", /something_new/],
   ])("%s", (code, re) => {
     expect(describeFileError(code)).toMatch(re);
+  });
+});
+
+describe("parseFileMsg ok", () => {
+  test("defaults existed to false", () => {
+    expect(parseFileMsg(JSON.stringify({ t: "ok", id: 4, path: "/a/b" }))).toEqual({
+      t: "ok",
+      id: 4,
+      path: "/a/b",
+      existed: false,
+    });
+  });
+});
+
+describe("uniqueName", () => {
+  const takenOf = (names: string[]) => (n: string) => names.includes(n);
+  test.each([
+    ["a free name as is", "a.txt", [], "a.txt"],
+    ["a numbered name before the extension", "a.txt", ["a.txt"], "a (1).txt"],
+    ["the smallest free number", "a.txt", ["a.txt", "a (1).txt", "a (3).txt"], "a (2).txt"],
+    ["compound archive extensions whole", "x.tar.gz", ["x.tar.gz"], "x (1).tar.gz"],
+    ["a dotfile's name as its stem", ".bashrc", [".bashrc"], ".bashrc (1)"],
+    ["names without an extension", "README", ["README"], "README (1)"],
+    ["a trailing dot as part of the stem", "a.", ["a."], "a. (1)"],
+  ])("keeps %s", (_name, name, taken, want) => {
+    expect(uniqueName(name, takenOf(taken))).toEqual(want);
+  });
+});
+
+describe("path helpers", () => {
+  test.each([
+    ["/home/device/a.txt", "/", "/home/device", "a.txt"],
+    ["/a", "/", "/", "a"],
+    ["C:\\Users\\bob", "\\", "C:\\Users", "bob"],
+    ["C:\\Users", "\\", "C:\\", "Users"],
+  ] as const)("%s splits into parent and name", (path, sep, parent, name) => {
+    expect([parentPath(path, sep), baseName(path, sep)]).toEqual([parent, name]);
+  });
+
+  test.each([
+    ["/home/device", "/", "a", "/home/device/a"],
+    ["C:\\", "\\", "a", "C:\\a"],
+  ] as const)("joining a name back gives the path (%s)", (dir, sep, name, path) => {
+    expect([parentPath(joinPath(dir, name, sep), sep), joinPath(dir, name, sep)]).toEqual([
+      dir,
+      path,
+    ]);
+  });
+});
+
+describe("fileOpsAvailable", () => {
+  test.each([
+    ["an agent with file_ops", ["files", "file_ops"], true],
+    ["an agent with plain file transfer", ["files"], false],
+    ["features not known yet", null, false],
+  ])("is %#: %s", (_name, features, want) => {
+    expect(fileOpsAvailable(features)).toEqual(want);
+  });
+});
+
+describe("describeFileError for operations", () => {
+  test.each(["exists", "protected", "skipped"])("%s has its own message", (code) => {
+    expect(describeFileError(code)).not.toEqual(describeFileError("nonexistent_code"));
   });
 });

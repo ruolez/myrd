@@ -152,7 +152,7 @@ func TestFileAuditRetriesAndRefusesWhenFull(t *testing.T) {
 	f := &fakeSignal{fail: true}
 	a := newTestAudit(f)
 	a.capacity = 10
-	for i := 0; i < a.capacity-files.MaxActive-1; i++ {
+	for i := 0; i < a.capacity-files.MaxActive-files.MaxRequests-1; i++ {
 		a.record("s1", rec("r"))
 	}
 	if !a.ok() {
@@ -163,7 +163,7 @@ func TestFileAuditRetriesAndRefusesWhenFull(t *testing.T) {
 		t.Fatal("accepting transfers without room for their records")
 	}
 	// Running transfers still get their records in, up to the hard cap.
-	for i := 0; i < files.MaxActive+2; i++ {
+	for i := 0; i < files.MaxActive+files.MaxRequests+2; i++ {
 		a.record("s1", rec("r"))
 	}
 	if n := a.pending(""); n != a.capacity {

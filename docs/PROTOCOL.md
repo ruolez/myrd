@@ -416,7 +416,7 @@ JSON text messages, `{"t": "...", ...}`:
 
 | t | dir | fields |
 |---|---|---|
-| `hello` | A→B on open | `monitors:[Monitor]`, `active:index`, `encoder`, `codec:"h264"`, `fps` (current target), `max_fps` (encoder cap), `features:[string]` (`"stream"`, `"move"`, `"files"`, `"wallpaper"`, `"unlock"`, `"power"`, `"display"`; absent on old agents), `permissions:{screen,input}`, `agent_version`, `os`, `locked` (the device shows its unlock screen; absent on old agents = false), `unlock_key`, `unlock_key_sig` (with `"unlock"`, §4.2), `power:[string]` (with `"power"`: the restarts offered, `"restart"` and/or `"restart_agent"`) |
+| `hello` | A→B on open | `monitors:[Monitor]`, `active:index`, `encoder`, `codec:"h264"`, `fps` (current target), `max_fps` (encoder cap), `features:[string]` (`"stream"`, `"move"`, `"files"`, `"file_ops"`, `"wallpaper"`, `"unlock"`, `"power"`, `"display"`; absent on old agents), `permissions:{screen,input}`, `agent_version`, `os`, `locked` (the device shows its unlock screen; absent on old agents = false), `unlock_key`, `unlock_key_sig` (with `"unlock"`, §4.2), `power:[string]` (with `"power"`: the restarts offered, `"restart"` and/or `"restart_agent"`) |
 | `monitor` | A→B | `active:index`, `width`, `height` (native pixels, after a switch) |
 | `screen` | A→B on change | `locked:bool`. Polled once a second, every 150 ms for 10 s after an `unlock` typed the password. The viewer says the device is locked and that typing the password unlocks it: macOS blanks the unlock screen for ScreenCaptureKit, so while locked the macOS backend captures with CGDisplayStream instead, and every macOS capture wakes the display and keeps it on. Windows (since 0.5.0) reports a lock while the input desktop is the secure one and LogonUI runs in the console session (lock and sign-in screens, not UAC prompts); the Linux demo device never does |
 | `unlock` | B→A | `id` (u32), `credential: SealedCredential`: type the saved password on the lock screen (feature `"unlock"`, §4.2) |
@@ -517,21 +517,26 @@ JSON text frames `{"t": ...}`. The browser allocates every `id` (requests) and `
 | `listing` | A→B | `id`, `path`, `parent` (`""` at a root), `entries:[{name, kind: dir\|file\|other, link, size, mtime (unix ms), hidden}]`, `offset`, `next_offset` (null at the end), `total`, `truncated` (directory has more than 20000 entries) |
 | `get` | B→A | `xfer`, `path`: download a regular file |
 | `begin` | A→B | `xfer`, `name`, `size`, `mtime`, `window`: then `0x40` frames |
-| `put` | B→A | `xfer`, `dir` (`""` = `default_dir`), `name`, `size`: upload |
+| `put` | B→A | `xfer`, `dir` (`""` = `default_dir`), `name`, `size`, `replace` (with `"file_ops"`; optional): upload |
 | `ready` | A→B | `xfer`, `name` (final, de-duplicated: `a (1).txt`), `path`, `window`: the browser may now send `0x40` frames |
 | `ack` | both | `xfer`, `bytes` (cumulative bytes the receiver has written) |
 | `end` | sender | `xfer`, `sha256` (hex of the whole file), and `size` from the agent; after the last data frame |
 | `done` | A→B | `xfer`, `name`, `path`, `size`, `sha256`: the upload is committed under its final name |
 | `cancel` | both | `xfer` |
+| `mkdir` | B→A | `id`, `dir`, `name`, `exist_ok` (optional): create a folder (with `"file_ops"`) |
+| `rename` | B→A | `id`, `path`, `name` (new name in the same folder) (with `"file_ops"`) |
+| `delete` | B→A | `id`, `path`: delete a file, link or folder with everything in it, permanently (with `"file_ops"`) |
+| `ok` | A→B | `id`, `path` (the entry's path afterwards), `existed` (mkdir with `exist_ok` found the folder) |
 | `error` | A→B | `id` or `xfer`, `code`, `detail` |
 
-Error codes: `not_found`, `denied`, `os_denied` (macOS privacy permission), `not_dir`, `not_file`, `bad_name`, `bad_path`, `no_space`, `io`, `changed` (file changed while reading), `checksum`, `protocol`, `too_many`, `no_user` (Windows: nobody signed in), `audit_unavailable`, `stalled`, `cancelled`.
+Error codes: `not_found`, `denied`, `os_denied` (macOS privacy permission), `not_dir`, `not_file`, `bad_name`, `bad_path`, `no_space`, `io`, `changed` (file changed while reading), `checksum`, `protocol`, `too_many`, `no_user` (Windows: nobody signed in), `audit_unavailable`, `stalled`, `cancelled`, `exists` (the name is taken), `protected` (rename or delete of a root or one of its ancestors).
 
 Rules:
 - Flow control: a sender keeps at most `window` payload bytes (4 MiB) beyond the receiver's last `ack`; receivers ack after writing, at least every 256 KiB and at the end. Sending past the window is a `protocol` error. Senders also wait while the channel's `bufferedAmount` is high, and file data is paced to 4 MiB/s on relayed sessions.
 - Uploads are written to a hidden `.<name>.remotectl-<xfer>.part` file and renamed to the final name (never replacing an existing file) only after the agent's SHA-256 matches `end.sha256`; a mismatch is `checksum`. Cancel, error, channel close and session end delete the partial file.
 - Names are sanitized on the agent (basename only, no control or reserved characters, reserved Windows names prefixed, ≤ 255 bytes). Paths must be absolute (Windows: drive paths only; UNC, `\\?\` and alternate data streams are rejected). The agent's own state directory is denied.
-- The agent runs at most 4 transfers and 2 listings at once (`too_many`); 60 s without progress cancels a transfer (`stalled`). `get` on anything but a regular file is `not_file`.
+- The agent runs at most 4 transfers and 2 requests (`roots`, `list`, `mkdir`, `rename`, `delete`) at once (`too_many`); 60 s without progress cancels a transfer (`stalled`). `get` on anything but a regular file is `not_file`.
+- File operations (feature `"file_ops"`, since 0.6.5). Names are sanitized like upload names and `ok.path` carries the result. `mkdir` fails with `exists` when the name is taken, unless `exist_ok` and it is a folder. `rename` never replaces another entry (`exists`); a case-only change works on case-insensitive file systems. `delete` removes a folder recursively without following links inside it, and deleting a link removes the link. Neither `rename` nor `delete` touches a file-system root, a `roots` entry or an ancestor of one (`protected`), nor the agent's state directory or anything containing it (`denied`). `put` with `replace` writes to the hidden part file as usual and, after the checksum matches, atomically replaces a regular file of the same name (a folder or link of that name is never replaced: the upload takes a free name instead); without it uploads never replace. Each operation, like each transfer, is one `session.file` record: `direction` `mkdir`|`rename`|`delete`, `xfer` = the request `id`, `name` + `dir` of the entry, `to` (rename), `kind` (`dir`|`file`|`other`), `result` `ok`|`error`; a replacing upload's record has `replaced: true`. Audit events: `file.folder_created`, `file.renamed`, `file.deleted` and their `*_failed` forms (`file.folder_create_failed`, `file.rename_failed`, `file.delete_failed`).
 
 ## 6. Agent device-local surfaces
 
