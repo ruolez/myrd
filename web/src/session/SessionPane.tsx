@@ -771,6 +771,35 @@ export function SessionPane({
             onPointerLeave={() => revealPill(1500)}
           >
             {fullscreenExtras}
+            {monitors.length > 1 && (
+              <>
+                <div role="group" aria-label="Remote screen" className="flex items-center gap-0.5">
+                  <Icon name="monitor" size={16} className="mx-1 text-white/60" />
+                  {monitors.map((m, i) => {
+                    const current = i === (snap?.activeMonitor ?? 0);
+                    const label = `${m.name || `Display ${i + 1}`} (${m.width}×${m.height})`;
+                    return (
+                      <button
+                        key={m.id}
+                        className={`btn btn-sm min-w-8 justify-center px-2 tabular-nums ${
+                          current ? "bg-white/20 text-white" : "text-white/70 hover:bg-white/10"
+                        }`}
+                        aria-label={label}
+                        aria-pressed={current}
+                        title={label}
+                        onClick={() => {
+                          if (!current) session?.selectMonitor(i);
+                          refocus();
+                        }}
+                      >
+                        {i + 1}
+                      </button>
+                    );
+                  })}
+                </div>
+                <span className="mx-1 h-5 w-px bg-white/20" />
+              </>
+            )}
             <ToolButton
               label="Stream settings (Ctrl+Alt+Shift+S)"
               icon="speed"
