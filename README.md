@@ -223,4 +223,3 @@ Ports: 80/443 tcp+udp, 3478 tcp+udp, 5349/tcp, and 49152–65535/udp for the TUR
 - PNG clipboard is ignored; text clipboard works both ways.
 - File transfer: no folder transfer, resume, or delete/rename on the device. It has not been tried on a real Windows PC (impersonation), and the macOS privacy-prompt handling is untested.
 - The Linux x264 backend keeps a constant-rate setup. Variable-frame-rate input corrupted frames on the demo device, so the agent instead enforces a keyframe at least every 2 s.
-- On the Linux demo, the red session border is visible in the captured video. On macOS and Windows it is excluded from capture.

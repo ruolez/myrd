@@ -442,8 +442,11 @@ func TestLoopbackSessionNewBrowserApprovedAndRemembered(t *testing.T) {
 			t.Fatalf("cursor channel: shape=%v pos=%v", gotShape, gotPos)
 		}
 	}
-	if !h.backend.IndicatorOn() || !h.backend.Capturing() {
-		t.Fatal("indicator and capture should be on mid-session")
+	if !h.backend.Capturing() {
+		t.Fatal("capture should be on mid-session")
+	}
+	if h.backend.IndicatorOn() {
+		t.Fatal("the session border should stay off")
 	}
 	if got := h.mgr.ActiveSessions(); len(got) != 1 || got[0] != sessionID {
 		t.Fatalf("active sessions = %v", got)
@@ -451,7 +454,7 @@ func TestLoopbackSessionNewBrowserApprovedAndRemembered(t *testing.T) {
 
 	end, _ := proto.Encode(proto.TypeSessionEnd, proto.SessionEnd{SessionID: sessionID, Reason: proto.EndUserHangup})
 	h.mgr.HandleSignal(proto.TypeSessionEnd, end)
-	waitFor(t, "teardown", func() bool { return !h.backend.Capturing() && !h.backend.IndicatorOn() })
+	waitFor(t, "teardown", func() bool { return !h.backend.Capturing() })
 	_, _, ends := h.snapshot()
 	if len(ends) != 1 || ends[0].Reason != proto.EndUserHangup || ends[0].BytesSent == 0 {
 		t.Fatalf("ends = %+v", ends)

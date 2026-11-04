@@ -540,7 +540,7 @@ Rules:
 
 ## 6. Agent device-local surfaces
 
-- macOS/Windows: tray icon (red during a session) with Pause / Ask before new browsers connect / Show screen previews (on by default; `prefs.json` `no_screen_previews`; for 5 minutes after one the menu says "Screen preview sent to <browser> at <time>") / End session (kill switch) / Quit, native border overlay, native consent prompt. An unenrolled macOS agent asks for the token in a dialog (before the permission prompts, which follow enrollment) and keeps an **Enroll this device…** menu item that reopens it; an agent waiting for enrollment also picks up `remote-agent enroll --server … --token …` run in a terminal by the same user (it polls its state file every 2 s).
+- macOS/Windows: tray icon (red during a session) with Pause / Ask before new browsers connect / Show screen previews (on by default; `prefs.json` `no_screen_previews`; for 5 minutes after one the menu says "Screen preview sent to <browser> at <time>") / End session (kill switch) / Quit, native consent prompt (no border overlay on the screen; the native `rc_indicator_show` is kept but unused). An unenrolled macOS agent asks for the token in a dialog (before the permission prompts, which follow enrollment) and keeps an **Enroll this device…** menu item that reopens it; an agent waiting for enrollment also picks up `remote-agent enroll --server … --token …` run in a terminal by the same user (it polls its state file every 2 s).
 - Linux Docker demo device: a local "device console" web page (port 5562 on the host) stands in for the physical screen: enrollment token entry, consent prompts, kill switch, Ask before new browsers connect, Show screen previews, pinned browsers list, session indicator.
 
 ## 7. Agent updates

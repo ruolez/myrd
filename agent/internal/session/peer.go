@@ -538,7 +538,6 @@ func (s *sess) onConnected() {
 	s.send(proto.TypeSessionState, st)
 	s.media.setPath(st.Path)
 	if first {
-		s.m.o.Backend.Indicator(true)
 		s.media.start()
 	}
 }
@@ -566,7 +565,6 @@ func (s *sess) end(reason string, send bool) {
 	s.ended = true
 	s.state = stateEnded
 	pc := s.pc
-	started := s.started
 	fsvc := s.files
 	s.mu.Unlock()
 	s.cancel()
@@ -585,9 +583,6 @@ func (s *sess) end(reason string, send bool) {
 	}
 	if s.in != nil {
 		s.in.releaseAll()
-	}
-	if started {
-		s.m.o.Backend.Indicator(false)
 	}
 	if pc != nil {
 		sent, recv = transportBytes(pc)
