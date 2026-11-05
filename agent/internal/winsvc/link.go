@@ -64,7 +64,7 @@ func (r PreviewRouter) HandleSignal(msgType string, raw []byte) {
 
 // HelperEvents receive service → helper notifications other than signaling.
 type HelperEvents struct {
-	OnDevice func(proto.DeviceInfo)
+	OnDevice func(HelperDevice)
 	OnStatus func(ServiceStatus)
 }
 
@@ -99,7 +99,7 @@ func Serve(r io.Reader, target HelperTarget, ev HelperEvents) error {
 				target.Revoke(spki)
 			}
 		case KindDevice:
-			var d proto.DeviceInfo
+			var d HelperDevice
 			if json.Unmarshal(f.Data, &d) == nil && ev.OnDevice != nil {
 				ev.OnDevice(d)
 			}

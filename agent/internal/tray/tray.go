@@ -28,6 +28,7 @@ type Hooks struct {
 	OnAskNew     func(ask bool)    // "Ask before new browsers connect"; nil hides it
 	OnPreviews   func(on bool)     // "Show screen previews"; nil hides it
 	OnTerminal   func(on bool)     // "Allow remote terminal"; nil hides it
+	OnShared     func()            // "Open shared terminal"; nil hides it
 	OnQuit       func()
 	OnUninstall  func() // macOS "Uninstall RemoteAgent" menu item; nil hides it
 	OnEnroll     func() // "Enroll this device…" while not enrolled; nil hides it

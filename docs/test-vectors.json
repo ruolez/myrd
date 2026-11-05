@@ -241,7 +241,8 @@
     { "name": "resize", "json": { "t": "resize", "term": 1, "cols": 1000, "rows": 500 } },
     { "name": "ack", "json": { "t": "ack", "term": 1, "bytes": 32768 } },
     { "name": "detach", "json": { "t": "detach", "term": 1 } },
-    { "name": "kill", "json": { "t": "kill", "term": 2 } }
+    { "name": "kill", "json": { "t": "kill", "term": 2 } },
+    { "name": "cwd", "json": { "t": "cwd", "id": 8, "term": 1 } }
   ],
   "term_messages_invalid": [
     { "name": "zero columns", "json": { "t": "open", "id": 5, "cols": 0, "rows": 24 } },
@@ -249,6 +250,7 @@
     { "name": "attach without source", "json": { "t": "attach", "id": 6, "cols": 80, "rows": 24 } },
     { "name": "ack without term", "json": { "t": "ack", "bytes": 10 } },
     { "name": "negative ack", "json": { "t": "ack", "term": 1, "bytes": -1 } },
-    { "name": "unknown type", "json": { "t": "exec", "id": 7 } }
+    { "name": "unknown type", "json": { "t": "exec", "id": 7 } },
+    { "name": "cwd without term", "json": { "t": "cwd", "id": 9 } }
   ]
 }

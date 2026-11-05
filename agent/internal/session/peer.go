@@ -415,7 +415,13 @@ func (s *sess) attachTerminal(dc *webrtc.DataChannel) {
 	}
 	svc := terminal.NewService(terminal.Config{Host: o.Terminal,
 		Record:  func(r proto.TerminalRecord) { s.m.audit.recordTerminal(s.id, r) },
-		AuditOK: s.m.audit.ok, OnChange: o.OnTerminalChange, Log: s.log})
+		AuditOK: s.m.audit.ok, OnChange: o.OnTerminalChange, Log: s.log,
+		OnTakeover: func(src terminal.Source) {
+			s.log.Info("terminal taken over", "kind", src.Kind, "title", src.Title)
+			if o.OnTerminalTakeover != nil {
+				o.OnTerminalTakeover(s.info(), src)
+			}
+		}})
 	s.mu.Lock()
 	refuse := s.ended || s.term != nil
 	if !refuse {

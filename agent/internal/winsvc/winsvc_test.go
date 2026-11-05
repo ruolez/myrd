@@ -144,9 +144,9 @@ func TestProxyAndHelperEndToEnd(t *testing.T) {
 	p := &Proxy{Send: rec.Send}
 	p.SetRevoked([]string{"k1"}) // before attach: must be replayed
 	target := &fakeTarget{}
-	var gotDevice proto.DeviceInfo
+	var gotDevice HelperDevice
 	var mu sync.Mutex
-	link, stop := pair(t, p, target, HelperEvents{OnDevice: func(d proto.DeviceInfo) {
+	link, stop := pair(t, p, target, HelperEvents{OnDevice: func(d HelperDevice) {
 		mu.Lock()
 		gotDevice = d
 		mu.Unlock()
@@ -156,7 +156,7 @@ func TestProxyAndHelperEndToEnd(t *testing.T) {
 	waitFor(t, func() bool { target.mu.Lock(); defer target.mu.Unlock(); return len(target.revoked) == 1 })
 	p.HandleSignal(proto.TypeSessionOffer, []byte(offer))
 	p.Revoke("k2")
-	p.SetDevice(proto.DeviceInfo{ID: "d1", AutoAccept: true})
+	p.SetDevice(HelperDevice{DeviceInfo: proto.DeviceInfo{ID: "d1", AutoAccept: true}, Terminal: true})
 	p.EndAll(proto.EndAgentKill)
 
 	if err := link.Send(proto.TypeSessionAnswer, proto.SessionAnswer{SessionID: "s1", SDP: "a", FPSig: "sig"}); err != nil {
@@ -176,7 +176,7 @@ func TestProxyAndHelperEndToEnd(t *testing.T) {
 	}
 	target.mu.Unlock()
 	mu.Lock()
-	if gotDevice != (proto.DeviceInfo{ID: "d1", AutoAccept: true}) {
+	if gotDevice != (HelperDevice{DeviceInfo: proto.DeviceInfo{ID: "d1", AutoAccept: true}, Terminal: true}) {
 		t.Fatalf("device = %+v", gotDevice)
 	}
 	mu.Unlock()

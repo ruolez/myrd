@@ -39,7 +39,43 @@ func Default(log *slog.Logger) (Host, func()) {
 	return l, l.Close
 }
 
-var _ Host = (*Local)(nil)
+var (
+	_ Host       = (*Local)(nil)
+	_ SharedHost = (*Local)(nil)
+	_ Announcer  = (*Local)(nil)
+)
+
+func (l *Local) NewShared(cols, rows int) (Stream, Source, error) {
+	return l.New("", false, cols, rows)
+}
+
+func (l *Local) JoinShared(id string, cols, rows int) (Stream, Source, error) {
+	return l.shells.AttachShared(id, cols, rows)
+}
+
+func (l *Local) SharedList() []Source { return l.shells.ListShared() }
+
+// Announce shows msg on the status line of a tmux or screen session.
+func (l *Local) Announce(src Source, msg string) {
+	kind, name, _ := strings.Cut(src.ID, ":")
+	if !validSessionName(name) {
+		return
+	}
+	env := shellEnv()
+	switch kind {
+	case proto.TermSourceTmux:
+		if tmux := lookTool("tmux"); tmux != "" {
+			m := strings.ReplaceAll(msg, "#", "##") // tmux expands #{…}
+			if _, err := runTool(env, tmux, "display-message", "-t", "="+name+":", "-d", "8000", m); err != nil {
+				_, _ = runTool(env, tmux, "display-message", "-t", "="+name+":", m) // tmux before 3.2
+			}
+		}
+	case proto.TermSourceScreen:
+		if screen := lookTool("screen"); screen != "" {
+			_, _ = runTool(env, screen, "-S", name, "-X", "echo", msg)
+		}
+	}
+}
 
 // Close hangs up the kept shells.
 func (l *Local) Close() { l.shells.Close() }
@@ -62,6 +98,7 @@ func (l *Local) List() ([]Source, error) {
 		s, _ := runTool(env, screen, "-ls") // exits 1 when sessions exist on some builds
 		out = append(out, parseScreenList(s)...)
 	}
+	out = append(out, appSources()...)
 	sortSources(out)
 	return out, nil
 }
@@ -80,7 +117,7 @@ func (l *Local) New(sh string, admin bool, cols, rows int) (Stream, Source, erro
 	home, _ := os.UserHomeDir()
 	name := filepath.Base(path)
 	spec := SpawnSpec{Path: path, Args: []string{"-" + name}, Dir: home, Env: shellEnv(), Cols: cols, Rows: rows}
-	return l.shells.Start(spec, proto.TermSourceShell, name, path, false)
+	return l.shells.Start(spec, Meta{Kind: proto.TermSourceShell, Name: name, Detail: path, Local: true})
 }
 
 func (l *Local) allowedShell(p string) bool {
@@ -107,6 +144,8 @@ func (l *Local) Attach(id string, cols, rows int) (Stream, Source, error) {
 		tool = lookTool("screen")
 		// -x joins without detaching the people already attached.
 		args = []string{"screen", "-x", name}
+	case proto.TermSourceApp:
+		return l.attachApp(id, cols, rows)
 	default:
 		return nil, Source{}, ErrNotFound
 	}
@@ -125,13 +164,29 @@ func (l *Local) Attach(id string, cols, rows int) (Stream, Source, error) {
 	}
 	home, _ := os.UserHomeDir()
 	st, _, err := l.shells.Start(SpawnSpec{Path: tool, Args: args, Dir: home, Env: shellEnv(), Cols: cols, Rows: rows},
-		kind, found.Title, found.Detail, true)
+		Meta{Kind: kind, Name: found.Title, Detail: found.Detail, Ephemeral: true, Cwd: l.sessionCwd(kind, name)})
 	if err != nil {
 		return nil, Source{}, err
 	}
 	src := *found
 	src.Attached++
 	return st, src, nil
+}
+
+// sessionCwd reports the directory of a tmux session's active pane; nil
+// for screen, which does not say.
+func (l *Local) sessionCwd(kind, name string) func() (string, error) {
+	if kind != proto.TermSourceTmux {
+		return nil
+	}
+	return func() (string, error) {
+		tmux := lookTool("tmux")
+		if tmux == "" {
+			return "", ErrUnsupported
+		}
+		out, err := runTool(shellEnv(), tmux, "display-message", "-p", "-t", "="+name+":", "#{pane_current_path}")
+		return strings.TrimSpace(out), err
+	}
 }
 
 // loginShell is the user's login shell from the account database.

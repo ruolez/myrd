@@ -10,7 +10,9 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -277,6 +279,71 @@ func (a *Agent) terminalAllowed() bool {
 	return a.termHost != nil && !a.noTerminal.Load() && a.serverTerminal.Load()
 }
 
+// SharedSocket is where `remote-agent attach` reaches the shells this
+// agent keeps.
+func SharedSocket(dataDir string) string { return filepath.Join(dataDir, "term.sock") }
+
+// serveShared lets the person at the device join kept shells from a
+// terminal window of their own, until ctx ends.
+func (a *Agent) serveShared(ctx context.Context) {
+	h, ok := a.termHost.(terminal.SharedHost)
+	if !ok {
+		return
+	}
+	path := SharedSocket(a.cfg.Settings.DataDir)
+	_ = os.Remove(path) // left by an agent that did not stop cleanly
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		a.log.Warn("shared terminal socket not available", "err", err)
+		return
+	}
+	_ = os.Chmod(path, 0o600)
+	go func() {
+		<-ctx.Done()
+		_ = ln.Close()
+	}()
+	go func() {
+		_ = terminal.ServeShared(func() (io.ReadWriteCloser, error) { return ln.Accept() }, h,
+			func() bool { return !a.noTerminal.Load() }, a.log)
+	}()
+}
+
+// OpenSharedTerminal opens a terminal window on the device with a new
+// shell a browser can then join (tray: Open shared terminal).
+func (a *Agent) OpenSharedTerminal() {
+	exe, err := os.Executable()
+	if err == nil {
+		err = openTerminalWindow([]string{exe, "attach", "-socket", SharedSocket(a.cfg.Settings.DataDir)})
+	}
+	if err != nil {
+		a.log.Warn("shared terminal not opened", "err", err)
+	}
+}
+
+func (a *Agent) sharedTerminalHook() func() {
+	if openTerminalWindow == nil {
+		return nil
+	}
+	if _, ok := a.termHost.(terminal.SharedHost); !ok {
+		return nil
+	}
+	return a.OpenSharedTerminal
+}
+
+// onTerminalTakeover tells the person at the device that a browser joined
+// a terminal of theirs.
+func (a *Agent) onTerminalTakeover(who *session.Info, src terminal.Source) {
+	name := who.Email
+	if name == "" {
+		name = who.Label
+	}
+	msg := name + " joined your terminal " + src.Title
+	tray.Notify("Remote terminal", msg)
+	if an, ok := a.termHost.(terminal.Announcer); ok {
+		go an.Announce(src, msg)
+	}
+}
+
 // Close hangs up the shells this agent keeps.
 func (a *Agent) Close() {
 	if a.termClose != nil {
@@ -316,6 +383,7 @@ func (a *Agent) TrayHooks(quit func()) tray.Hooks {
 		OnAskNew:     a.SetAskNewBrowsers,
 		OnPreviews:   a.SetScreenPreviews,
 		OnTerminal:   a.terminalHook(),
+		OnShared:     a.sharedTerminalHook(),
 		OnQuit:       quit,
 		OnUninstall:  uninstallAction,
 		OnEnroll:     a.enrollAction(),
@@ -494,6 +562,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.mu.Lock()
 	a.runCtx = ctx
 	a.mu.Unlock()
+	a.serveShared(ctx)
 	if err := a.cfg.Backend.Init(); err != nil {
 		a.log.Error("native backend init failed; sessions will be refused", "backend", a.cfg.Backend.Name(), "err", err)
 	}
@@ -646,7 +715,7 @@ func (a *Agent) runConnected(ctx context.Context) error {
 			UnlockOS: unlockOS(a.cfg.Backend), Restart: restartDevice, RestartAgent: restartAgent,
 			DisplayMarker: filepath.Join(a.cfg.Settings.DataDir, session.DisplayMarkerName),
 			Files:         files.LocalHost{}, FileDeny: []string{a.cfg.Settings.DataDir}, OnFileActivity: a.onFileActivity,
-			Terminal: a.termHost, TerminalAllowed: a.terminalAllowed,
+			Terminal: a.termHost, TerminalAllowed: a.terminalAllowed, OnTerminalTakeover: a.onTerminalTakeover,
 		})
 		if err != nil {
 			return err

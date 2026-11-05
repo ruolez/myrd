@@ -110,7 +110,7 @@ func (h *fakeHost) New(sh string, admin bool, c, r int) (Stream, Source, error) 
 	if admin {
 		return nil, Source{}, ErrUnsupported
 	}
-	return h.shells.Start(SpawnSpec{Path: "/bin/sh", Args: []string{"-sh"}, Cols: c, Rows: r}, proto.TermSourceShell, "sh", "/bin/sh", false)
+	return h.shells.Start(SpawnSpec{Path: "/bin/sh", Args: []string{"-sh"}, Cols: c, Rows: r}, Meta{Kind: proto.TermSourceShell, Name: "sh", Detail: "/bin/sh"})
 }
 func (h *fakeHost) Attach(id string, c, r int) (Stream, Source, error) {
 	return h.shells.Attach(id, c, r)
@@ -422,7 +422,7 @@ func TestCloseDetachesEverything(t *testing.T) {
 
 func TestEphemeralClientEndsWithLastViewer(t *testing.T) {
 	h := newFakeHost()
-	st, _, err := h.shells.Start(SpawnSpec{Path: "tmux", Cols: 80, Rows: 24}, "tmux", "main", "", true)
+	st, _, err := h.shells.Start(SpawnSpec{Path: "tmux", Cols: 80, Rows: 24}, Meta{Kind: "tmux", Name: "main", Ephemeral: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,4 +443,28 @@ func waitFor(t *testing.T, cond func() bool) {
 		}
 	}
 	t.Fatal("condition not reached")
+}
+
+func TestCwd(t *testing.T) {
+	h := newFakeHost()
+	s, ch, _ := newTestService(h, Window)
+	defer s.Close("test")
+	send(s, `{"t":"open","id":1,"cols":80,"rows":24}`)
+	term := termOf(ch.waitText(t, "opened", nil))
+	send(s, `{"t":"cwd","id":2,"term":%d}`, term)
+	if e := ch.waitText(t, "error", func(m map[string]any) bool { return m["id"] == float64(2) }); e["code"] != CodeUnsupported {
+		t.Fatalf("cwd of a program that does not say: %v", e)
+	}
+	send(s, `{"t":"cwd","id":3,"term":99}`)
+	if e := ch.waitText(t, "error", func(m map[string]any) bool { return m["id"] == float64(3) }); e["code"] != CodeNotFound {
+		t.Fatalf("cwd of no terminal: %v", e)
+	}
+	st, _, err := h.shells.Start(SpawnSpec{Path: "tmux", Cols: 80, Rows: 24},
+		Meta{Kind: "tmux", Name: "main", Ephemeral: true, Cwd: func() (string, error) { return "/srv/app", nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, err := st.(Cwder).Cwd(); err != nil || p != "/srv/app" {
+		t.Fatalf("meta cwd %q %v", p, err)
+	}
 }

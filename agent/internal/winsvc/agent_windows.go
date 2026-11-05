@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +29,7 @@ import (
 	"github.com/ruolez/remotectl/agent/internal/session"
 	"github.com/ruolez/remotectl/agent/internal/signal"
 	"github.com/ruolez/remotectl/agent/internal/sysinfo"
+	"github.com/ruolez/remotectl/agent/internal/terminal"
 	"github.com/ruolez/remotectl/agent/internal/tray"
 	"github.com/ruolez/remotectl/agent/internal/update"
 	"github.com/ruolez/remotectl/agent/internal/vdd"
@@ -122,6 +124,7 @@ func runConnected(ctx context.Context, o *Options, p *Proxy) error {
 			hostname, _ = os.Hostname()
 		}
 		var s *signal.Client
+		var serverTerminal atomic.Bool
 		// The service owns updates: detached msiexec, health check and rollback.
 		upd := update.New(update.Options{API: client, Token: func(c context.Context) (string, error) { return s.Token(c) },
 			Version: o.Version, DataDir: o.Settings.DataDir, Log: o.Log,
@@ -160,7 +163,8 @@ func runConnected(ctx context.Context, o *Options, p *Proxy) error {
 			OnHelloAck: func(a proto.HelloAck) {
 				p.SetServerFeatures(a.Features)
 				p.SetRevoked(a.RevokedClientKeys)
-				p.SetDevice(a.Device)
+				serverTerminal.Store(slices.Contains(a.Features, proto.FeatureTerminal))
+				p.SetDevice(HelperDevice{DeviceInfo: a.Device, Terminal: serverTerminal.Load()})
 				upd.HelloAcked()
 				if a.Update.Available {
 					go upd.CheckNow(ctx, update.Trigger{})
@@ -174,7 +178,11 @@ func runConnected(ctx context.Context, o *Options, p *Proxy) error {
 			// The helper in the console session takes the picture.
 			OnPreviewRequest: func(raw []byte) { p.HandleSignal(proto.TypePreviewRequest, raw) },
 			OnDeviceUpdate: func(u proto.DeviceUpdate) {
-				p.SetDevice(proto.DeviceInfo{ID: st.DeviceID, Name: u.Name, AutoAccept: u.AutoAccept})
+				if u.Terminal != nil {
+					serverTerminal.Store(*u.Terminal)
+				}
+				p.SetDevice(HelperDevice{DeviceInfo: proto.DeviceInfo{ID: st.DeviceID, Name: u.Name, AutoAccept: u.AutoAccept},
+					Terminal: serverTerminal.Load()})
 			},
 			OnKeyRevoked: func(k proto.KeyRevoked) { p.Revoke(k.PublicKey) },
 			OnStatus: func(s signal.Status) {
@@ -370,16 +378,18 @@ func RunHelper(o Options) error {
 		return fmt.Errorf("pins: %w", err)
 	}
 
-	var autoAccept, paused, askNew, noPreviews atomic.Bool
+	var autoAccept, paused, askNew, noPreviews, noTerminal, serverTerminal atomic.Bool
 	prefs, err := config.LoadPrefs(o.Settings.DataDir)
 	if err != nil {
 		o.Log.Warn("winsvc: prefs unreadable, using defaults", "err", err)
 	}
 	askNew.Store(prefs.AskNewBrowsers)
 	noPreviews.Store(prefs.NoScreenPreviews)
+	noTerminal.Store(prefs.NoTerminal)
 	var trayUpdate atomic.Pointer[func(tray.State)]
 	var trayMu sync.Mutex
-	trayState := tray.State{Enrolled: true, Status: "Connecting…", AskNew: prefs.AskNewBrowsers, Previews: !prefs.NoScreenPreviews}
+	trayState := tray.State{Enrolled: true, Status: "Connecting…", AskNew: prefs.AskNewBrowsers, Previews: !prefs.NoScreenPreviews,
+		Terminal: !prefs.NoTerminal}
 	pushTray := func(f func(*tray.State)) {
 		trayMu.Lock()
 		f(&trayState)
@@ -394,6 +404,12 @@ func RunHelper(o Options) error {
 	// show in the tray tooltip and menu.
 	var sid uint32
 	_ = windows.ProcessIdToSessionId(windows.GetCurrentProcessId(), &sid)
+	// Terminals run as that user too (or elevated, or as SYSTEM at the
+	// sign-in screen), each in a term-host child.
+	exe, _ := os.Executable()
+	termHost := NewTermHost(sid, exe, o.Log)
+	defer termHost.Close()
+	go termHost.ServeShared(ctx, func() bool { return !noTerminal.Load() })
 	fileFeed := tray.NewActivityFeed(func(line string) { pushTray(func(s *tray.State) { s.Activity = line }) }, tray.Notify)
 
 	var mgr *session.Manager
@@ -429,10 +445,21 @@ func RunHelper(o Options) error {
 				}
 			})
 		},
-		UDPPort:        o.Settings.UDPPort,
-		NAT1To1IPs:     o.Settings.NAT1To1IPs,
-		AgentVersion:   o.Version,
-		Files:          UserFS{SessionID: sid},
+		UDPPort:      o.Settings.UDPPort,
+		NAT1To1IPs:   o.Settings.NAT1To1IPs,
+		AgentVersion: o.Version,
+		Files:        UserFS{SessionID: sid},
+		Terminal:     termHost,
+		TerminalAllowed: func() bool {
+			return !noTerminal.Load() && serverTerminal.Load()
+		},
+		OnTerminalTakeover: func(who *session.Info, src terminal.Source) {
+			name := who.Email
+			if name == "" {
+				name = who.Label
+			}
+			pushTray(func(s *tray.State) { s.Activity = "Remote terminal: " + name + " joined " + src.Title })
+		},
 		FileDeny:       []string{o.Settings.DataDir, o.PinsPath},
 		OnFileActivity: fileFeed.Add,
 		Log:            o.Log,
@@ -442,7 +469,7 @@ func RunHelper(o Options) error {
 	}
 	defer mgr.Close()
 
-	if err := link.Caps(helperCaps(backend, key)); err != nil {
+	if err := link.Caps(helperCaps(backend, key, !noTerminal.Load())); err != nil {
 		return err
 	}
 
@@ -487,8 +514,9 @@ func RunHelper(o Options) error {
 	go func() {
 		served <- Serve(r, PreviewRouter{HelperTarget: mgr, Previews: previews}, HelperEvents{
 			// Sent on every hello_ack: a new connection gets a report right away.
-			OnDevice: func(d proto.DeviceInfo) {
+			OnDevice: func(d HelperDevice) {
 				autoAccept.Store(d.AutoAccept)
+				serverTerminal.Store(d.Terminal)
 				info.Kick()
 			},
 			OnStatus: func(s ServiceStatus) {
@@ -534,6 +562,16 @@ func RunHelper(o Options) error {
 			}
 			pushTray(func(s *tray.State) { s.Previews = on })
 		},
+		OnShared: sharedHook(termHost, o.Log),
+		OnTerminal: func(on bool) {
+			noTerminal.Store(!on)
+			if err := config.UpdatePrefs(o.Settings.DataDir, func(p *config.Prefs) { p.NoTerminal = !on }); err != nil {
+				o.Log.Error("winsvc: saving prefs failed", "err", err)
+			}
+			o.Log.Info("remote terminal", "on", on)
+			_ = link.Caps(helperCaps(backend, key, on))
+			pushTray(func(s *tray.State) { s.Terminal = on })
+		},
 		OnQuit: func() {
 			link.Quit()
 			exit(0)
@@ -547,10 +585,13 @@ func RunHelper(o Options) error {
 	select {}
 }
 
-func helperCaps(b platform.Backend, key ed25519.PrivateKey) HelperCaps {
+func helperCaps(b platform.Backend, key ed25519.PrivateKey, terminal bool) HelperCaps {
 	c := HelperCaps{Capabilities: proto.Capabilities{Codecs: []string{"h264"}, MaxFPS: session.EncoderMaxFPS(b.EncoderName()), Encoder: b.EncoderName(),
 		Features: []string{proto.FeatureDeviceInfo, proto.FeaturePreview}},
 		DeviceKey: base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey))}
+	if terminal {
+		c.Capabilities.Features = append(c.Capabilities.Features, proto.FeatureTerminal)
+	}
 	if mons, err := b.Monitors(); err == nil {
 		for _, m := range mons {
 			c.Capabilities.Monitors = append(c.Capabilities.Monitors, proto.Monitor{
@@ -565,4 +606,17 @@ func helperCaps(b platform.Backend, key ed25519.PrivateKey) HelperCaps {
 		c.SessionID = sid
 	}
 	return c
+}
+
+// sharedHook backs the tray's Open shared terminal; nil hides it where the
+// console cannot run `remote-agent attach` (no VT input before Windows 10).
+func sharedHook(t *TermHost, log *slog.Logger) func() {
+	if !terminal.HasConPTY() {
+		return nil
+	}
+	return func() {
+		if err := t.OpenShared(); err != nil {
+			log.Warn("winsvc: shared terminal not opened", "err", err)
+		}
+	}
 }

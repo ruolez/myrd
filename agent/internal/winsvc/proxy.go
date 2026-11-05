@@ -29,7 +29,7 @@ type Proxy struct {
 	w       io.Writer
 	active  []string
 	revoked []string
-	device  *proto.DeviceInfo
+	device  *HelperDevice
 	status  *ServiceStatus
 	caps    *HelperCaps
 	// deviceKey is the identity the service signs in with; helperKey is the
@@ -281,8 +281,16 @@ func (p *Proxy) Revoke(spki string) {
 	p.write(KindRevokedAdd, "", spki)
 }
 
-// SetDevice forwards device settings (auto_accept) from hello_ack / device.update.
-func (p *Proxy) SetDevice(d proto.DeviceInfo) {
+// HelperDevice is the device settings the helper follows.
+type HelperDevice struct {
+	proto.DeviceInfo
+	// Terminal: the server takes terminal audit and the organization
+	// allows terminals (hello_ack.features, device.update.terminal).
+	Terminal bool `json:"terminal"`
+}
+
+// SetDevice forwards device settings from hello_ack / device.update.
+func (p *Proxy) SetDevice(d HelperDevice) {
 	p.mu.Lock()
 	p.device = &d
 	p.mu.Unlock()

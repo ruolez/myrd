@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/ruolez/remotectl/agent/internal/tray"
@@ -29,6 +30,28 @@ func init() {
 		}
 	}
 	requestPermissionsOnStart = true
+	openTerminalWindow = func(argv []string) error {
+		// Terminal runs a .command file in a new window; no permission to
+		// control Terminal needed.
+		f, err := os.CreateTemp("", "remotectl-shared-*.command")
+		if err != nil {
+			return err
+		}
+		q := make([]string, len(argv))
+		for i, a := range argv {
+			q[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+		}
+		script := "#!/bin/sh\nrm -f \"$0\"\nclear\nexec " + strings.Join(q, " ") + "\n"
+		if _, err := f.WriteString(script); err != nil {
+			f.Close()
+			return err
+		}
+		f.Close()
+		if err := os.Chmod(f.Name(), 0o700); err != nil {
+			return err
+		}
+		return exec.Command("/usr/bin/open", "-a", "Terminal", f.Name()).Run()
+	}
 	// The pkg's scripts restart the LaunchAgent; a copy started some other
 	// way (e.g. from Finder) is left running the old build, paused for the
 	// install. kickstart -k (re)starts the job on the new bundle.

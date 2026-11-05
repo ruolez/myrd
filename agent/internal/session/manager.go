@@ -89,6 +89,9 @@ type Options struct {
 	Terminal         terminal.Host
 	TerminalAllowed  func() bool
 	OnTerminalChange func(open []terminal.Source)
+	// OnTerminalTakeover tells the person at the device that a browser
+	// joined a terminal they had open; must not block.
+	OnTerminalTakeover func(who *Info, src terminal.Source)
 
 	ConsentTimeout time.Duration // default 60 s
 	FailedTimeout  time.Duration // ICE failed → end; default 15 s

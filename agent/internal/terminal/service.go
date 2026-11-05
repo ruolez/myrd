@@ -36,8 +36,11 @@ type Config struct {
 	AuditOK func() bool                // false refuses new terminals (audit_unavailable)
 	// OnChange reports the terminals this channel has open (tray, console).
 	OnChange func(open []Source)
-	Log      *slog.Logger
-	Now      func() time.Time
+	// OnTakeover reports a terminal that was open on the device before
+	// (tmux, a console window, a Terminal tab) being joined; must not block.
+	OnTakeover func(Source)
+	Log        *slog.Logger
+	Now        func() time.Time
 
 	window int64
 }
@@ -131,6 +134,8 @@ func (s *Service) Handle(isString bool, data []byte) {
 		s.request(m.ID, func() any { return s.list(m.ID) })
 	case "open", "attach":
 		s.request(m.ID, func() any { return s.open(m) })
+	case "cwd":
+		s.request(m.ID, func() any { return s.cwd(m) })
 	case "ack":
 		if t := s.term(m.Term); t != nil {
 			if err := t.ack(m.Bytes); err != nil {
@@ -370,7 +375,38 @@ func (s *Service) open(m Msg) any {
 	go t.pump()
 	go t.writer()
 	s.changed()
+	if action == proto.TermAttached && src.Kind != proto.TermSourceShell && s.c.OnTakeover != nil {
+		s.c.OnTakeover(src)
+	}
 	return nil
+}
+
+// cwdMsg answers `cwd`: the working directory of a terminal's shell.
+type cwdMsg struct {
+	T    string `json:"t"`
+	ID   uint32 `json:"id"`
+	Path string `json:"path"`
+}
+
+// Cwder is a Stream that knows its shell's working directory.
+type Cwder interface {
+	Cwd() (string, error)
+}
+
+func (s *Service) cwd(m Msg) any {
+	t := s.term(m.Term)
+	if t == nil {
+		return reqError(m.ID, CodeNotFound, ErrNotFound)
+	}
+	c, ok := t.st.(Cwder)
+	if !ok {
+		return reqError(m.ID, CodeUnsupported, ErrUnsupported)
+	}
+	p, err := c.Cwd()
+	if err != nil || p == "" {
+		return reqError(m.ID, CodeUnsupported, ErrUnsupported)
+	}
+	return cwdMsg{T: "cwd", ID: m.ID, Path: p}
 }
 
 func sourceKind(id string) string {

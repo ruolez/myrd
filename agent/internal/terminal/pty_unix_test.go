@@ -4,7 +4,9 @@ package terminal
 
 import (
 	"bytes"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -84,4 +86,27 @@ func TestHangupEndsProgram(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("program still running after hangup")
 	}
+}
+
+func TestSpawnPTYCwd(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("no /bin/sh")
+	}
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	p, err := spawnPTY(SpawnSpec{Path: "/bin/sh", Args: []string{"sh"}, Dir: dir, Env: buildEnv(nil, nil), Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		p.Hangup()
+		p.Wait()
+		_ = p.Close()
+	}()
+	go func() { _, _ = io.Copy(io.Discard, p) }()
+	got, err := p.(Cwder).Cwd()
+	if err != nil || got != dir {
+		t.Fatalf("cwd %q %v, want %q", got, err, dir)
+	}
+	_, _ = p.Write([]byte("cd /\n"))
+	waitFor(t, func() bool { c, _ := p.(Cwder).Cwd(); return c == "/" })
 }

@@ -27,6 +27,12 @@ type Host interface {
 	Attach(id string, cols, rows int) (Stream, Source, error)
 }
 
+// Announcer shows a short message inside a terminal the person at the
+// device has open (tmux's status line, screen's message line).
+type Announcer interface {
+	Announce(src Source, msg string)
+}
+
 // Stream is one viewer's attachment to a terminal.
 type Stream interface {
 	// Read returns output; io.EOF once the terminal ended or Detach ran.

@@ -78,6 +78,11 @@ func onReady(h Hooks, ready func(update func(State))) {
 		term = systray.AddMenuItemCheckbox("Allow remote terminal",
 			"Let your approved browsers open a command-line terminal on this computer, and take over terminals already open here.", false)
 	}
+	var shared *systray.MenuItem
+	if h.OnShared != nil {
+		shared = systray.AddMenuItem("Open shared terminal",
+			"Open a terminal here that a remote viewer can join from Terminals")
+	}
 	end := systray.AddMenuItem("End session", "Disconnect the controlling browser now")
 	end.Disable()
 	systray.AddSeparator()
@@ -196,10 +201,20 @@ func onReady(h Hooks, ready func(update func(State))) {
 				term.Uncheck()
 			}
 		}
+		if shared != nil {
+			if s.Terminal {
+				shared.Enable()
+			} else {
+				shared.Disable()
+			}
+		}
 	}
 
 	go func() {
-		var uninstallCh, enrollCh, askNewCh, previewsCh, termCh chan struct{}
+		var uninstallCh, enrollCh, askNewCh, previewsCh, termCh, sharedCh chan struct{}
+		if shared != nil {
+			sharedCh = shared.ClickedCh
+		}
 		if term != nil {
 			termCh = term.ClickedCh
 		}
@@ -259,6 +274,8 @@ func onReady(h Hooks, ready func(update func(State))) {
 					term.Uncheck()
 				}
 				h.OnTerminal(on)
+			case <-sharedCh:
+				go h.OnShared()
 			case <-end.ClickedCh:
 				if h.OnEndSession != nil {
 					h.OnEndSession()

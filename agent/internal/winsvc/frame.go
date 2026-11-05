@@ -30,7 +30,7 @@ const (
 	KindEndAll     = "end_all"     // Data = reason string
 	KindRevokedSet = "revoked_set" // Data = []string (SPKI b64)
 	KindRevokedAdd = "revoked_add" // Data = string (SPKI b64)
-	KindDevice     = "device"      // Data = proto.DeviceInfo
+	KindDevice     = "device"      // Data = HelperDevice
 	KindStatus     = "status"      // Data = ServiceStatus
 	KindShutdown   = "shutdown"    // helper exits cleanly
 

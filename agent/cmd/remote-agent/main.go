@@ -8,6 +8,8 @@
 //	remote-agent version
 //	remote-agent install-code PATH…    prints the install link code in an installer's file name (macOS postinstall)
 //	remote-agent capture-worker        spawned by the agent per session: capture and encoding
+//	remote-agent term-host             spawned by the Windows helper per terminal
+//	remote-agent attach [shell:N]      open a shell the agent keeps here (Open shared terminal)
 package main
 
 import (
@@ -30,6 +32,7 @@ import (
 	"github.com/ruolez/remotectl/agent/internal/buildinfo"
 	"github.com/ruolez/remotectl/agent/internal/config"
 	"github.com/ruolez/remotectl/agent/internal/identity"
+	"github.com/ruolez/remotectl/agent/internal/terminal"
 	"github.com/ruolez/remotectl/agent/internal/tray"
 	"github.com/ruolez/remotectl/proto"
 )
@@ -43,6 +46,12 @@ func init() { runtime.LockOSThread() }
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "capture-worker" { // before any log file is opened
 		os.Exit(cmdCaptureWorker(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "attach" { // a terminal of its own, no log file
+		os.Exit(cmdAttach(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "term-host" { // its stdout is the terminal's output
+		os.Exit(terminal.RunTermHost(os.Args[2:]))
 	}
 	if len(os.Args) > 1 && os.Args[1] == "install-code" {
 		os.Exit(cmdInstallCode(os.Args[2:]))

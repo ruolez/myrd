@@ -99,6 +99,7 @@ var required = map[string][]string{
 	"ack":    {"term", "bytes"},
 	"detach": {"term"},
 	"kill":   {"term"},
+	"cwd":    {"id", "term"},
 }
 
 // DecodeMsg parses and range-checks a browser → agent JSON frame.

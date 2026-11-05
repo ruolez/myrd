@@ -21,4 +21,7 @@ var (
 	// = not offered.
 	restartDevice func() error
 	restartAgent  func() error
+	// openTerminalWindow opens a terminal window on the device running
+	// argv (the tray's Open shared terminal). nil hides the item.
+	openTerminalWindow func(argv []string) error
 )

@@ -6,6 +6,9 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -84,3 +87,22 @@ func (p *unixProc) Hangup() {
 }
 
 func (p *unixProc) Close() error { return p.f.Close() }
+
+// Cwd is the shell's working directory.
+func (p *unixProc) Cwd() (string, error) { return processCwd(p.cmd.Process.Pid) }
+
+func processCwd(pid int) (string, error) {
+	if runtime.GOOS == "linux" {
+		return os.Readlink("/proc/" + strconv.Itoa(pid) + "/cwd")
+	}
+	out, err := runTool(nil, "/usr/sbin/lsof", "-a", "-p", strconv.Itoa(pid), "-d", "cwd", "-Fn")
+	if err != nil {
+		return "", err
+	}
+	for _, l := range strings.Split(out, "\n") {
+		if p, ok := strings.CutPrefix(l, "n/"); ok {
+			return "/" + p, nil
+		}
+	}
+	return "", ErrUnsupported
+}

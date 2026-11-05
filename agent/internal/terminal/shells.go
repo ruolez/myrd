@@ -40,16 +40,30 @@ func NewShells(spawn Spawner, log *slog.Logger) *Shells {
 	return &Shells{spawn: spawn, log: log, now: time.Now, shells: map[int]*shell{}}
 }
 
+// Meta describes a terminal Shells runs.
+type Meta struct {
+	Kind   string // proto.TermSource*
+	Name   string // title until the program sets one
+	Detail string
+	// Ephemeral: a client of a terminal that lives elsewhere (tmux, a
+	// console window); it ends with its last viewer and is not listed.
+	Ephemeral bool
+	Admin     bool // runs elevated
+	Mirror    bool // a copy of another terminal's screen, not its byte stream
+	// Local: the person at the device may join it (Shared terminal).
+	Local bool
+	// Cwd reports the working directory; nil: ask the program (Proc that
+	// is a Cwder), if it knows.
+	Cwd func() (string, error)
+}
+
 type shell struct {
-	h         *Shells
-	id        int
-	kind      string // proto.TermSource*
-	name      string // title until the program sets one
-	detail    string
-	ephemeral bool
-	created   time.Time
-	proc      Proc
-	done      chan struct{}
+	h       *Shells
+	id      int
+	meta    Meta
+	created time.Time
+	proc    Proc
+	done    chan struct{}
 
 	mu     sync.Mutex
 	ring   *ring
@@ -62,8 +76,13 @@ type shell struct {
 	killed bool
 }
 
-// Start runs spec and attaches the first viewer.
-func (h *Shells) Start(spec SpawnSpec, kind, name, detail string, ephemeral bool) (Stream, Source, error) {
+// Start runs spec with the Spawner and attaches the first viewer.
+func (h *Shells) Start(spec SpawnSpec, m Meta) (Stream, Source, error) {
+	return h.Run(func() (Proc, error) { return h.spawn(spec) }, spec.Cols, spec.Rows, m)
+}
+
+// Run keeps the program spawn starts and attaches the first viewer.
+func (h *Shells) Run(spawn func() (Proc, error), cols, rows int, m Meta) (Stream, Source, error) {
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
@@ -77,13 +96,13 @@ func (h *Shells) Start(spec SpawnSpec, kind, name, detail string, ephemeral bool
 	id := h.next
 	h.mu.Unlock()
 
-	p, err := h.spawn(spec)
+	p, err := spawn()
 	if err != nil {
-		return nil, Source{}, fmt.Errorf("start %s: %w", spec.Path, err)
+		return nil, Source{}, fmt.Errorf("start %s: %w", m.Name, err)
 	}
-	s := &shell{h: h, id: id, kind: kind, name: name, detail: detail, ephemeral: ephemeral, created: h.now(),
+	s := &shell{h: h, id: id, meta: m, created: h.now(),
 		proc: p, done: make(chan struct{}), ring: newRing(RingSize), vt: newVTState(),
-		views: map[*view]struct{}{}, cols: spec.Cols, rows: spec.Rows}
+		views: map[*view]struct{}{}, cols: cols, rows: rows}
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
@@ -93,14 +112,43 @@ func (h *Shells) Start(spec SpawnSpec, kind, name, detail string, ephemeral bool
 	}
 	h.shells[id] = s
 	h.mu.Unlock()
-	v, src := s.attach(spec.Cols, spec.Rows)
+	v, src := s.attach(cols, rows)
 	go s.run()
-	h.log.Info("terminal started", "id", id, "kind", kind, "name", name)
+	h.log.Info("terminal started", "id", id, "kind", m.Kind, "name", m.Name, "admin", m.Admin)
 	return v, src, nil
 }
 
 // Attach adds a viewer to a kept shell (Source.ID "shell:N").
 func (h *Shells) Attach(id string, cols, rows int) (Stream, Source, error) {
+	return h.attach(id, cols, rows, false)
+}
+
+// AttachShared adds the person at the device to a kept shell they may
+// join (Meta.Local).
+func (h *Shells) AttachShared(id string, cols, rows int) (Stream, Source, error) {
+	return h.attach(id, cols, rows, true)
+}
+
+// ListShared lists the kept shells the person at the device may join.
+func (h *Shells) ListShared() []Source {
+	h.mu.Lock()
+	local := map[string]bool{}
+	for _, s := range h.shells {
+		if s.meta.Local {
+			local["shell:"+strconv.Itoa(s.id)] = true
+		}
+	}
+	h.mu.Unlock()
+	var out []Source
+	for _, src := range h.List() {
+		if local[src.ID] {
+			out = append(out, src)
+		}
+	}
+	return out
+}
+
+func (h *Shells) attach(id string, cols, rows int, shared bool) (Stream, Source, error) {
 	n, ok := strings.CutPrefix(id, "shell:")
 	if !ok {
 		return nil, Source{}, ErrNotFound
@@ -112,7 +160,7 @@ func (h *Shells) Attach(id string, cols, rows int) (Stream, Source, error) {
 	h.mu.Lock()
 	s := h.shells[i]
 	h.mu.Unlock()
-	if s == nil || s.ephemeral {
+	if s == nil || s.meta.Ephemeral || (shared && !s.meta.Local) {
 		return nil, Source{}, ErrNotFound
 	}
 	v, src := s.attach(cols, rows)
@@ -127,7 +175,7 @@ func (h *Shells) List() []Source {
 	h.mu.Lock()
 	ss := make([]*shell, 0, len(h.shells))
 	for _, s := range h.shells {
-		if !s.ephemeral {
+		if !s.meta.Ephemeral {
 			ss = append(ss, s)
 		}
 	}
@@ -175,10 +223,14 @@ func (h *Shells) remove(s *shell) {
 func (s *shell) sourceLocked() Source {
 	title := s.vt.title
 	if title == "" {
-		title = s.name
+		title = s.meta.Name
 	}
-	return Source{ID: "shell:" + strconv.Itoa(s.id), Kind: s.kind, Title: title, Detail: s.detail,
-		Attached: len(s.views), Fidelity: "full", Created: s.created.UnixMilli()}
+	fid := "full"
+	if s.meta.Mirror {
+		fid = "mirror"
+	}
+	return Source{ID: "shell:" + strconv.Itoa(s.id), Kind: s.meta.Kind, Title: title, Detail: s.meta.Detail,
+		Attached: len(s.views), Admin: s.meta.Admin, Fidelity: fid, Created: s.created.UnixMilli()}
 }
 
 func (s *shell) attach(cols, rows int) (*view, Source) {
@@ -256,7 +308,7 @@ func (s *shell) run() {
 	}
 	s.h.remove(s)
 	close(s.done)
-	s.h.log.Info("terminal ended", "id", s.id, "kind", s.kind, "exit_code", code)
+	s.h.log.Info("terminal ended", "id", s.id, "kind", s.meta.Kind, "exit_code", code)
 }
 
 // view is one viewer's attachment.
@@ -290,7 +342,7 @@ func (v *view) Detach() {
 		last := len(s.views) == 0 && !s.ended
 		s.mu.Unlock()
 		v.q.drop()
-		if last && s.ephemeral {
+		if last && s.meta.Ephemeral {
 			s.proc.Hangup()
 		}
 	})
@@ -310,7 +362,17 @@ func (v *view) Title() string {
 	if v.s.vt.title != "" {
 		return v.s.vt.title
 	}
-	return v.s.name
+	return v.s.meta.Name
+}
+
+func (v *view) Cwd() (string, error) {
+	if v.s.meta.Cwd != nil {
+		return v.s.meta.Cwd()
+	}
+	if c, ok := v.s.proc.(Cwder); ok {
+		return c.Cwd()
+	}
+	return "", ErrUnsupported
 }
 
 func (v *view) ExitCode() *int {
