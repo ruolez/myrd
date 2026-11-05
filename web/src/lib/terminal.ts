@@ -267,6 +267,7 @@ const ERROR_TEXT: Record<string, string> = {
   protocol: "The terminal stopped after a protocol error.",
   session_ended: "The session ended.",
   closed: "The connection closed.",
+  timeout: "The device didn't answer in time. Try again.",
 };
 
 export function describeTermError(code: string): string {

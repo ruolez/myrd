@@ -6,6 +6,7 @@ import {
   clampSize,
   closedLine,
   decodeTermData,
+  describeTermError,
   encodeTermData,
   inputFrames,
   listRequest,
@@ -87,6 +88,15 @@ describe("requests", () => {
   });
   test("resize clamps to the largest accepted size", () => {
     expect(JSON.parse(resizeMsg(1 as TermId, { cols: 5000, rows: 900 }))).toEqual(byName["resize"]);
+  });
+});
+
+describe("describeTermError", () => {
+  test.each([
+    ["timeout", "The device didn't answer in time. Try again."],
+    ["teleport_failed", "The device refused (teleport_failed)."],
+  ])("%s", (code, text) => {
+    expect(describeTermError(code)).toBe(text);
   });
 });
 

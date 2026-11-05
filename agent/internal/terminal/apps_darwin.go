@@ -71,6 +71,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -204,8 +205,15 @@ func aePermission(bundle string, ask bool) int {
 	return int(C.rc_ae_permission(b, a))
 }
 
-// asking holds the bundle ids whose prompt is showing now.
-var asking sync.Map
+var (
+	asking   sync.Map     // bundle ids whose prompt is showing now
+	checking sync.Map     // bundle ids with a status query in flight
+	known    sync.Map     // bundle id → the last status seen
+	prompts  atomic.Int32 // prompts showing now
+)
+
+// checkWait bounds a status query: a list must not hang on one.
+const checkWait = 2 * time.Second
 
 // askPermission shows macOS's "control <app>" prompt once at a time per app
 // and waits for the person at the Mac, however long that takes: a prompt
@@ -214,12 +222,44 @@ func askPermission(log *slog.Logger, a termApp) {
 	if _, busy := asking.LoadOrStore(a.bundle, true); busy {
 		return
 	}
+	prompts.Add(1)
 	go func() {
-		defer asking.Delete(a.bundle)
+		defer func() {
+			prompts.Add(-1)
+			asking.Delete(a.bundle)
+		}()
 		log.Info("terminal: asking the person at the Mac to allow controlling " + a.name)
 		st := aePermission(a.bundle, true)
+		known.Store(a.bundle, st)
 		log.Info("terminal: permission to control "+a.name, "result", st)
 	}()
+}
+
+// permission is the agent's Automation status for an app, without asking.
+// While one of the agent's prompts is up, macOS holds its other permission
+// queries until the prompt is answered, so then, or when a query takes too
+// long, it is the last status seen; ok is false when there is none.
+func permission(bundle string) (st int, ok bool) {
+	if prompts.Load() == 0 {
+		if _, busy := checking.LoadOrStore(bundle, true); !busy {
+			ch := make(chan int, 1)
+			go func() {
+				defer checking.Delete(bundle)
+				st := aePermission(bundle, false)
+				known.Store(bundle, st)
+				ch <- st
+			}()
+			select {
+			case st := <-ch:
+				return st, true
+			case <-time.After(checkWait):
+			}
+		}
+	}
+	if v, found := known.Load(bundle); found {
+		return v.(int), true
+	}
+	return 0, false
 }
 
 // appSources lists Terminal.app tabs and iTerm2 sessions, and the apps it
@@ -232,7 +272,16 @@ func appSources(log *slog.Logger) ([]Source, []Blocked) {
 		if appPID(a.exe) == 0 {
 			continue
 		}
-		switch st := aePermission(a.bundle, false); st {
+		if _, busy := asking.Load(a.bundle); busy {
+			blocked = append(blocked, Blocked{App: a.name, Reason: BlockedAsking})
+			continue
+		}
+		st, ok := permission(a.bundle)
+		if !ok {
+			log.Warn("terminal: no answer about the permission to control " + a.name)
+			continue
+		}
+		switch st {
 		case aeAllowed:
 			kinds = append(kinds, a.kind)
 		case aeNotRunning:
@@ -240,11 +289,7 @@ func appSources(log *slog.Logger) ([]Source, []Blocked) {
 			askPermission(log, a)
 			blocked = append(blocked, Blocked{App: a.name, Reason: BlockedAsking})
 		case aeDenied:
-			if _, busy := asking.Load(a.bundle); busy {
-				blocked = append(blocked, Blocked{App: a.name, Reason: BlockedAsking})
-			} else {
-				blocked = append(blocked, Blocked{App: a.name, Reason: BlockedDenied})
-			}
+			blocked = append(blocked, Blocked{App: a.name, Reason: BlockedDenied})
 		default:
 			log.Warn("terminal: permission check failed", "app", a.name, "status", st)
 			kinds = append(kinds, a.kind)
@@ -270,6 +315,9 @@ func askAppsAgain(log *slog.Logger) {
 		if out, err := exec.Command("/usr/bin/tccutil", "reset", "AppleEvents", id).CombinedOutput(); err != nil {
 			log.Warn("terminal: resetting the Automation permission failed", "err", err, "out", strings.TrimSpace(string(out)))
 		}
+	}
+	for _, a := range termApps {
+		known.Delete(a.bundle)
 	}
 	for _, a := range termApps {
 		if appPID(a.exe) != 0 {
