@@ -22,6 +22,7 @@ import type {
   TermId,
   TermMsg,
   TermRequestId,
+  TermBlocked,
   TermShell,
   TermSize,
   TermSource,
@@ -29,7 +30,12 @@ import type {
 } from "../lib/terminal";
 import type { Chan } from "./FileChannel";
 
-export type SourcesReply = { sources: TermSource[]; shells: TermShell[]; admin: boolean };
+export type SourcesReply = {
+  sources: TermSource[];
+  shells: TermShell[];
+  admin: boolean;
+  blocked: TermBlocked[];
+};
 
 const LIST_TIMEOUT_MS = 15_000;
 const OPEN_TIMEOUT_MS = 30_000;
@@ -163,10 +169,11 @@ export class TerminalChannel {
     return () => this.listeners.delete(fn);
   }
 
-  list(): Promise<SourcesReply> {
-    return this.request((id) => listRequest(id), LIST_TIMEOUT_MS).then((m) => {
+  /** ask: show the device's permission prompt again for blocked apps. */
+  list(ask = false): Promise<SourcesReply> {
+    return this.request((id) => listRequest(id, ask), LIST_TIMEOUT_MS).then((m) => {
       if (m.t !== "sources") throw new TermError("protocol", "unexpected reply");
-      return { sources: m.sources, shells: m.shells, admin: m.admin };
+      return { sources: m.sources, shells: m.shells, admin: m.admin, blocked: m.blocked };
     });
   }
 

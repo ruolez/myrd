@@ -88,6 +88,7 @@ type Msg struct {
 	Cols   int    `json:"cols"`
 	Rows   int    `json:"rows"`
 	Bytes  int64  `json:"bytes"`
+	Ask    bool   `json:"ask"` // list: show the device's permission prompt again
 }
 
 // required lists the keys each browser → agent frame must carry.
@@ -152,11 +153,12 @@ type Shell struct {
 }
 
 type sourcesMsg struct {
-	T       string   `json:"t"`
-	ID      uint32   `json:"id"`
-	Sources []Source `json:"sources"`
-	Shells  []Shell  `json:"shells"`
-	Admin   bool     `json:"admin"` // open.admin is possible
+	T       string    `json:"t"`
+	ID      uint32    `json:"id"`
+	Sources []Source  `json:"sources"`
+	Shells  []Shell   `json:"shells"`
+	Admin   bool      `json:"admin"`             // open.admin is possible
+	Blocked []Blocked `json:"blocked,omitempty"` // apps whose terminals need the device's permission
 }
 
 type openedMsg struct {

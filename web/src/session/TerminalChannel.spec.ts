@@ -59,7 +59,18 @@ describe("TerminalChannel", () => {
       sources: [{ ...shellSource, detail: "", admin: false, created: 0 }],
       shells: [],
       admin: true,
+      blocked: [],
     });
+  });
+
+  test("list(true) asks the device again and returns the blocked apps", async () => {
+    const ch = new FakeChan();
+    const tc = new TerminalChannel(ch);
+    const p = tc.list(true);
+    expect(ch.json()).toEqual([{ t: "list", id: 1, ask: true }]);
+    const blocked = [{ app: "Terminal", reason: "asking" }];
+    ch.deliver({ t: "sources", id: 1, sources: [], shells: [], admin: false, blocked });
+    expect(await p).toEqual({ sources: [], shells: [], admin: false, blocked });
   });
 
   test("output that arrives right after opened is not lost", async () => {

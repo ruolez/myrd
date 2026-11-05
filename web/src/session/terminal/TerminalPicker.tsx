@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { Icon } from "../../components/icons";
 import { Spinner } from "../../components/ui";
 import { kindLabel } from "../../lib/terminal";
-import type { TermShell, TermSource } from "../../lib/terminal";
+import type { TermBlocked, TermShell, TermSource } from "../../lib/terminal";
 import type { Term } from "../TerminalChannel";
 
 export type PickerTab = { term: Term; title: string; ended: boolean };
@@ -17,6 +17,8 @@ type Props = {
   active: Term | null;
   /** null while loading. */
   sources: TermSource[] | null;
+  /** Apps with terminals open that the device does not let the agent show yet. */
+  blocked: TermBlocked[];
   shells: TermShell[];
   admin: boolean;
   error: string | null;
@@ -28,6 +30,8 @@ type Props = {
   onEnd: (s: TermSource) => void;
   onNew: (shell?: string, admin?: boolean) => void;
   onRefresh: () => void;
+  /** Shows the device's permission prompt again. */
+  onAskAgain: () => void;
   onDismiss: () => void;
 };
 
@@ -92,6 +96,45 @@ function EndButton({
     >
       {armed ? "End" : <Icon name="trash" size={18} />}
     </button>
+  );
+}
+
+/** Why an app's tabs are missing, and how the person at the device lets them show. */
+function BlockedNotice({ b, onAskAgain }: { b: TermBlocked; onAskAgain: () => void }) {
+  const [asked, setAsked] = useState(false);
+  if (b.reason === "asking")
+    return (
+      <div role="status" className="mx-2 mb-2 flex gap-2.5 rounded-lg bg-white/[0.06] px-3 py-2.5">
+        <span className="mt-0.5 shrink-0">
+          <Spinner size={16} label="Waiting" />
+        </span>
+        <p className="text-sm text-white/80">
+          Waiting for permission to show {b.app} tabs. Someone at the Mac needs to click{" "}
+          <strong className="font-medium text-white">Allow</strong> on “RemoteAgent wants access to
+          control {b.app}”.
+        </p>
+      </div>
+    );
+  return (
+    <div className="mx-2 mb-2 rounded-lg bg-[#fdd663]/10 px-3 py-2.5 ring-1 ring-[#fdd663]/25">
+      <p className="text-sm text-white/85">
+        {b.app} tabs are hidden: this Mac doesn’t allow RemoteAgent to control {b.app}.
+      </p>
+      <p className="mt-1 text-xs text-white/55">
+        Ask again shows the prompt on the Mac’s screen. It can also be turned on there in System
+        Settings › Privacy &amp; Security › Automation › RemoteAgent.
+      </p>
+      <button
+        className="mt-2 min-h-10 rounded-lg bg-white/10 px-3 text-sm font-medium text-white hover:bg-white/15 disabled:opacity-50"
+        disabled={asked}
+        onClick={() => {
+          setAsked(true);
+          onAskAgain();
+        }}
+      >
+        Ask again
+      </button>
+    </div>
   );
 }
 
@@ -233,15 +276,21 @@ export function TerminalPicker(p: Props) {
           <h3 className="px-4 pt-2 pb-1 text-xs font-medium tracking-wide text-white/50 uppercase">
             On the device
           </h3>
+          {p.sources !== null &&
+            p.blocked.map((b) => (
+              <BlockedNotice key={`${b.app}:${b.reason}`} b={b} onAskAgain={p.onAskAgain} />
+            ))}
           {p.sources === null ? (
             <div className="flex items-center gap-2 px-4 py-3 text-sm text-white/60">
               <Spinner size={16} /> Looking for terminals…
             </div>
           ) : elsewhere.length === 0 ? (
-            <p className="px-4 py-3 text-sm text-white/55">
-              No other terminals are running there. Shells you open stay running after you
-              disconnect, and tmux or screen sessions show up here.
-            </p>
+            p.blocked.length === 0 && (
+              <p className="px-4 py-3 text-sm text-white/55">
+                No other terminals are running there. Shells you open stay running after you
+                disconnect, and tmux or screen sessions show up here.
+              </p>
+            )
           ) : (
             elsewhere.map((s) => (
               <div key={s.id} className="flex items-center">

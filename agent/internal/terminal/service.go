@@ -131,7 +131,7 @@ func (s *Service) Handle(isString bool, data []byte) {
 	}
 	switch m.T {
 	case "list":
-		s.request(m.ID, func() any { return s.list(m.ID) })
+		s.request(m.ID, func() any { return s.list(m.ID, m.Ask) })
 	case "open", "attach":
 		s.request(m.ID, func() any { return s.open(m) })
 	case "cwd":
@@ -309,7 +309,11 @@ func reqError(id uint32, code string, err error) errorMsg {
 	return errorMsg{T: "error", ID: &id, Code: code, Detail: err.Error()}
 }
 
-func (s *Service) list(id uint32) any {
+func (s *Service) list(id uint32, ask bool) any {
+	perms, _ := s.c.Host.(Permissions)
+	if ask && perms != nil {
+		perms.AskAgain()
+	}
 	srcs, err := s.c.Host.List()
 	if err != nil {
 		return reqError(id, errCode(err), err)
@@ -321,7 +325,11 @@ func (s *Service) list(id uint32) any {
 	if shells == nil {
 		shells = []Shell{}
 	}
-	return sourcesMsg{T: "sources", ID: id, Sources: srcs, Shells: shells, Admin: s.c.Host.Admin()}
+	msg := sourcesMsg{T: "sources", ID: id, Sources: srcs, Shells: shells, Admin: s.c.Host.Admin()}
+	if perms != nil {
+		msg.Blocked = perms.Blocked()
+	}
+	return msg
 }
 
 func (s *Service) open(m Msg) any {

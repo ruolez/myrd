@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ruolez/remotectl/proto"
@@ -26,6 +27,9 @@ var extraPath = []string{"/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"
 type Local struct {
 	shells *Shells
 	log    *slog.Logger
+
+	mu      sync.Mutex
+	blocked []Blocked // apps the last List could not show
 }
 
 func NewLocal(log *slog.Logger) *Local {
@@ -40,10 +44,19 @@ func Default(log *slog.Logger) (Host, func()) {
 }
 
 var (
-	_ Host       = (*Local)(nil)
-	_ SharedHost = (*Local)(nil)
-	_ Announcer  = (*Local)(nil)
+	_ Host        = (*Local)(nil)
+	_ SharedHost  = (*Local)(nil)
+	_ Announcer   = (*Local)(nil)
+	_ Permissions = (*Local)(nil)
 )
+
+func (l *Local) Blocked() []Blocked {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.blocked
+}
+
+func (l *Local) AskAgain() { askAppsAgain(l.log) }
 
 func (l *Local) NewShared(cols, rows int) (Stream, Source, error) {
 	return l.New("", false, cols, rows)
@@ -98,7 +111,11 @@ func (l *Local) List() ([]Source, error) {
 		s, _ := runTool(env, screen, "-ls") // exits 1 when sessions exist on some builds
 		out = append(out, parseScreenList(s)...)
 	}
-	out = append(out, appSources()...)
+	apps, blocked := appSources(l.log)
+	out = append(out, apps...)
+	l.mu.Lock()
+	l.blocked = blocked
+	l.mu.Unlock()
 	sortSources(out)
 	return out, nil
 }

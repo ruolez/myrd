@@ -35,6 +35,10 @@ export type TermSource = {
 /** A program a new terminal can start. */
 export type TermShell = { id: string; name: string; path: string };
 
+/** An app with terminals open on the device that the agent may not show yet:
+ * "asking" = the permission prompt is on the device's screen now. */
+export type TermBlocked = { app: string; reason: "asking" | "denied" };
+
 export type TermMsg =
   | {
       t: "sources";
@@ -42,6 +46,7 @@ export type TermMsg =
       sources: TermSource[];
       shells: TermShell[];
       admin: boolean;
+      blocked: TermBlocked[];
     }
   | { t: "opened"; id: TermRequestId; term: TermId; source: TermSource; window: number }
   | { t: "closed"; term: TermId; reason: string; exitCode: number | null }
@@ -93,7 +98,9 @@ export function clampSize(s: TermSize): TermSize {
   return { cols: c(s.cols, TERM_MAX_COLS), rows: c(s.rows, TERM_MAX_ROWS) };
 }
 
-export const listRequest = (id: TermRequestId) => JSON.stringify({ t: "list", id });
+/** ask: show the device's permission prompt again for blocked apps. */
+export const listRequest = (id: TermRequestId, ask = false) =>
+  JSON.stringify(ask ? { t: "list", id, ask } : { t: "list", id });
 
 export function openRequest(
   id: TermRequestId,
@@ -158,6 +165,11 @@ function parseShell(v: unknown): TermShell | null {
   return { id: v.id, name: v.name, path: isStr(v.path) ? v.path : "" };
 }
 
+function parseBlocked(v: unknown): TermBlocked | null {
+  if (!isObj(v) || !isStr(v.app) || (v.reason !== "asking" && v.reason !== "denied")) return null;
+  return { app: v.app, reason: v.reason };
+}
+
 const present = <T>(xs: (T | null)[]): T[] => xs.filter((x): x is T => x !== null);
 
 /** Parses an agent → browser JSON frame; null for anything malformed. */
@@ -178,6 +190,7 @@ export function parseTermMsg(text: string): TermMsg | null {
         sources: present(m.sources.map(parseSource)),
         shells: Array.isArray(m.shells) ? present(m.shells.map(parseShell)) : [],
         admin: m.admin === true,
+        blocked: Array.isArray(m.blocked) ? present(m.blocked.map(parseBlocked)) : [],
       };
     case "opened": {
       const source = parseSource(m.source);

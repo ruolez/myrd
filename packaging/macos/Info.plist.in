@@ -32,7 +32,7 @@
 	<key>NSSupportsAutomaticTermination</key>
 	<false/>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>@APP_NAME@ shows its enrollment and consent dialogs.</string>
+	<string>@APP_NAME@ shows its enrollment and consent dialogs, and shows Terminal and iTerm2 tabs to the people you let take them over.</string>
 	<key>NSDownloadsFolderUsageDescription</key>
 	<string>@APP_NAME@ saves files sent from an approved remote session to your Downloads folder and lets that session browse it.</string>
 	<key>NSDocumentsFolderUsageDescription</key>

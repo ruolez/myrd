@@ -12,6 +12,7 @@ import { defaultFontSize, MAX_FONT, MIN_FONT } from "../../lib/termGestures";
 import { describeTermError, TermError, typedPath } from "../../lib/terminal";
 import type {
   TerminalAvailability,
+  TermBlocked,
   TermId,
   TermShell,
   TermSize,
@@ -93,6 +94,7 @@ export function TerminalDeck({
   const [activeId, setActiveId] = useState<TermId | null>(null);
   const [picker, setPicker] = useState(false);
   const [sources, setSources] = useState<TermSource[] | null>(null);
+  const [blocked, setBlocked] = useState<TermBlocked[]>([]);
   const [shells, setShells] = useState<TermShell[]>([]);
   const [admin, setAdmin] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -179,19 +181,25 @@ export function TerminalDeck({
     setError(e instanceof TermError ? describeTermError(code) : String(e));
   };
 
-  const refresh = useCallback(async () => {
-    if (!channel) return;
-    setSources(null);
-    try {
-      const r = await channel.list();
-      setSources(r.sources);
-      setShells(r.shells);
-      setAdmin(r.admin);
-    } catch (e) {
-      setSources([]);
-      fail(e);
-    }
-  }, [channel]);
+  /** quiet: keep showing the current list while asking (a poll). */
+  const refresh = useCallback(
+    async ({ ask = false, quiet = false } = {}) => {
+      if (!channel) return;
+      if (!quiet) setSources(null);
+      try {
+        const r = await channel.list(ask);
+        setSources(r.sources);
+        setShells(r.shells);
+        setAdmin(r.admin);
+        setBlocked(r.blocked);
+      } catch (e) {
+        if (quiet) return;
+        setSources([]);
+        fail(e);
+      }
+    },
+    [channel],
+  );
 
   const newShell = useCallback(
     async (shell?: string, asAdmin?: boolean) => {
@@ -289,7 +297,8 @@ export function TerminalDeck({
         setSources(r.sources);
         setShells(r.shells);
         setAdmin(r.admin);
-        if (r.sources.length) setPicker(true);
+        setBlocked(r.blocked);
+        if (r.sources.length || r.blocked.length) setPicker(true);
         else await newShell();
       } catch (e) {
         fail(e);
@@ -300,6 +309,14 @@ export function TerminalDeck({
   useEffect(() => {
     if (picker) void refresh();
   }, [picker, refresh]);
+
+  // While the device shows a permission prompt, pick up the answer.
+  const waiting = picker && blocked.some((b) => b.reason === "asking");
+  useEffect(() => {
+    if (!waiting) return;
+    const t = setInterval(() => void refresh({ quiet: true }), 2000);
+    return () => clearInterval(t);
+  }, [waiting, refresh]);
 
   // ---------- typing ----------
   const type = useCallback(
@@ -709,6 +726,7 @@ export function TerminalDeck({
           tabs={pickerTabs}
           active={active?.term ?? null}
           sources={sources}
+          blocked={blocked}
           shells={shells}
           admin={admin}
           error={error}
@@ -722,6 +740,7 @@ export function TerminalDeck({
           onEnd={(s) => void endSource(s)}
           onNew={(sh, ad) => void newShell(sh, ad)}
           onRefresh={() => void refresh()}
+          onAskAgain={() => void refresh({ ask: true, quiet: true })}
           onDismiss={() => {
             setPicker(false);
             setError(null);

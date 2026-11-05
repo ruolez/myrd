@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -466,5 +467,55 @@ func TestCwd(t *testing.T) {
 	}
 	if p, err := st.(Cwder).Cwd(); err != nil || p != "/srv/app" {
 		t.Fatalf("meta cwd %q %v", p, err)
+	}
+}
+
+// permHost is a host whose app terminals wait for the device's permission.
+type permHost struct {
+	*fakeHost
+	mu      sync.Mutex
+	asked   bool
+	blocked []Blocked
+}
+
+func (h *permHost) Blocked() []Blocked {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.blocked
+}
+
+func (h *permHost) AskAgain() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.asked = true
+	h.blocked = []Blocked{{App: "Terminal", Reason: BlockedAsking}}
+}
+
+func TestListReportsBlockedAppsAndAsksAgain(t *testing.T) {
+	h := &permHost{fakeHost: newFakeHost(), blocked: []Blocked{{App: "Terminal", Reason: BlockedDenied}}}
+	s, ch, _ := newTestService(h, Window)
+	defer s.Close("test")
+
+	send(s, `{"t":"list","id":1}`)
+	first := ch.waitText(t, "sources", func(m map[string]any) bool { return m["id"] == float64(1) })
+	send(s, `{"t":"list","id":2,"ask":true}`)
+	again := ch.waitText(t, "sources", func(m map[string]any) bool { return m["id"] == float64(2) })
+
+	got := []any{first["blocked"], again["blocked"]}
+	want := []any{
+		[]any{map[string]any{"app": "Terminal", "reason": "denied"}},
+		[]any{map[string]any{"app": "Terminal", "reason": "asking"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("blocked = %v, want %v", got, want)
+	}
+}
+
+func TestListOmitsBlockedWhenNothingIs(t *testing.T) {
+	s, ch, _ := newTestService(newFakeHost(), Window)
+	defer s.Close("test")
+	send(s, `{"t":"list","id":1,"ask":true}`)
+	if m := ch.waitText(t, "sources", nil); m["blocked"] != nil {
+		t.Fatalf("blocked = %v, want it absent", m["blocked"])
 	}
 }

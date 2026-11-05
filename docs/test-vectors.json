@@ -242,7 +242,8 @@
     { "name": "ack", "json": { "t": "ack", "term": 1, "bytes": 32768 } },
     { "name": "detach", "json": { "t": "detach", "term": 1 } },
     { "name": "kill", "json": { "t": "kill", "term": 2 } },
-    { "name": "cwd", "json": { "t": "cwd", "id": 8, "term": 1 } }
+    { "name": "cwd", "json": { "t": "cwd", "id": 8, "term": 1 } },
+    { "name": "list asking again", "json": { "t": "list", "id": 9, "ask": true } }
   ],
   "term_messages_invalid": [
     { "name": "zero columns", "json": { "t": "open", "id": 5, "cols": 0, "rows": 24 } },

@@ -8,6 +8,7 @@ import {
   decodeTermData,
   encodeTermData,
   inputFrames,
+  listRequest,
   openRequest,
   parseTermMsg,
   resizeMsg,
@@ -75,6 +76,12 @@ describe("requests", () => {
       ),
     ).toEqual(byName["attach tmux"]);
   });
+  test.each([
+    ["list", 1, false],
+    ["list asking again", 9, true],
+  ])("%s", (name, id, ask) => {
+    expect(JSON.parse(listRequest(id as TermRequestId, ask))).toEqual(byName[name]);
+  });
   test("cwd", () => {
     expect(JSON.parse(cwdRequest(8 as TermRequestId, 1 as TermId))).toEqual(byName["cwd"]);
   });
@@ -133,6 +140,35 @@ describe("parseTermMsg", () => {
       ],
       shells: [{ id: "/bin/zsh", name: "zsh", path: "/bin/zsh" }],
       admin: false,
+      blocked: [],
+    });
+  });
+  test("sources keeps the valid blocked apps", () => {
+    const m = parseTermMsg(
+      JSON.stringify({
+        t: "sources",
+        id: 2,
+        sources: [],
+        shells: [],
+        admin: false,
+        blocked: [
+          { app: "Terminal", reason: "denied" },
+          { app: "iTerm2", reason: "asking" },
+          { app: "Hyper", reason: "maybe" },
+          { reason: "denied" },
+        ],
+      }),
+    );
+    expect(m).toEqual({
+      t: "sources",
+      id: 2,
+      sources: [],
+      shells: [],
+      admin: false,
+      blocked: [
+        { app: "Terminal", reason: "denied" },
+        { app: "iTerm2", reason: "asking" },
+      ],
     });
   });
   test("opened, closed, title and error", () => {

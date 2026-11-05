@@ -4,5 +4,9 @@
      and CGEvent injection are not available to sandboxed apps. -->
 <plist version="1.0">
 <dict>
+	<!-- Terminal takeover reads Terminal.app / iTerm2 tabs over Apple Events and
+	     asks for the Automation permission itself (AEDeterminePermissionToAutomateTarget). -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
 </dict>
 </plist>

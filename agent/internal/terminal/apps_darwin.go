@@ -3,8 +3,31 @@
 package terminal
 
 /*
-#cgo LDFLAGS: -framework ApplicationServices
+#cgo LDFLAGS: -framework ApplicationServices -framework CoreServices -framework CoreFoundation
 #include <ApplicationServices/ApplicationServices.h>
+#include <CoreServices/CoreServices.h>
+#include <stdlib.h>
+#include <string.h>
+
+// rc_ae_permission: may this process send Apple Events to the app with
+// bundle id b? 0 yes, -1743 denied, -1744 not asked yet, -600 not running.
+// ask shows the prompt and waits for the answer.
+static int rc_ae_permission(const char *b, int ask) {
+	AEAddressDesc t;
+	OSStatus e = AECreateDesc(typeApplicationBundleID, b, strlen(b), &t);
+	if (e) return e;
+	e = AEDeterminePermissionToAutomateTarget(&t, typeWildCard, typeWildCard, ask ? true : false);
+	AEDisposeDesc(&t);
+	return e;
+}
+
+// rc_bundle_id copies this app's bundle id into out ("" outside a bundle).
+static void rc_bundle_id(char *out, int n) {
+	out[0] = 0;
+	CFBundleRef b = CFBundleGetMainBundle();
+	CFStringRef id = b ? CFBundleGetIdentifier(b) : NULL;
+	if (id) CFStringGetCString(id, out, n, kCFStringEncodingUTF8);
+}
 
 static void rc_post_key(int pid, int code, unsigned int ch, unsigned long long flags) {
 	CGEventRef down = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)code, true);
@@ -44,10 +67,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/ruolez/remotectl/proto"
 )
@@ -55,12 +80,14 @@ import (
 const osascript = "/usr/bin/osascript"
 
 // listAppsScript prints the open Terminal.app tabs and iTerm2 sessions
-// (parseAppList), without launching either app.
+// (parseAppList), without launching either app; argv: the kinds to list,
+// comma separated (only apps the agent may control, or osascript would
+// raise the permission prompt itself).
 const listAppsScript = `
 function clean(s) { return String(s || '').replace(/[\t\r\n]/g, ' ') }
-function run() {
-	const out = [];
-	try {
+function run(argv) {
+	const out = [], kinds = String(argv[0] || '').split(',');
+	if (kinds.includes('terminal')) try {
 		const t = Application('com.apple.Terminal');
 		if (t.running()) {
 			for (const w of t.windows()) for (const tab of w.tabs()) {
@@ -70,7 +97,7 @@ function run() {
 			}
 		}
 	} catch (e) {}
-	try {
+	if (kinds.includes('iterm')) try {
 		const it = Application('com.googlecode.iterm2');
 		if (it.running()) {
 			for (const w of it.windows()) for (const tab of w.tabs()) for (const s of tab.sessions()) {
@@ -152,22 +179,117 @@ func appPID(name string) int {
 	return findPID(string(out), name)
 }
 
-// appSources lists Terminal.app tabs and iTerm2 sessions. The first time,
-// macOS asks the person at the Mac whether the agent may control them.
-func appSources() []Source {
-	if appPID("Terminal") == 0 && appPID("iTerm2") == 0 {
-		return nil
+// termApp is a terminal app whose tabs the agent mirrors.
+type termApp struct{ name, exe, bundle, kind string }
+
+var termApps = []termApp{
+	{"Terminal", "Terminal", "com.apple.Terminal", appTerminal},
+	{"iTerm2", "iTerm2", "com.googlecode.iterm2", appITerm},
+}
+
+const (
+	aeAllowed    = 0
+	aeDenied     = -1743
+	aeNotAsked   = -1744
+	aeNotRunning = -600
+)
+
+func aePermission(bundle string, ask bool) int {
+	b := C.CString(bundle)
+	defer C.free(unsafe.Pointer(b))
+	a := C.int(0)
+	if ask {
+		a = 1
 	}
-	out, err := runScript(4*time.Second, listAppsScript)
+	return int(C.rc_ae_permission(b, a))
+}
+
+// asking holds the bundle ids whose prompt is showing now.
+var asking sync.Map
+
+// askPermission shows macOS's "control <app>" prompt once at a time per app
+// and waits for the person at the Mac, however long that takes: a prompt
+// cut short is recorded as a denial.
+func askPermission(log *slog.Logger, a termApp) {
+	if _, busy := asking.LoadOrStore(a.bundle, true); busy {
+		return
+	}
+	go func() {
+		defer asking.Delete(a.bundle)
+		log.Info("terminal: asking the person at the Mac to allow controlling " + a.name)
+		st := aePermission(a.bundle, true)
+		log.Info("terminal: permission to control "+a.name, "result", st)
+	}()
+}
+
+// appSources lists Terminal.app tabs and iTerm2 sessions, and the apps it
+// may not look into yet. An app never asked about gets macOS's prompt on
+// the Mac's screen; until someone answers it, its tabs are reported blocked.
+func appSources(log *slog.Logger) ([]Source, []Blocked) {
+	var kinds []string
+	var blocked []Blocked
+	for _, a := range termApps {
+		if appPID(a.exe) == 0 {
+			continue
+		}
+		switch st := aePermission(a.bundle, false); st {
+		case aeAllowed:
+			kinds = append(kinds, a.kind)
+		case aeNotRunning:
+		case aeNotAsked:
+			askPermission(log, a)
+			blocked = append(blocked, Blocked{App: a.name, Reason: BlockedAsking})
+		case aeDenied:
+			if _, busy := asking.Load(a.bundle); busy {
+				blocked = append(blocked, Blocked{App: a.name, Reason: BlockedAsking})
+			} else {
+				blocked = append(blocked, Blocked{App: a.name, Reason: BlockedDenied})
+			}
+		default:
+			log.Warn("terminal: permission check failed", "app", a.name, "status", st)
+			kinds = append(kinds, a.kind)
+		}
+	}
+	if len(kinds) == 0 {
+		return nil, blocked
+	}
+	out, err := runScript(10*time.Second, listAppsScript, strings.Join(kinds, ","))
 	if err != nil {
-		return nil
+		log.Warn("terminal: listing terminal app tabs failed", "err", scriptErr(err))
+		return nil, blocked
 	}
-	return parseAppList(out)
+	return parseAppList(out), blocked
+}
+
+// askAppsAgain clears the agent's recorded Automation answers and asks
+// again for every running terminal app.
+func askAppsAgain(log *slog.Logger) {
+	var buf [256]C.char
+	C.rc_bundle_id(&buf[0], C.int(len(buf)))
+	if id := C.GoString(&buf[0]); id != "" {
+		if out, err := exec.Command("/usr/bin/tccutil", "reset", "AppleEvents", id).CombinedOutput(); err != nil {
+			log.Warn("terminal: resetting the Automation permission failed", "err", err, "out", strings.TrimSpace(string(out)))
+		}
+	}
+	for _, a := range termApps {
+		if appPID(a.exe) != 0 {
+			askPermission(log, a)
+		}
+	}
+}
+
+func scriptErr(err error) string {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && len(ee.Stderr) > 0 {
+		return strings.TrimSpace(string(ee.Stderr))
+	}
+	return err.Error()
 }
 
 func (l *Local) attachApp(id string, cols, rows int) (Stream, Source, error) {
 	var found *Source
-	for _, s := range appSources() {
+	apps, _ := appSources(l.log)
+	for _, s := range apps {
 		if s.ID == id {
 			found = &s
 		}

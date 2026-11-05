@@ -12,6 +12,28 @@ var (
 	ErrTooMany     = errors.New("too many terminals")
 )
 
+// Blocked is an app whose terminals are open on the device but hidden from
+// List until the person at the device allows it (macOS Automation).
+type Blocked struct {
+	App    string `json:"app"`    // "Terminal", "iTerm2"
+	Reason string `json:"reason"` // BlockedAsking | BlockedDenied
+}
+
+const (
+	BlockedAsking = "asking" // the device shows the permission prompt now
+	BlockedDenied = "denied"
+)
+
+// Permissions is implemented by hosts whose terminals need the device's
+// permission before they can be listed.
+type Permissions interface {
+	// Blocked lists the apps the last List could not show.
+	Blocked() []Blocked
+	// AskAgain shows the device's permission prompt again, also after a
+	// denial; the person at the device still has to allow it.
+	AskAgain()
+}
+
 // Host is where terminals come from: shells it starts and keeps, and
 // terminals already open on the device.
 type Host interface {
