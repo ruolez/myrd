@@ -227,6 +227,7 @@ export function useDeviceActions() {
   return {
     connect,
     terminal,
+    terminalsAllowed,
     details,
     setFavorite,
     rename,

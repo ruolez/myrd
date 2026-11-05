@@ -19,7 +19,7 @@ import {
   tileHealthLine,
 } from "../../lib/health";
 import type { Severity } from "../../lib/health";
-import { canConnect, canFullscreen, connectTitle, useDeviceActions } from "./actions";
+import { canConnect, canFullscreen, connectTitle, hasTerminal, useDeviceActions } from "./actions";
 
 export const DEVICE_DRAG = "application/x-remotectl-devices";
 
@@ -201,6 +201,9 @@ function HealthLine({ device: d, now }: { device: Device; now: number }) {
 const onHover =
   "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 aria-expanded:opacity-100 pointer-coarse:opacity-100";
 
+const overlayButton =
+  "pointer-events-auto flex h-8 w-8 items-center justify-center rounded-full bg-black/60 text-white shadow transition-colors hover:bg-black/80 pointer-coarse:hidden";
+
 export function DeviceTile(p: TileProps) {
   const { device: d, size, zen } = p;
   const actions = useDeviceActions();
@@ -211,7 +214,9 @@ export function DeviceTile(p: TileProps) {
     enabled: true,
     title: canConnect(d) ? connectTitle(d) : d.online ? connectTitle(d) : `Details of ${d.name}`,
   };
-  const fullscreen = !p.selecting && canFullscreen() && (actions.openHere(d) || canConnect(d));
+  const reachable = actions.openHere(d) || canConnect(d);
+  const fullscreen = !p.selecting && canFullscreen() && reachable;
+  const terminal = !p.selecting && reachable && hasTerminal(d, actions.terminalsAllowed);
   const attention = attentionReasons(d, p.now);
   // Low disk already shows as a colored number in the health line.
   const flagged = zen || size === "s" ? attention : attention.filter((a) => a !== "low_disk");
@@ -282,11 +287,22 @@ export function DeviceTile(p: TileProps) {
               <Icon name={primary.label === "Details" ? "info" : "sessions"} size={16} />
               {primary.label}
             </span>
-            {/* Touch has no hover to reveal it, and it would take taps while invisible. */}
+            {/* Touch has no hover to reveal these, and they would take taps while invisible. */}
+            {terminal && (
+              <button
+                type="button"
+                className={overlayButton}
+                onClick={() => actions.terminal(d)}
+                title={actions.openHere(d) ? "Terminal" : "Open terminal"}
+                aria-label={`${actions.openHere(d) ? "Terminal" : "Open terminal"}: ${d.name}`}
+              >
+                <Icon name="terminal" size={18} />
+              </button>
+            )}
             {fullscreen && (
               <button
                 type="button"
-                className="pointer-events-auto flex h-8 w-8 items-center justify-center rounded-full bg-black/60 text-white shadow transition-colors hover:bg-black/80 pointer-coarse:hidden"
+                className={overlayButton}
                 onClick={() => actions.connect(d, true)}
                 title={`${primary.label} in fullscreen`}
                 aria-label={`${primary.label} in fullscreen: ${d.name}`}
