@@ -1,9 +1,11 @@
 package terminal
 
 import (
+	"fmt"
 	"path"
 	"strconv"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/ruolez/remotectl/proto"
 )
@@ -143,4 +145,29 @@ func findPID(ps, name string) int {
 		}
 	}
 	return 0
+}
+
+// asciiJSON is s as a JSON string with every non-ASCII character escaped,
+// so a reader that decodes chunks of bytes never splits a character.
+func asciiJSON(s string) []byte {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch {
+		case r == '"' || r == '\\':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		case r < 0x20 || r >= 0x7f:
+			if r > 0xffff {
+				r1, r2 := utf16.EncodeRune(r)
+				fmt.Fprintf(&b, "\\u%04x\\u%04x", r1, r2)
+			} else {
+				fmt.Fprintf(&b, "\\u%04x", r)
+			}
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return []byte(b.String())
 }

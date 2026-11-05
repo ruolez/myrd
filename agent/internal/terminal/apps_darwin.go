@@ -72,6 +72,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -126,7 +127,8 @@ function find(app, kind, key) {
 function run(argv) {
 	const kind = argv[0], key = argv[1];
 	const app = Application(kind === 'terminal' ? 'com.apple.Terminal' : 'com.googlecode.iterm2');
-	let last = '', f = null, misses = 0;
+	// Reading a tab takes ~2 ms: poll fast while it changes (typing), slower when idle.
+	let last = '', f = null, misses = 0, hot = 0;
 	for (;;) {
 		let m = null;
 		try {
@@ -141,8 +143,8 @@ function run(argv) {
 		if (!m) { if (++misses > 4) return; delay(0.3); continue }
 		misses = 0;
 		const s = JSON.stringify(m);
-		if (s !== last) { emit(s); last = s }
-		delay(0.2);
+		if (s !== last) { emit(s); last = s; hot = Date.now() + 2000 }
+		delay(Date.now() < hot ? 0.03 : 0.1);
 	}
 }`
 
@@ -155,12 +157,29 @@ function run(argv) {
 	return '';
 }`
 
-// itermWriteScript types text into an iTerm2 session as is.
+// itermWriteScript types into an iTerm2 session (argv: session id) each
+// JSON string it reads on stdin, one per line, until stdin closes: one
+// process for all typing, not one per key.
 const itermWriteScript = `
+ObjC.import('Foundation');
 function run(argv) {
 	const app = Application('com.googlecode.iterm2');
-	for (const w of app.windows()) for (const t of w.tabs()) for (const s of t.sessions()) if (s.id() === argv[0]) { s.write({text: argv[1], newline: false}); return 'ok' }
-	return '';
+	const find = () => {
+		for (const w of app.windows()) for (const t of w.tabs()) for (const s of t.sessions()) if (s.id() === argv[0]) return s;
+		return null;
+	};
+	const input = $.NSFileHandle.fileHandleWithStandardInput;
+	let s = null, buf = '';
+	for (;;) {
+		const d = input.availableData;
+		if (d.length == 0) return;
+		buf += $.NSString.alloc.initWithDataEncoding(d, $.NSUTF8StringEncoding).js;
+		for (let i; (i = buf.indexOf('\n')) >= 0; buf = buf.slice(i + 1)) {
+			const text = JSON.parse(buf.slice(0, i));
+			try { if (!s) s = find(); s.write({text: text, newline: false}) }
+			catch (e) { s = find(); if (s) try { s.write({text: text, newline: false}) } catch (e2) {} }
+		}
+	}
 }`
 
 func runScript(timeout time.Duration, script string, args ...string) (string, error) {
@@ -379,6 +398,10 @@ type mirrorProc struct {
 	wmu       sync.Mutex // one input at a time, in order
 	pmu       sync.Mutex // one picture at a time, in order
 
+	writer   *exec.Cmd      // iTerm2: the typing script
+	writerIn io.WriteCloser // its stdin
+	pid      int            // Terminal: its process id
+
 	mu         sync.Mutex
 	cols, rows int
 	last       *Screen // the tab, unclipped
@@ -451,13 +474,13 @@ func (m *mirrorProc) Write(p []byte) (int, error) {
 	m.wmu.Lock()
 	defer m.wmu.Unlock()
 	if m.kind == appITerm {
-		text := strings.ReplaceAll(string(p), "\x00", "")
-		if out, err := runScript(3*time.Second, itermWriteScript, m.key, text); err != nil || out != "ok" {
-			return 0, errors.New("iTerm2 did not take the input")
-		}
-		return len(p), nil
+		return m.writeITerm(p)
 	}
-	pid := appPID("Terminal")
+	// Terminal's process id, looked up once (not per key: ps takes ~30 ms).
+	if m.pid == 0 || syscall.Kill(m.pid, 0) != nil {
+		m.pid = appPID("Terminal")
+	}
+	pid := m.pid
 	if pid == 0 {
 		return 0, errors.New("Terminal is not running")
 	}
@@ -479,6 +502,29 @@ func (m *mirrorProc) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// writeITerm hands p to the long-running typing script, starting it first.
+func (m *mirrorProc) writeITerm(p []byte) (int, error) {
+	if m.writer == nil {
+		cmd := exec.Command(osascript, "-l", "JavaScript", "-e", itermWriteScript, m.key)
+		in, err := cmd.StdinPipe()
+		if err != nil {
+			return 0, err
+		}
+		if err := cmd.Start(); err != nil {
+			return 0, err
+		}
+		m.writer, m.writerIn = cmd, in
+		go func() { _ = cmd.Wait() }()
+	}
+	text := strings.ReplaceAll(string(p), "\x00", "")
+	if _, err := m.writerIn.Write(append(asciiJSON(text), '\n')); err != nil {
+		_ = m.writerIn.Close()
+		m.writer, m.writerIn = nil, nil
+		return 0, errors.New("iTerm2 did not take the input")
+	}
+	return len(p), nil
+}
+
 func (m *mirrorProc) Resize(cols, rows int) error {
 	m.mu.Lock()
 	m.cols, m.rows, m.prev = cols, rows, nil
@@ -495,6 +541,12 @@ func (m *mirrorProc) Hangup() {
 	if m.cmd.Process != nil {
 		_ = m.cmd.Process.Kill()
 	}
+	m.wmu.Lock()
+	if m.writerIn != nil {
+		_ = m.writerIn.Close() // the typing script ends with its stdin
+		m.writer, m.writerIn = nil, nil
+	}
+	m.wmu.Unlock()
 }
 
 func (m *mirrorProc) Close() error { return nil }

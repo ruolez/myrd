@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 )
@@ -69,6 +70,21 @@ func TestFindPID(t *testing.T) {
 	for name, want := range map[string]int{"Terminal": 24686, "iTerm2": 901, "Ghostty": 0} {
 		if got := findPID(ps, name); got != want {
 			t.Errorf("findPID(%q) = %d, want %d", name, got, want)
+		}
+	}
+}
+
+func TestASCIIJSONRoundTrips(t *testing.T) {
+	for _, s := range []string{"", "ls -la\r", "quote \" back\\slash", "\x1b[A\t\x7f", "héllo wörld", "emoji 😀 and 中文", "  line sep"} {
+		b := asciiJSON(s)
+		for _, c := range b {
+			if c >= 0x80 {
+				t.Fatalf("asciiJSON(%q) = %s: not ASCII", s, b)
+			}
+		}
+		var back string
+		if err := json.Unmarshal(b, &back); err != nil || back != s {
+			t.Fatalf("asciiJSON(%q) = %s decodes to %q, %v", s, b, back, err)
 		}
 	}
 }

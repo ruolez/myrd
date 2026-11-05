@@ -37,7 +37,8 @@ import { TermKeyboard } from "./TermKeyboard";
 import { TerminalView } from "./TerminalView";
 import type { FindResults, TerminalViewHandle } from "./TerminalView";
 import { TERMINAL_THEMES } from "./theme";
-import { useTermTheme } from "./useTermTheme";
+import { AppearancePanel } from "./AppearancePanel";
+import { useTermAppearance } from "./appearance";
 
 /** `lost`: it ended only because the connection did; it keeps running on the device. */
 type Tab = { term: Term; title: string; ended: boolean; lost: boolean };
@@ -57,6 +58,8 @@ export type DeckHandle = {
   find: () => void;
   /** Picks files to upload into the terminal's working directory. */
   upload: () => void;
+  /** Opens the Appearance panel. */
+  appearance: () => void;
 };
 
 type Props = {
@@ -121,7 +124,9 @@ export function TerminalDeck({
   const [findResults, setFindResults] = useState<FindResults | null>(null);
   const [dropping, setDropping] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
-  const theme = TERMINAL_THEMES[useTermTheme()].theme;
+  const appearance = useTermAppearance();
+  const theme = TERMINAL_THEMES[appearance.theme].theme;
+  const [styling, setStyling] = useState(false);
   const modTaps = useRef({ ctrl: 0, alt: 0 });
   const mods = useRef({ ctrl, alt });
   mods.current = { ctrl, alt };
@@ -217,9 +222,14 @@ export function TerminalDeck({
   // The terminals this tab watches, reattached after a reconnect.
   useEffect(() => {
     if (!channel || restored.current !== channel) return;
-    const ids = tabs.filter((t) => !t.ended || t.lost).map((t) => t.term.source.id);
+    // The tab in view goes last: reattaching shows the last one opened.
+    const open = tabs.filter((t) => !t.ended || t.lost);
+    const ids = [
+      ...open.filter((t) => t.term.id !== activeId),
+      ...open.filter((t) => t.term.id === activeId),
+    ].map((t) => t.term.source.id);
     writeList(globalThis.sessionStorage, openKey(deviceId), ids);
-  }, [tabs, channel, deviceId, restoredTick]);
+  }, [tabs, channel, deviceId, restoredTick, activeId]);
 
   const size = useCallback((): TermSize => {
     const fitted = activeId !== null ? handles.current.get(activeId)?.fit() : null;
@@ -563,6 +573,7 @@ export function TerminalDeck({
       zoom,
       find: () => setFinding(true),
       upload: () => fileInput.current?.click(),
+      appearance: () => setStyling(true),
     }),
     [newShell, pasteText, activeId, zoom],
   );
@@ -755,6 +766,7 @@ export function TerminalDeck({
             onTap={onTap}
             onHotkey={onHotkey}
             theme={theme}
+            appearance={appearance}
             onFind={() => setFinding(true)}
             onFindResults={t.term.id === activeId ? setFindResults : undefined}
             handleRef={(h) => {
@@ -763,7 +775,8 @@ export function TerminalDeck({
             }}
           />
         ))}
-        {active?.ended && (
+        {/* A terminal cut off by a dropped connection comes back with the connection. */}
+        {active?.ended && !active.lost && (
           <div className="absolute inset-x-2 bottom-2 z-10 flex flex-wrap items-center gap-2 rounded-xl bg-[#2d2e30] px-3 py-2 text-sm shadow-lg ring-1 ring-white/10">
             <span className="flex-1 text-white/75">This terminal ended.</span>
             {active.term.source.kind === "shell" && (
@@ -857,6 +870,14 @@ export function TerminalDeck({
             setPicker(false);
             setError(null);
           }}
+        />
+      )}
+      {styling && (
+        <AppearancePanel
+          sheet={touch}
+          fontSize={fontSize}
+          onFontSize={(n) => pinch(Math.min(MAX_FONT, Math.max(MIN_FONT, n)))}
+          onClose={() => setStyling(false)}
         />
       )}
       {selectText !== null && <SelectSheet text={selectText} onClose={() => setSelectText(null)} />}

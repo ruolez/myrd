@@ -18,6 +18,7 @@ const phaseText: Partial<Record<Snapshot["phase"], string>> = {
 };
 
 export function SessionOverlays({
+  hideEnded = false,
   snap,
   name,
   forceRelay,
@@ -26,6 +27,8 @@ export function SessionOverlays({
   onBack,
   onTrust,
 }: {
+  /** The pane reconnects by itself and says so: no "closed" overlay. */
+  hideEnded?: boolean;
   snap: Snapshot | null;
   name: string;
   forceRelay: boolean;
@@ -40,7 +43,7 @@ export function SessionOverlays({
       {phase === "reconnecting" && (
         <div className="absolute top-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/70 px-4 py-2 text-sm">
           <Spinner size={16} />
-          Connection interrupted — restarting ICE…
+          Connection interrupted. Reconnecting…
         </div>
       )}
 
@@ -62,7 +65,7 @@ export function SessionOverlays({
         </Overlay>
       )}
 
-      {phase === "ended" && snap && (
+      {phase === "ended" && snap && !hideEnded && (
         <Overlay>
           <Icon
             name={snap.endReason === "user_hangup" ? "check" : "warning"}

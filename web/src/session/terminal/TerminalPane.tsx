@@ -7,6 +7,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSessionSnap } from "../../app/workspace";
 import { Icon } from "../../components/icons";
+import { Spinner } from "../../components/ui";
+import { retryDelay, shouldRetry } from "../../lib/termRetry";
 import { PowerDialog } from "../../components/PowerDialog";
 import { powerFailure } from "../../lib/power";
 import { MoreMenu } from "../MoreMenu";
@@ -16,15 +18,9 @@ import { SessionOverlays } from "../SessionOverlays";
 import { touchFirst } from "../useTouchInput";
 import { TerminalDeck } from "./TerminalDeck";
 import type { DeckHandle } from "./TerminalDeck";
-import { nextTheme, TERMINAL_THEMES } from "./theme";
-import { setTermTheme, useTermTheme } from "./useTermTheme";
 
-/** End reasons a dropped phone connection produces: worth reconnecting by itself. */
-const TRANSIENT = new Set(["ice_failed", "peer_disconnected", "error", "server_restart"]);
-const AUTO_TRIES = 3;
-const AUTO_WINDOW_MS = 2 * 60_000;
 // Per device, across the panes a reconnect replaces.
-const autoTries = new Map<string, number[]>();
+const retries = new Map<string, { attempts: number; since: number }>();
 
 export function TerminalPane({
   session,
@@ -45,7 +41,6 @@ export function TerminalPane({
   const [touch] = useState(touchFirst);
   const [powerOpen, setPowerOpen] = useState(false);
   const deck = useRef<DeckHandle | null>(null);
-  const themeId = useTermTheme();
   const setDeck = useCallback((h: DeckHandle | null) => (deck.current = h), []);
   const phase = snap?.phase ?? "preparing";
   const live = phase === "connected" || phase === "reconnecting";
@@ -55,26 +50,78 @@ export function TerminalPane({
     if (terminalRequest?.shell) deck.current?.newShell();
   }, [terminalRequest]);
 
-  // Back from the lock screen or another app: reconnect a dropped session.
+  // A dropped connection reconnects by itself, sooner and sooner after a
+  // retry fails, at once when the network or the page comes back; the
+  // terminals stay readable meanwhile and are reattached.
   const endReason = snap?.endReason ?? null;
+  const id = session.deviceId;
+  const [retryAt, setRetryAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [online, setOnline] = useState(() => navigator.onLine);
+  const auto =
+    phase === "ended" && !!endReason && shouldRetry(endReason, retries.get(id), Date.now());
+
   useEffect(() => {
-    if (phase !== "ended" || !endReason || !TRANSIENT.has(endReason) || !focused) return;
-    const id = session.deviceId;
-    const tryNow = () => {
-      if (document.hidden) return;
-      const now = Date.now();
-      const recent = (autoTries.get(id) ?? []).filter((t) => now - t < AUTO_WINDOW_MS);
-      if (recent.length >= AUTO_TRIES) return;
-      autoTries.set(id, [...recent, now]);
-      onReconnect(forceRelay);
-    };
-    const t = setTimeout(tryNow, 800);
-    document.addEventListener("visibilitychange", tryNow);
+    if (phase !== "connected") return;
+    // Connected for a while: the next drop starts over from a short wait.
+    const t = setTimeout(() => retries.delete(id), 10_000);
+    return () => clearTimeout(t);
+  }, [phase, id]);
+
+  useEffect(() => {
+    const on = () => setOnline(true);
+    const off = () => setOnline(false);
+    window.addEventListener("online", on);
+    window.addEventListener("offline", off);
     return () => {
-      clearTimeout(t);
-      document.removeEventListener("visibilitychange", tryNow);
+      window.removeEventListener("online", on);
+      window.removeEventListener("offline", off);
     };
-  }, [phase, endReason, focused, session, forceRelay, onReconnect]);
+  }, []);
+
+  const retryNow = useCallback(() => {
+    const r = retries.get(id) ?? { attempts: 0, since: Date.now() };
+    retries.set(id, { ...r, attempts: r.attempts + 1 });
+    setRetryAt(null);
+    onReconnect(forceRelay);
+  }, [id, onReconnect, forceRelay]);
+
+  useEffect(() => {
+    if (!auto || !focused) {
+      setRetryAt(null);
+      return;
+    }
+    const wait = retryDelay(retries.get(id)?.attempts ?? 0);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const arm = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      if (document.hidden || !navigator.onLine) {
+        setRetryAt(null); // waits for the page or the network to come back
+        return;
+      }
+      setNow(Date.now());
+      setRetryAt(Date.now() + wait);
+      timer = setTimeout(retryNow, wait);
+    };
+    const back = () => {
+      if (!document.hidden && navigator.onLine) retryNow();
+    };
+    arm();
+    document.addEventListener("visibilitychange", back);
+    window.addEventListener("online", back);
+    return () => {
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", back);
+      window.removeEventListener("online", back);
+    };
+  }, [auto, focused, id, retryNow]);
+
+  useEffect(() => {
+    if (retryAt === null) return;
+    const t = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(t);
+  }, [retryAt]);
 
   const items: MoreItem[] = [
     { label: "New shell", icon: "add", onSelect: () => deck.current?.newShell(), disabled: !live },
@@ -104,11 +151,7 @@ export function TerminalPane({
       : []),
     { label: "Larger text", icon: "zoomIn", onSelect: () => deck.current?.zoom(1) },
     { label: "Smaller text", icon: "zoomOut", onSelect: () => deck.current?.zoom(-1) },
-    {
-      label: `Theme: ${TERMINAL_THEMES[themeId].name}`,
-      icon: "palette",
-      onSelect: () => setTermTheme(nextTheme(themeId)),
-    },
+    { label: "Appearance…", icon: "palette", onSelect: () => deck.current?.appearance() },
     ...(onSwitchMode
       ? [
           {
@@ -167,7 +210,29 @@ export function TerminalPane({
           deckRef={setDeck}
           files={snap?.files ?? null}
         />
+        {auto && focused && (
+          <div
+            role="status"
+            className="absolute top-12 left-1/2 z-30 flex max-w-[calc(100%-1rem)] -translate-x-1/2 items-center gap-2 rounded-full bg-[#2d2e30] py-1.5 pr-1.5 pl-3.5 text-sm text-white shadow-lg ring-1 ring-white/10"
+          >
+            <Spinner size={14} label="Reconnecting" />
+            <span className="min-w-0 truncate">
+              {!online
+                ? "Offline. Reconnecting when the network is back…"
+                : retryAt === null
+                  ? "Connection lost. Reconnecting…"
+                  : `Connection lost. Reconnecting in ${Math.max(1, Math.ceil((retryAt - now) / 1000))} s…`}
+            </span>
+            <button
+              className="shrink-0 rounded-full bg-white/10 px-3 py-1 text-xs font-medium hover:bg-white/15"
+              onClick={retryNow}
+            >
+              Now
+            </button>
+          </div>
+        )}
         <SessionOverlays
+          hideEnded={auto}
           snap={snap}
           name={name}
           forceRelay={forceRelay}

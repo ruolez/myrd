@@ -1,16 +1,31 @@
 import { describe, expect, test } from "vitest";
-import { nextTheme, parseThemeId, TERMINAL_THEMES } from "./theme";
-import type { TermThemeId } from "./theme";
+import { parseThemeId, TERMINAL_THEMES } from "./theme";
 
-describe("nextTheme", () => {
-  test("visits every theme once before coming back", () => {
-    const seen: TermThemeId[] = [];
-    let id: TermThemeId = "dark";
-    for (let i = 0; i < Object.keys(TERMINAL_THEMES).length; i++) {
-      seen.push(id);
-      id = nextTheme(id);
-    }
-    expect([id, [...seen].sort()]).toEqual(["dark", Object.keys(TERMINAL_THEMES).sort()]);
+describe("TERMINAL_THEMES", () => {
+  const keys = [
+    "background",
+    "foreground",
+    "cursor",
+    "black",
+    "red",
+    "green",
+    "yellow",
+    "blue",
+    "magenta",
+    "cyan",
+    "white",
+    "brightBlack",
+    "brightRed",
+    "brightGreen",
+    "brightYellow",
+    "brightBlue",
+    "brightMagenta",
+    "brightCyan",
+    "brightWhite",
+  ] as const;
+  test.each(Object.entries(TERMINAL_THEMES))("%s sets every color as #rrggbb", (_, { theme }) => {
+    const bad = keys.filter((k) => !/^#[0-9a-f]{6}$/i.test(theme[k] ?? ""));
+    expect(bad).toEqual([]);
   });
 });
 
@@ -18,6 +33,8 @@ describe("parseThemeId", () => {
   test.each([
     ["light", "light"],
     ["solarized", "solarized"],
+    ["tokyo-night", "tokyo-night"],
+    ["toString", "dark"],
     ["dark", "dark"],
     ["neon", "dark"],
     [undefined, "dark"],

@@ -57,6 +57,7 @@ export class Term {
   private dataFns = new Set<(b: Uint8Array) => void>();
   private titleFns = new Set<(t: string) => void>();
   private endFns = new Set<(e: TermEnd) => void>();
+  private inputFns = new Set<(b: Uint8Array) => void>();
   /** Output that arrived before anyone listened. */
   private backlog: Uint8Array[] = [];
   private rendered = 0;
@@ -92,12 +93,20 @@ export class Term {
     return () => this.endFns.delete(fn);
   }
 
+  /** Typing that went out (local echo watches it). */
+  onInput(fn: (b: Uint8Array) => void): () => void {
+    this.inputFns.add(fn);
+    return () => this.inputFns.delete(fn);
+  }
+
   /** Types text or bytes. false: not sent (the channel is not open, or the terminal ended). */
   write(data: string | Uint8Array): boolean {
     if (this.ended) return false;
     const bytes = typeof data === "string" ? encoder.encode(data) : data;
     if (bytes.length === 0) return true;
-    return this.ch.sendFrames(inputFrames(this.id, bytes));
+    const sent = this.ch.sendFrames(inputFrames(this.id, bytes));
+    if (sent) for (const fn of this.inputFns) fn(bytes);
+    return sent;
   }
 
   /** Report that n bytes of output were drawn; acks go out every TERM_ACK_EVERY. */

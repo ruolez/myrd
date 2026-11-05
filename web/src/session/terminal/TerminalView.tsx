@@ -34,7 +34,10 @@ import { holdDeadline, initialTouch, touchStep } from "../../lib/touch";
 import type { TouchAction, TouchState } from "../../lib/touch";
 import type { Pt } from "../../lib/zoom";
 import type { Term } from "../TerminalChannel";
-import { TERMINAL_FONT } from "./theme";
+import { expire, NO_PREDICT, output, shown, typed } from "../../lib/termPredict";
+import type { Predict } from "../../lib/termPredict";
+import type { TermAppearance } from "./appearance";
+import { fontFamily } from "./theme";
 import { adoptXtermStyles } from "./xtermStyles";
 
 export type TerminalViewHandle = {
@@ -76,6 +79,7 @@ type Props = {
   onTap: () => void;
   onHotkey?: (h: Hotkey) => void;
   theme: ITheme;
+  appearance: TermAppearance;
   /** Cmd+F / Ctrl+Shift+F. */
   onFind?: () => void;
   onFindResults?: (r: FindResults) => void;
@@ -95,6 +99,7 @@ export function TerminalView({
   onTap,
   onHotkey,
   theme,
+  appearance,
   onFind,
   onFindResults,
   handleRef,
@@ -104,21 +109,46 @@ export function TerminalView({
   const fitRef = useRef<FitAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
   const sizeRef = useRef<TermSize | null>(null);
-  const cb = useRef({ onSize, onTap, onHotkey, onFontSize, visible, onFind, onFindResults, theme });
-  cb.current = { onSize, onTap, onHotkey, onFontSize, visible, onFind, onFindResults, theme };
+  const cb = useRef({
+    onSize,
+    onTap,
+    onHotkey,
+    onFontSize,
+    visible,
+    onFind,
+    onFindResults,
+    theme,
+    appearance,
+  });
+  cb.current = {
+    onSize,
+    onTap,
+    onHotkey,
+    onFontSize,
+    visible,
+    onFind,
+    onFindResults,
+    theme,
+    appearance,
+  };
   const [bubble, setBubble] = useState<{ x: number; y: number; copy: boolean } | null>(null);
+  // Local echo: typing drawn at the cursor until the device echoes it.
+  const predict = useRef<Predict>(NO_PREDICT);
+  const [guess, setGuess] = useState<Guess | null>(null);
 
   // ---------- xterm lifetime ----------
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    const look = cb.current.appearance;
     const x = new Terminal({
-      fontFamily: TERMINAL_FONT,
+      fontFamily: fontFamily(look.font),
       fontSize,
-      lineHeight: 1.15,
+      lineHeight: look.lineHeight,
       theme: cb.current.theme,
       scrollback: 5000,
-      cursorBlink: !touch,
+      cursorStyle: look.cursor,
+      cursorBlink: look.blink,
       cursorInactiveStyle: touch ? "block" : "outline",
       macOptionIsMeta: true,
       allowProposedApi: true,
@@ -209,7 +239,33 @@ export function TerminalView({
       x.onData((d) => term.write(d)),
       x.onBinary((d) => term.write(Uint8Array.from(d, (c) => c.charCodeAt(0)))),
     ];
-    const offData = term.onData((b) => x.write(b, () => term.consumed(b.length)));
+    const decoder = new TextDecoder();
+    const showGuess = () => setGuess(guessAt(x, host, predict.current));
+    const offData = term.onData((b) => {
+      const text = decoder.decode(b, { stream: true });
+      x.write(b, () => {
+        term.consumed(b.length);
+        if (predict.current === NO_PREDICT) return;
+        predict.current = output(predict.current, text, performance.now());
+        showGuess();
+      });
+    });
+    const inputDecoder = new TextDecoder();
+    const offInput = term.onInput((b) => {
+      if (!cb.current.appearance.instantTyping) return;
+      const text = inputDecoder.decode(b, { stream: true });
+      const alt = x.buffer.active.type === "alternate";
+      predict.current = typed(predict.current, text, performance.now(), alt);
+      showGuess();
+    });
+    const expiry = setInterval(() => {
+      if (predict.current === NO_PREDICT) return;
+      const next = expire(predict.current, performance.now());
+      if (next !== predict.current) {
+        predict.current = next;
+        showGuess();
+      }
+    }, 250);
     const offEnd = term.onEnd((e) => {
       x.write(`\r\n\x1b[2m${closedLine(e.reason, e.exitCode)}\x1b[0m\r\n`);
     });
@@ -218,6 +274,9 @@ export function TerminalView({
       offResults.dispose();
       searchRef.current = null;
       offData();
+      offInput();
+      clearInterval(expiry);
+      predict.current = NO_PREDICT;
       offEnd();
       for (const o of offs) o.dispose();
       x.dispose();
@@ -316,6 +375,21 @@ export function TerminalView({
     const x = xRef.current;
     if (x) x.options.theme = theme;
   }, [theme]);
+
+  useEffect(() => {
+    const x = xRef.current;
+    if (!x) return;
+    x.options.fontFamily = fontFamily(appearance.font);
+    x.options.lineHeight = appearance.lineHeight;
+    x.options.cursorStyle = appearance.cursor;
+    x.options.cursorBlink = appearance.blink;
+    if (!appearance.instantTyping) {
+      predict.current = NO_PREDICT;
+      setGuess(null);
+    }
+    if (visible) refit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appearance]);
 
   // ---------- touch ----------
   const g = useRef({
@@ -535,6 +609,33 @@ export function TerminalView({
     >
       {/* isolate: xterm's own z-indexes stay under the gesture layer. */}
       <div ref={hostRef} className="terminal-host absolute inset-0 isolate pt-1 pl-1.5" />
+      {guess && (
+        <div
+          aria-hidden
+          data-predicted={guess.text}
+          className="pointer-events-none absolute z-[5] flex"
+          style={{
+            left: guess.left,
+            top: guess.top,
+            height: guess.cellH,
+            fontFamily: fontFamily(appearance.font),
+            fontSize,
+            lineHeight: `${guess.cellH}px`,
+            color: theme.foreground,
+            background: theme.background,
+          }}
+        >
+          {[...guess.text].map((c, i) => (
+            <span key={i} className="inline-block text-center" style={{ width: guess.cellW }}>
+              {c}
+            </span>
+          ))}
+          <span
+            className="inline-block opacity-70"
+            style={{ width: guess.cellW, background: theme.cursor }}
+          />
+        </div>
+      )}
       {touch && (
         <div
           className="absolute inset-0 z-10 touch-none select-none [-webkit-touch-callout:none]"
@@ -576,4 +677,28 @@ export function TerminalView({
       )}
     </div>
   );
+}
+
+/** Where the guessed typing goes: at the cursor, in cells, inside the host. */
+type Guess = { text: string; left: number; top: number; cellW: number; cellH: number };
+
+function guessAt(x: Terminal, host: HTMLElement, p: Predict): Guess | null {
+  const text = shown(p);
+  const buf = x.buffer.active;
+  const screen = host.querySelector<HTMLElement>(".xterm-screen");
+  if (!text || !screen || buf.type !== "normal" || buf.viewportY !== buf.baseY) return null;
+  const cellW = screen.clientWidth / x.cols;
+  const cellH = screen.clientHeight / x.rows;
+  if (!cellW || !cellH) return null;
+  const room = x.cols - buf.cursorX - 1; // keep the line's last cell for the cursor
+  if (room <= 0) return null;
+  const hostBox = host.getBoundingClientRect();
+  const box = screen.getBoundingClientRect();
+  return {
+    text: text.slice(0, room),
+    left: box.left - hostBox.left + buf.cursorX * cellW,
+    top: box.top - hostBox.top + buf.cursorY * cellH,
+    cellW,
+    cellH,
+  };
 }
