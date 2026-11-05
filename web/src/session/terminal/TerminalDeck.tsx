@@ -695,6 +695,15 @@ export function TerminalDeck({
           <Icon name="add" size={20} />
         </button>
       )}
+      <button
+        className="btn btn-sm shrink-0 px-2 text-white/80 hover:bg-white/10"
+        aria-label="Appearance"
+        title="Appearance: theme, text size, font, cursor"
+        aria-haspopup="dialog"
+        onClick={() => setStyling((v) => !v)}
+      >
+        <Icon name="palette" size={touch ? 20 : 18} />
+      </button>
       {headerEnd}
     </div>
   );
