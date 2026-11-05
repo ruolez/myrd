@@ -39,6 +39,7 @@ import type { FindResults, TerminalViewHandle } from "./TerminalView";
 import { TERMINAL_THEMES } from "./theme";
 import { AppearancePanel } from "./AppearancePanel";
 import { useTermAppearance } from "./appearance";
+import { useVisualViewport } from "./useVisualViewport";
 
 /** `lost`: it ended only because the connection did; it keeps running on the device. */
 type Tab = { term: Term; title: string; ended: boolean; lost: boolean };
@@ -114,7 +115,11 @@ export function TerminalDeck({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [fontSize, setFontSize] = useState(() => readFont(deviceId));
+  // The key field has focus; kbUp: and the on-screen keyboard shows (Android's
+  // Back hides it without taking the focus away).
   const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const port = useVisualViewport(touch && visible);
+  const kbUp = keyboardOpen && port?.keyboard !== false;
   const [compose, setCompose] = useState(false);
   const [ctrl, setCtrl] = useState<ModState>("off");
   const [alt, setAlt] = useState<ModState>("off");
@@ -469,19 +474,25 @@ export function TerminalDeck({
     },
     [activeId, type],
   );
-  const toggleKeyboard = () => {
+  /** Must run inside the tap: phones raise the keyboard only for a focus the user asked for. */
+  const raiseKeyboard = () => {
     const kb = kbRef.current;
+    if (!kb) return;
+    // Focusing the field it already has shows no keyboard: focus it anew.
+    if (document.activeElement === kb) kb.blur();
+    kb.focus({ preventScroll: true });
+  };
+  const toggleKeyboard = () => {
     if (compose) {
       setCompose(false);
       return;
     }
-    if (!kb) return;
-    if (document.activeElement === kb) kb.blur();
-    else kb.focus({ preventScroll: true });
+    if (kbUp) kbRef.current?.blur();
+    else raiseKeyboard();
   };
   const onTap = () => {
-    if (!touch || compose) return;
-    kbRef.current?.focus({ preventScroll: true });
+    if (!touch || compose || kbUp) return;
+    raiseKeyboard();
   };
   const sendLine = (line: string) => {
     const bracketed = activeId !== null && handles.current.get(activeId)?.modes().bracketed;
@@ -830,14 +841,14 @@ export function TerminalDeck({
         <ComposeBar deviceId={deviceId} onSend={sendLine} onClose={() => setCompose(false)} />
       )}
       {touch && live && tabs.length > 0 && (
-        <div className={keyboardOpen || compose ? "" : "pb-[env(safe-area-inset-bottom)]"}>
+        <div className={kbUp || compose ? "" : "pb-[env(safe-area-inset-bottom)]"}>
           <AccessoryBar
             ctrl={ctrl}
             alt={alt}
             onMod={onMod}
             onKey={onKey}
             onText={onText}
-            keyboardOpen={keyboardOpen || compose}
+            keyboardOpen={kbUp || compose}
             onToggleKeyboard={toggleKeyboard}
             composeOpen={compose}
             onToggleCompose={() => setCompose((c) => !c)}

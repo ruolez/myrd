@@ -67,7 +67,7 @@ export function MoreMenu({ items, disabled }: { items: MoreItem[]; disabled?: bo
           role="menu"
           aria-label="More"
           onKeyDown={onKeyDown}
-          className="absolute top-full right-0 z-50 mt-1 w-64 rounded-xl border border-white/10 bg-[#1e1f20] p-1 text-sm text-white shadow-xl"
+          className="absolute top-full right-0 z-50 mt-1 max-h-[calc(100dvh-5rem)] w-64 overflow-y-auto overscroll-contain rounded-xl border border-white/10 bg-[#1e1f20] p-1 text-sm text-white shadow-xl"
         >
           {items.map((it) => (
             <button

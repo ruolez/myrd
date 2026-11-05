@@ -80,7 +80,7 @@ export function Popover({
     <div
       ref={ref}
       {...rest}
-      className={`fixed z-[70] rounded-xl border border-outline bg-surface text-sm text-text shadow-xl ${className}`}
+      className={`fixed z-[70] max-h-[calc(100dvh-1rem)] overflow-y-auto overscroll-contain rounded-xl border border-outline bg-surface text-sm text-text shadow-xl ${className}`}
       style={pos ?? { left: -9999, top: -9999 }}
     >
       {children}

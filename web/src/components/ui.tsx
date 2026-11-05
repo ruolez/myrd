@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { useScrollLock } from "../app/scrollLock";
 import { Icon } from "./icons";
 import type { IconName } from "./icons";
 
@@ -180,6 +181,7 @@ export function Modal({
   useEffect(() => {
     closeRef.current = onClose;
   });
+  useScrollLock(true);
   // Once per open: a parent passing a new onClose each render must not move
   // focus while someone types.
   useEffect(() => {
@@ -205,7 +207,7 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={id}
-        className={`card max-h-[90vh] w-full overflow-auto p-6 shadow-xl ${wide ? "max-w-2xl" : "max-w-md"}`}
+        className={`card max-h-[90dvh] w-full overflow-auto overscroll-contain p-6 shadow-xl max-sm:p-5 ${wide ? "max-w-2xl" : "max-w-md"}`}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-start justify-between gap-4">

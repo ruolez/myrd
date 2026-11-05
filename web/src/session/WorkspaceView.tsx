@@ -7,10 +7,12 @@ import type { DeviceId } from "../api/types";
 import { useDeviceLabels } from "../app/directory";
 import { setChromeView } from "../app/theme";
 import { usePalette } from "../app/palette";
+import { useScrollLock, useTouchLock } from "../app/scrollLock";
 import { useWorkspace, useWorkspaceState } from "../app/workspace";
 import { Icon } from "../components/icons";
 import type { Hotkey } from "../lib/shortcuts";
 import { workspaceHotkey } from "../lib/shortcuts";
+import { viewportContent } from "../lib/viewport";
 import { SessionPane } from "./SessionPane";
 import type { TerminalRequest } from "./SessionPane";
 import { SessionTabs } from "./SessionTabs";
@@ -62,13 +64,29 @@ export function WorkspaceView() {
     return () => setChromeView("app");
   }, []);
 
-  // No pull-to-refresh or bounce while controlling a device.
+  // No pull-to-refresh or bounce while controlling a device; on phones the
+  // page never pans or zooms either, only lists and the key bar scroll.
   useEffect(() => {
     const root = document.documentElement;
     const prev = root.style.overscrollBehavior;
     root.style.overscrollBehavior = "none";
     return () => {
       root.style.overscrollBehavior = prev;
+    };
+  }, []);
+  useScrollLock(touch);
+  useTouchLock(touch);
+
+  // The on-screen keyboard covers the session instead of resizing it (the
+  // terminal follows the visible viewport, the picture keeps its zoom).
+  // Elsewhere the app keeps the default, so forms stay above the keyboard.
+  useEffect(() => {
+    const meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+    if (!meta) return;
+    const prev = meta.content;
+    meta.content = viewportContent(prev, "resizes-visual");
+    return () => {
+      meta.content = prev;
     };
   }, []);
 

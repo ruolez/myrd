@@ -135,6 +135,8 @@ export function TerminalView({
   // Local echo: typing drawn at the cursor until the device echoes it.
   const predict = useRef<Predict>(NO_PREDICT);
   const [guess, setGuess] = useState<Guess | null>(null);
+  // Scrolled back from the latest output; fresh: more arrived meanwhile.
+  const [away, setAway] = useState<{ fresh: boolean } | null>(null);
 
   // ---------- xterm lifetime ----------
   useEffect(() => {
@@ -266,6 +268,21 @@ export function TerminalView({
         showGuess();
       }
     }, 250);
+    let awayRaf = 0;
+    const checkAway = (wrote: boolean) => {
+      if (awayRaf) return;
+      awayRaf = requestAnimationFrame(() => {
+        awayRaf = 0;
+        const b = x.buffer.active;
+        const back = b.viewportY < b.baseY;
+        setAway((a) => (!back ? null : a && (a.fresh || !wrote) ? a : { fresh: wrote && !!a }));
+      });
+    };
+    const offScroll = [
+      x.onScroll(() => checkAway(false)),
+      x.onWriteParsed(() => checkAway(true)),
+      x.buffer.onBufferChange(() => checkAway(false)),
+    ];
     const offEnd = term.onEnd((e) => {
       x.write(`\r\n\x1b[2m${closedLine(e.reason, e.exitCode)}\x1b[0m\r\n`);
     });
@@ -278,7 +295,8 @@ export function TerminalView({
       clearInterval(expiry);
       predict.current = NO_PREDICT;
       offEnd();
-      for (const o of offs) o.dispose();
+      cancelAnimationFrame(awayRaf);
+      for (const o of [...offs, ...offScroll]) o.dispose();
       x.dispose();
       unstyle();
       xRef.current = null;
@@ -344,7 +362,7 @@ export function TerminalView({
     modes,
     paste: (text) => {
       term.write(pasteBytes(text, modes().bracketed));
-      xRef.current?.scrollToBottom();
+      toBottom();
     },
     selection: () => xRef.current?.getSelection() ?? "",
     text: (maxLines = 2000) => {
@@ -356,7 +374,7 @@ export function TerminalView({
       while (lines.length && !lines.at(-1)) lines.pop();
       return lines.join("\n");
     },
-    scrollToBottom: () => xRef.current?.scrollToBottom(),
+    scrollToBottom: () => toBottom(),
     focus: () => xRef.current?.focus(),
     fit: refit,
     find: (query, back = false) => {
@@ -436,6 +454,11 @@ export function TerminalView({
   const stopFling = () => {
     if (g.current.fling) cancelAnimationFrame(g.current.fling);
     g.current.fling = 0;
+  };
+  /** To the latest output; a fling still coasting would scroll right back. */
+  const toBottom = () => {
+    stopFling();
+    xRef.current?.scrollToBottom();
   };
   const startFling = (vy: number, at: Pt | null) => {
     stopFling();
@@ -647,6 +670,23 @@ export function TerminalView({
           onMouseDown={(e) => e.preventDefault()}
           onContextMenu={(e) => e.preventDefault()}
         />
+      )}
+      {away && visible && (
+        <button
+          type="button"
+          aria-label="Jump to the latest output"
+          title="Jump to the latest output"
+          className="absolute right-3 bottom-3 z-20 flex h-11 w-11 items-center justify-center rounded-full bg-[#2d2e30]/95 text-white shadow-lg ring-1 ring-white/15 active:bg-[#3c3d3f]"
+          // Keeps the keyboard field focused on phones.
+          onMouseDown={(e) => e.preventDefault()}
+          onPointerDown={(e) => e.preventDefault()}
+          onClick={toBottom}
+        >
+          <Icon name="chevronDown" size={24} />
+          {away.fresh && (
+            <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-[#8ab4f8]" />
+          )}
+        </button>
       )}
       {bubble && (
         <div

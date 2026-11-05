@@ -13,6 +13,7 @@ import type { ConnState } from "../lib/signaling";
 import { useAuth, useUser } from "./auth";
 import { usePalette } from "./palette";
 import { promptInstall, usePwa } from "./pwa";
+import { useScrollLock } from "./scrollLock";
 import { DeviceViewsNav } from "../pages/devices/DashboardPane";
 import { SessionCount, SessionDock } from "./SessionDock";
 import { useTheme } from "./theme";
@@ -340,7 +341,7 @@ function Sidebar({
 
       <nav
         aria-label={mode === "admin" ? "Admin console" : "Main"}
-        className="flex-1 space-y-4 overflow-x-hidden overflow-y-auto px-3 py-2"
+        className="flex-1 space-y-4 overflow-x-hidden overflow-y-auto overscroll-contain px-3 py-2"
       >
         {mode === "admin" ? (
           adminNav.map((g, i) => (
@@ -466,6 +467,7 @@ export function Layout() {
   }, [open]);
 
   const closeDrawer = () => setOpen(false);
+  useScrollLock(open);
 
   return (
     <div className="safe-x flex min-h-full">

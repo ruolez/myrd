@@ -420,7 +420,7 @@ export function Devices() {
               <Popover
                 anchor={paneBtn}
                 onClose={() => setPaneOpen(false)}
-                className="max-h-[70vh] w-72 overflow-auto p-2"
+                className="max-h-[70dvh] w-72 overflow-auto overscroll-contain p-2"
                 role="dialog"
                 aria-label="Device views"
               >

@@ -143,6 +143,44 @@ body {
   outline-offset: 2px;
 }
 
+@layer base {
+  /* Phones: no grey flash on tap, no double-tap zoom on controls. */
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+  a,
+  button,
+  input,
+  label,
+  select,
+  summary,
+  textarea,
+  [role="button"],
+  [role="tab"],
+  [role="menuitem"] {
+    touch-action: manipulation;
+  }
+}
+
+/* iOS zooms the whole page into any field under 16px when it gets focus, and
+   an installed app then stays zoomed (and scrolls sideways) until pinched back. */
+@media (hover: none) and (pointer: coarse) {
+  input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"]),
+  select,
+  textarea {
+    font-size: max(16px, 1em) !important;
+  }
+}
+
+/* The installed app doesn't rubber-band: the bounce dragged the sticky
+   header away from the status bar. */
+@media (display-mode: standalone) {
+  html,
+  body {
+    overscroll-behavior-y: none;
+  }
+}
+
 /* Notch / home-indicator insets (viewport-fit=cover); 0 everywhere else. */
 @utility safe-top {
   padding-top: env(safe-area-inset-top);

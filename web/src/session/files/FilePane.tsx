@@ -174,7 +174,7 @@ export function FilePane({
             if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropTarget(null);
           }}
           onDrop={(e) => drop(e, null)}
-          className={`relative min-h-0 flex-1 overflow-y-auto outline-none select-none focus-visible:ring-2 focus-visible:ring-[#8ab4f8]/60 focus-visible:ring-inset ${dropTarget === "" ? "bg-[#8ab4f8]/10" : ""}`}
+          className={`relative min-h-0 flex-1 overflow-y-auto overscroll-contain outline-none select-none focus-visible:ring-2 focus-visible:ring-[#8ab4f8]/60 focus-visible:ring-inset ${dropTarget === "" ? "bg-[#8ab4f8]/10" : ""}`}
         >
           <div
             role="row"

@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Icon, OsIcon } from "./icons";
 import type { IconName } from "./icons";
+import { useScrollLock } from "../app/scrollLock";
 import { rankItems } from "../lib/palette";
 
 export type PaletteItem = {
@@ -54,6 +55,7 @@ export function CommandPalette({ items, onClose }: { items: PaletteItem[]; onClo
     return groups.flatMap((g) => shown.filter((it) => it.group === g));
   }, [shown]);
 
+  useScrollLock(true);
   useEffect(() => setActive(0), [q]);
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
@@ -126,7 +128,7 @@ export function CommandPalette({ items, onClose }: { items: PaletteItem[]; onClo
           id={id}
           role="listbox"
           aria-label="Results"
-          className="max-h-[55vh] overflow-auto p-2"
+          className="max-h-[55dvh] overflow-auto overscroll-contain p-2"
         >
           {ordered.length === 0 && (
             <li className="px-3 py-6 text-center text-sm text-muted">Nothing matches “{q}”.</li>

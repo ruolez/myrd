@@ -118,11 +118,7 @@ export function TermKeyboard({
       reset();
       onFocusChange(true);
     };
-    const onBlur = () => {
-      onFocusChange(false);
-      // iOS can leave the page scrolled after its keyboard closes.
-      requestAnimationFrame(() => window.scrollTo(0, 0));
-    };
+    const onBlur = () => onFocusChange(false);
     reset();
     el.addEventListener("keydown", onKeyDown);
     el.addEventListener("beforeinput", onBeforeInput);

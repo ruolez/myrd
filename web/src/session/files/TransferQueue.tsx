@@ -80,7 +80,7 @@ export function TransferQueue({ files }: { files: FileChannel }) {
           </button>
         )}
       </div>
-      <ul className="min-h-0 space-y-1.5 overflow-y-auto px-3 pb-3">
+      <ul className="min-h-0 space-y-1.5 overflow-y-auto overscroll-contain px-3 pb-3">
         {[...views].reverse().map(({ b, v }) => {
           const done = DONE.includes(v.status);
           const pct =
