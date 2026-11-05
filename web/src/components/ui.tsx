@@ -350,7 +350,7 @@ export function FeedbackProvider({ children }: { children: ReactNode }) {
             </Modal>
           )}
           <div
-            className="pointer-events-none fixed bottom-4 left-1/2 z-[60] flex -translate-x-1/2 flex-col items-center gap-2"
+            className="pointer-events-none fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] left-1/2 z-[60] flex -translate-x-1/2 flex-col items-center gap-2"
             aria-live="polite"
           >
             {toasts.map((t) => (

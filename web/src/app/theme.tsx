@@ -1,5 +1,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import { themeColorFor } from "../lib/pwa";
+import type { ChromeView } from "../lib/pwa";
 
 export type ThemePref = "system" | "light" | "dark";
 const KEY = "remotectl-theme";
@@ -15,9 +17,25 @@ function readPref(): ThemePref {
 
 const media = () => window.matchMedia?.("(prefers-color-scheme: dark)");
 
+let chromeView: ChromeView = "app";
+
 export function applyTheme(pref: ThemePref = readPref()) {
   const dark = pref === "dark" || (pref === "system" && !!media()?.matches);
   document.documentElement.dataset.theme = dark ? "dark" : "light";
+  syncThemeColor();
+}
+
+/** The browser / installed-app window color: the page surface, or the session toolbar. */
+export function setChromeView(view: ChromeView) {
+  chromeView = view;
+  syncThemeColor();
+}
+
+function syncThemeColor() {
+  const theme = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+  document
+    .querySelector('meta[name="theme-color"]')
+    ?.setAttribute("content", themeColorFor(theme, chromeView));
 }
 
 const Ctx = createContext<[ThemePref, (p: ThemePref) => void]>(["system", () => undefined]);

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import type { DeviceId } from "../api/types";
 import { useDeviceLabels } from "../app/directory";
+import { setChromeView } from "../app/theme";
 import { usePalette } from "../app/palette";
 import { useWorkspace, useWorkspaceState } from "../app/workspace";
 import { Icon } from "../components/icons";
@@ -55,6 +56,11 @@ export function WorkspaceView() {
   );
   const compact = !!port?.keyboard && port.height < 480;
   const nameOf = (x: DeviceId | null) => (x && labels.get(x)?.name) || "a device";
+
+  useEffect(() => {
+    setChromeView("session");
+    return () => setChromeView("app");
+  }, []);
 
   // No pull-to-refresh or bounce while controlling a device.
   useEffect(() => {
@@ -239,13 +245,13 @@ export function WorkspaceView() {
     // address bar shows); no browser zoom, which would fight the session's own.
     <div
       ref={rootRef}
-      className={`flex touch-pan-x touch-pan-y flex-col overflow-hidden bg-black text-white ${port ? "fixed inset-x-0 top-0" : "h-dvh"}`}
+      className={`safe-x flex touch-pan-x touch-pan-y flex-col overflow-hidden bg-black text-white ${port ? "fixed inset-x-0 top-0" : "h-dvh"} ${fullscreen || compact ? "safe-top" : ""}`}
       style={
         port ? { height: port.height, transform: `translateY(${port.offsetTop}px)` } : undefined
       }
     >
       {!fullscreen && !compact && (
-        <div className="flex h-12 shrink-0 items-center gap-1 border-b border-white/10 bg-[#161718] pr-2 pl-1.5">
+        <div className="safe-top box-content flex h-12 shrink-0 items-center gap-1 border-b border-white/10 bg-[#161718] pr-2 pl-1.5">
           {back}
           <SessionTabs onSelect={(x) => go(x)} onClose={close} onAdd={() => palette.open()} />
           <div ref={setToolbar} className="flex shrink-0 items-center" />

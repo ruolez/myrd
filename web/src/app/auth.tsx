@@ -19,6 +19,9 @@ type AuthState = {
 
 const Ctx = createContext<AuthState | null>(null);
 
+const OFFLINE = "You're offline. The app loads again as soon as the network is back.";
+const bootMessage = (e: unknown) => (navigator.onLine ? errorMessage(e) : OFFLINE);
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUserState] = useState<User | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -59,14 +62,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (cancelled) return;
         setConfig(cfg);
       } catch (e) {
-        if (!cancelled) setBootError(errorMessage(e));
+        if (!cancelled) setBootError(bootMessage(e));
       }
       try {
         const { user: u } = await api.auth.me();
         if (!cancelled) setUser(u);
       } catch (e) {
         if (!cancelled && !(e instanceof ApiError && e.status === 401))
-          setBootError(errorMessage(e));
+          setBootError(bootMessage(e));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -75,6 +78,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, [setUser]);
+
+  // The installed app starts from its cached shell; boot again once the network returns.
+  useEffect(() => {
+    if (!bootError) return;
+    const retry = () => location.reload();
+    window.addEventListener("online", retry);
+    return () => window.removeEventListener("online", retry);
+  }, [bootError]);
 
   const logout = useCallback(async () => {
     await api.auth.logout().catch(() => undefined);

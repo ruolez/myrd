@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api, errorMessage } from "../api/client";
 import { useAuth, useUser } from "../app/auth";
+import { promptInstall, usePwa } from "../app/pwa";
 import { useTheme } from "../app/theme";
 import type { ThemePref } from "../app/theme";
 import {
@@ -17,6 +18,7 @@ import {
 } from "../components/ui";
 import { currentClientKeyId, forgetClientKeyCache } from "../lib/clientKey";
 import { dateTime, timeAgo } from "../lib/format";
+import type { InstallHint } from "../lib/pwa";
 import { useAsync } from "../lib/hooks";
 import { MIN_PASSWORD } from "./Signup";
 
@@ -42,13 +44,17 @@ function Section({
 export function Settings() {
   return (
     <>
-      <PageHeader title="Settings" subtitle="Sign-in methods, browser keys and appearance." />
+      <PageHeader
+        title="Settings"
+        subtitle="Sign-in methods, browser keys, appearance and the app."
+      />
       <div className="space-y-6">
         <TotpSection />
         <PasswordSection />
         <ClientKeysSection />
         <LoginSessionsSection />
         <AppearanceSection />
+        <AppSection />
       </div>
     </>
   );
@@ -434,6 +440,58 @@ function AppearanceSection() {
           </button>
         ))}
       </div>
+    </Section>
+  );
+}
+
+const INSTALL_STEPS: Record<Exclude<InstallHint, "installed" | "prompt">, ReactNode> = {
+  "ios-share": (
+    <>
+      In Safari, tap <b>Share</b>, then <b>Add to Home Screen</b>. The app keeps its own sign-in, so
+      you sign in once more after opening it.
+    </>
+  ),
+  "mac-safari-dock": (
+    <>
+      In Safari, choose <b>File › Add to Dock</b>.
+    </>
+  ),
+  "android-menu": (
+    <>
+      Open the browser menu (⋮) and choose <b>Install app</b> or <b>Add to Home screen</b>.
+    </>
+  ),
+  "chromium-menu": (
+    <>
+      Use the install icon at the right of the address bar, or the browser menu ›{" "}
+      <b>Cast, save and share › Install</b>. If it isn&apos;t there, the app is already installed.
+    </>
+  ),
+  unsupported: <>This browser can&apos;t install apps. Use Chrome, Edge or Safari instead.</>,
+};
+
+function AppSection() {
+  const { hint, justInstalled } = usePwa();
+  return (
+    <Section
+      title="App"
+      description="Install my RemoteDesktop to open it from your dock, taskbar or home screen in its own window."
+    >
+      {hint === "installed" ? (
+        <p className="flex items-center gap-2 text-sm">
+          <Badge tone="success">Installed</Badge> You&apos;re using the installed app.
+        </p>
+      ) : justInstalled ? (
+        <p className="flex items-center gap-2 text-sm">
+          <Badge tone="success">Installed</Badge> Open it from your apps.
+        </p>
+      ) : hint === "prompt" ? (
+        <button type="button" className="btn-primary" onClick={() => void promptInstall()}>
+          Install app
+        </button>
+      ) : (
+        <p className="text-sm text-muted">{INSTALL_STEPS[hint]}</p>
+      )}
     </Section>
   );
 }

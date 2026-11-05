@@ -5,16 +5,18 @@ import { Icon } from "../components/icons";
 import type { IconName } from "../components/icons";
 import { Menu } from "../components/menu";
 import { RailTip } from "../components/RailTip";
-import { Brand, ErrorBox } from "../components/ui";
+import { Brand, ErrorBox, useConfirm } from "../components/ui";
 import { DEFAULT_SIDEBAR, isSidebarToggle, navMode, parseSidebarPrefs } from "../lib/nav";
 import type { NavMode, SidebarPrefs } from "../lib/nav";
 import { signaling } from "../lib/signaling";
 import type { ConnState } from "../lib/signaling";
 import { useAuth, useUser } from "./auth";
 import { usePalette } from "./palette";
+import { promptInstall, usePwa } from "./pwa";
 import { DeviceViewsNav } from "../pages/devices/DashboardPane";
 import { SessionCount, SessionDock } from "./SessionDock";
 import { useTheme } from "./theme";
+import { useWorkspaceState } from "./workspace";
 
 type NavItem = { to: string; label: string; icon: IconName; end?: boolean };
 
@@ -217,6 +219,7 @@ function Account({ compact, sig }: { compact: boolean; sig: ConnState }) {
   const [theme, setTheme] = useTheme();
   const navigate = useNavigate();
   const onSettings = useLocation().pathname === "/settings";
+  const { hint } = usePwa();
   const status = sig === "open" ? "Connected" : sig === "connecting" ? "Connecting…" : "Offline";
   const dot = sig === "open" ? "bg-success" : sig === "connecting" ? "bg-warning" : "bg-error";
   return (
@@ -229,6 +232,15 @@ function Account({ compact, sig }: { compact: boolean; sig: ConnState }) {
       } ${onSettings ? "bg-surface-2" : ""}`}
       items={[
         { label: "Account settings", icon: "settings", onSelect: () => navigate("/settings") },
+        ...(hint === "prompt"
+          ? [
+              {
+                label: "Install app",
+                icon: "download" as const,
+                onSelect: () => void promptInstall(),
+              },
+            ]
+          : []),
         "separator",
         { label: "System theme", checked: theme === "system", onSelect: () => setTheme("system") },
         { label: "Light theme", checked: theme === "light", onSelect: () => setTheme("light") },
@@ -384,9 +396,42 @@ function Sidebar({
         </div>
       </nav>
 
-      <div className={`border-t border-outline p-2 ${compact ? "flex justify-center" : ""}`}>
+      <div
+        className={`border-t border-outline px-2 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] ${compact ? "flex justify-center" : ""}`}
+      >
         <Account compact={compact} sig={sig} />
       </div>
+    </div>
+  );
+}
+
+function UpdateBanner() {
+  const { updated } = usePwa();
+  const open = useWorkspaceState().order.length;
+  const confirm = useConfirm();
+  if (!updated) return null;
+  const reload = async () => {
+    if (
+      open > 0 &&
+      !(await confirm({
+        title: "Reload to update?",
+        message: `Reloading ends your ${open === 1 ? "open session" : `${open} open sessions`}.`,
+        confirm: "Reload",
+      }))
+    )
+      return;
+    location.reload();
+  };
+  return (
+    <div
+      role="status"
+      className="mb-4 flex flex-wrap items-center gap-3 rounded-2xl border border-outline bg-primary-soft px-4 py-2.5 text-sm text-text"
+    >
+      <Icon name="refresh" size={18} className="shrink-0 text-primary" />
+      <span className="flex-1">A new version of the app is available.</span>
+      <button type="button" className="btn-tonal btn-sm" onClick={() => void reload()}>
+        Reload
+      </button>
     </div>
   );
 }
@@ -423,9 +468,9 @@ export function Layout() {
   const closeDrawer = () => setOpen(false);
 
   return (
-    <div className="flex min-h-full">
+    <div className="safe-x flex min-h-full">
       <aside
-        className={`sticky top-0 hidden h-screen shrink-0 overflow-hidden border-r border-outline bg-surface transition-[width] duration-200 ease-out motion-reduce:transition-none lg:block ${
+        className={`safe-top sticky top-0 hidden h-screen shrink-0 overflow-hidden border-r border-outline bg-surface transition-[width] duration-200 ease-out motion-reduce:transition-none lg:block ${
           prefs.collapsed ? "w-[4.5rem]" : "w-68"
         }`}
       >
@@ -441,7 +486,7 @@ export function Layout() {
         <div className="fixed inset-0 z-40 lg:hidden" onClick={closeDrawer}>
           <div className="absolute inset-0 bg-black/40" />
           <aside
-            className="absolute top-0 left-0 h-full overflow-hidden bg-surface shadow-xl"
+            className="safe-top absolute top-0 left-0 h-full overflow-hidden bg-surface pl-[env(safe-area-inset-left)] shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
             <Sidebar
@@ -456,7 +501,7 @@ export function Layout() {
         </div>
       )}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-30 flex items-center gap-2 border-b border-outline bg-surface px-4 py-2 lg:hidden">
+        <header className="sticky top-0 z-30 flex items-center gap-2 border-b border-outline bg-surface px-4 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-2 lg:hidden">
           <button className="btn-text btn-sm" aria-label="Open menu" onClick={() => setOpen(true)}>
             <Icon name="menu" />
           </button>
@@ -464,8 +509,9 @@ export function Layout() {
           <SessionCount />
         </header>
         <main
-          className={`mx-auto w-full flex-1 px-4 py-6 sm:px-6 lg:py-8 ${wide ? "max-w-[110rem]" : "max-w-6xl"}`}
+          className={`mx-auto w-full flex-1 px-4 pt-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:px-6 lg:pt-8 lg:pb-[calc(2rem+env(safe-area-inset-bottom))] ${wide ? "max-w-[110rem]" : "max-w-6xl"}`}
         >
+          <UpdateBanner />
           {keyError && (
             <div className="mb-4">
               <ErrorBox error={keyError} />

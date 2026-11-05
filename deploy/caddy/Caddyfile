@@ -45,8 +45,12 @@
 		root * /srv
 		@assets path /assets/*
 		header @assets Cache-Control "public, max-age=31536000, immutable"
+		# Everything else, the service workers (/sw.js, /dl-sw.js) included, is
+		# revalidated on every load; a worker must never be cached as immutable.
 		@app not path /assets/*
 		header @app Cache-Control "no-cache"
+		@manifest path /manifest.webmanifest
+		header @manifest Content-Type "application/manifest+json"
 		try_files {path} /index.html
 		file_server
 	}
