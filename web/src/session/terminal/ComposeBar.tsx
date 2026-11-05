@@ -1,10 +1,17 @@
 // A command line with the phone's own editing: autocorrect, predictions,
 // dictation, the space-bar cursor. Return sends the line (with Enter);
-// recent commands of this device are a tap away.
+// saved commands (every device) and recent ones (this device) are a tap away.
 
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../../components/icons";
-import { historyKey, pushHistory, readList, writeList } from "../../lib/termHistory";
+import {
+  historyKey,
+  pushHistory,
+  readList,
+  snippetsKey,
+  toggleSnippet,
+  writeList,
+} from "../../lib/termHistory";
 
 export function ComposeBar({
   deviceId,
@@ -20,7 +27,9 @@ export function ComposeBar({
   const [history, setHistory] = useState(() =>
     readList(globalThis.localStorage, historyKey(deviceId)),
   );
+  const [snippets, setSnippets] = useState(() => readList(globalThis.localStorage, snippetsKey));
   const ref = useRef<HTMLTextAreaElement>(null);
+  const saved = snippets.includes(text.trim());
 
   useEffect(() => {
     ref.current?.focus({ preventScroll: true });
@@ -41,15 +50,37 @@ export function ComposeBar({
     setText("");
   };
 
+  const toggleSaved = () => {
+    const next = toggleSnippet(snippets, text);
+    setSnippets(next);
+    writeList(globalThis.localStorage, snippetsKey, next);
+  };
+  const recent = history.filter((h) => !snippets.includes(h)).slice(0, 12);
+  const chip = "max-w-[60vw] shrink-0 truncate rounded-full px-3 py-1.5 font-mono text-xs";
+
   return (
     <div className="shrink-0 border-t border-white/10 bg-[#1b1c1d] px-2 pt-1.5 pb-1.5">
-      {!text && history.length > 0 && (
+      {!text && (snippets.length > 0 || recent.length > 0) && (
         <div className="mb-1.5 flex gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          {history.slice(0, 12).map((h) => (
+          {snippets.map((h) => (
+            <button
+              key={`s:${h}`}
+              type="button"
+              aria-label={`Saved: ${h}`}
+              className={`${chip} flex items-center gap-1 bg-[#8ab4f8]/20 text-[#d2e3fc]`}
+              onPointerDown={(e) => e.preventDefault()}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setText(h)}
+            >
+              <Icon name="star" size={12} className="shrink-0" />
+              <span className="truncate">{h}</span>
+            </button>
+          ))}
+          {recent.map((h) => (
             <button
               key={h}
               type="button"
-              className="max-w-[60vw] shrink-0 truncate rounded-full bg-white/10 px-3 py-1.5 font-mono text-xs text-white/85"
+              className={`${chip} bg-white/10 text-white/85`}
               onPointerDown={(e) => e.preventDefault()}
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => setText(h)}
@@ -82,6 +113,19 @@ export function ComposeBar({
             }
           }}
         />
+        {text.trim() && (
+          <button
+            type="button"
+            aria-label={saved ? "Remove from saved commands" : "Save this command"}
+            aria-pressed={saved}
+            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full hover:bg-white/10 ${saved ? "text-[#fdd663]" : "text-white/60"}`}
+            onPointerDown={(e) => e.preventDefault()}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={toggleSaved}
+          >
+            <Icon name={saved ? "star" : "starOutline"} size={20} />
+          </button>
+        )}
         <button
           type="button"
           aria-label="Send the command"

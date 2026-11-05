@@ -5,10 +5,12 @@
 // selects a word and dragging extends the selection.
 
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
+import type { ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, Ref } from "react";
@@ -32,7 +34,7 @@ import { holdDeadline, initialTouch, touchStep } from "../../lib/touch";
 import type { TouchAction, TouchState } from "../../lib/touch";
 import type { Pt } from "../../lib/zoom";
 import type { Term } from "../TerminalChannel";
-import { TERMINAL_FONT, TERMINAL_THEME } from "./theme";
+import { TERMINAL_FONT } from "./theme";
 import { adoptXtermStyles } from "./xtermStyles";
 
 export type TerminalViewHandle = {
@@ -48,6 +50,18 @@ export type TerminalViewHandle = {
   focus(): void;
   /** The size that fits the view now. */
   fit(): TermSize | null;
+  /** Finds the next (or previous) match of query; false when there is none. */
+  find(query: string, back?: boolean): boolean;
+  clearFind(): void;
+};
+
+export type FindResults = { index: number; count: number };
+
+const FIND_DECORATIONS = {
+  matchBackground: "#fdd66340",
+  matchOverviewRuler: "#fdd663",
+  activeMatchBackground: "#f9ab00",
+  activeMatchColorOverviewRuler: "#f9ab00",
 };
 
 type Props = {
@@ -61,6 +75,10 @@ type Props = {
   /** A tap that should raise the phone's keyboard. */
   onTap: () => void;
   onHotkey?: (h: Hotkey) => void;
+  theme: ITheme;
+  /** Cmd+F / Ctrl+Shift+F. */
+  onFind?: () => void;
+  onFindResults?: (r: FindResults) => void;
   handleRef?: Ref<TerminalViewHandle>;
 };
 
@@ -76,14 +94,18 @@ export function TerminalView({
   onSize,
   onTap,
   onHotkey,
+  theme,
+  onFind,
+  onFindResults,
   handleRef,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const xRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const searchRef = useRef<SearchAddon | null>(null);
   const sizeRef = useRef<TermSize | null>(null);
-  const cb = useRef({ onSize, onTap, onHotkey, onFontSize, visible });
-  cb.current = { onSize, onTap, onHotkey, onFontSize, visible };
+  const cb = useRef({ onSize, onTap, onHotkey, onFontSize, visible, onFind, onFindResults, theme });
+  cb.current = { onSize, onTap, onHotkey, onFontSize, visible, onFind, onFindResults, theme };
   const [bubble, setBubble] = useState<{ x: number; y: number; copy: boolean } | null>(null);
 
   // ---------- xterm lifetime ----------
@@ -94,7 +116,7 @@ export function TerminalView({
       fontFamily: TERMINAL_FONT,
       fontSize,
       lineHeight: 1.15,
-      theme: TERMINAL_THEME,
+      theme: cb.current.theme,
       scrollback: 5000,
       cursorBlink: !touch,
       cursorInactiveStyle: touch ? "block" : "outline",
@@ -107,6 +129,12 @@ export function TerminalView({
     });
     const fit = new FitAddon();
     x.loadAddon(fit);
+    const search = new SearchAddon();
+    x.loadAddon(search);
+    const offResults = search.onDidChangeResults((r) =>
+      cb.current.onFindResults?.({ index: r.resultIndex, count: r.resultCount }),
+    );
+    searchRef.current = search;
     const unicode = new Unicode11Addon();
     x.loadAddon(unicode);
     x.unicode.activeVersion = "11";
@@ -163,6 +191,11 @@ export function TerminalView({
         if (e.type === "keydown") cb.current.onHotkey?.(h);
         return false;
       }
+      const findKey = e.key.toLowerCase() === "f" && (isMac ? e.metaKey : e.ctrlKey && e.shiftKey);
+      if (findKey && cb.current.onFind) {
+        if (e.type === "keydown") cb.current.onFind();
+        return false;
+      }
       const copyKey = e.key.toLowerCase() === "c" && (isMac ? e.metaKey : e.ctrlKey && e.shiftKey);
       if (copyKey && x.hasSelection()) {
         if (e.type === "keydown") void navigator.clipboard?.writeText(x.getSelection());
@@ -182,6 +215,8 @@ export function TerminalView({
     });
     return () => {
       clearTimeout(glCheck);
+      offResults.dispose();
+      searchRef.current = null;
       offData();
       offEnd();
       for (const o of offs) o.dispose();
@@ -265,7 +300,22 @@ export function TerminalView({
     scrollToBottom: () => xRef.current?.scrollToBottom(),
     focus: () => xRef.current?.focus(),
     fit: refit,
+    find: (query, back = false) => {
+      const sa = searchRef.current;
+      if (!sa || !query) return false;
+      const opts = { decorations: FIND_DECORATIONS };
+      return back ? sa.findPrevious(query, opts) : sa.findNext(query, opts);
+    },
+    clearFind: () => {
+      searchRef.current?.clearDecorations();
+      xRef.current?.clearSelection();
+    },
   }));
+
+  useEffect(() => {
+    const x = xRef.current;
+    if (x) x.options.theme = theme;
+  }, [theme]);
 
   // ---------- touch ----------
   const g = useRef({
@@ -478,7 +528,11 @@ export function TerminalView({
   };
 
   return (
-    <div className={`absolute inset-0 ${visible ? "" : "invisible"}`} aria-hidden={!visible}>
+    <div
+      className={`absolute inset-0 ${visible ? "" : "invisible"}`}
+      style={{ background: theme.background }}
+      aria-hidden={!visible}
+    >
       {/* isolate: xterm's own z-indexes stay under the gesture layer. */}
       <div ref={hostRef} className="terminal-host absolute inset-0 isolate pt-1 pl-1.5" />
       {touch && (

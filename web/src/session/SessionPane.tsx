@@ -944,6 +944,7 @@ function DesktopPane({
                 connected={live}
                 onHotkey={onHotkey}
                 deckRef={setTermDeck}
+                files={snap?.files ?? null}
                 headerEnd={
                   <button
                     className="btn btn-sm shrink-0 px-2 text-white/80 hover:bg-white/10"

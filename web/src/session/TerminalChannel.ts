@@ -5,6 +5,7 @@
 import {
   ackMsg,
   attachRequest,
+  cwdRequest,
   decodeTermData,
   detachMsg,
   inputFrames,
@@ -174,6 +175,14 @@ export class TerminalChannel {
     return this.opened(this.request((id) => openRequest(id, size, shell, admin), OPEN_TIMEOUT_MS));
   }
 
+  /** The working directory of a terminal's shell; rejects with "unsupported" where the agent cannot tell. */
+  cwd(term: TermId): Promise<string> {
+    return this.request((id) => cwdRequest(id, term), LIST_TIMEOUT_MS).then((m) => {
+      if (m.t !== "cwd") throw new TermError("protocol", "unexpected reply");
+      return m.path;
+    });
+  }
+
   /** Takes over a terminal from `list`. */
   attach(source: TermSourceId, size: TermSize): Promise<Term> {
     return this.opened(this.request((id) => attachRequest(id, source, size), OPEN_TIMEOUT_MS));
@@ -243,6 +252,9 @@ export class TerminalChannel {
     const m = parseTermMsg(data);
     if (!m) return;
     switch (m.t) {
+      case "cwd":
+        this.settle(m.id, m);
+        break;
       case "sources":
       case "opened": {
         // Output can follow `opened` at once: register the terminal before

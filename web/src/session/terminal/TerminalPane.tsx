@@ -16,6 +16,8 @@ import { SessionOverlays } from "../SessionOverlays";
 import { touchFirst } from "../useTouchInput";
 import { TerminalDeck } from "./TerminalDeck";
 import type { DeckHandle } from "./TerminalDeck";
+import { nextTheme, TERMINAL_THEMES } from "./theme";
+import { setTermTheme, useTermTheme } from "./useTermTheme";
 
 /** End reasons a dropped phone connection produces: worth reconnecting by itself. */
 const TRANSIENT = new Set(["ice_failed", "peer_disconnected", "error", "server_restart"]);
@@ -43,6 +45,7 @@ export function TerminalPane({
   const [touch] = useState(touchFirst);
   const [powerOpen, setPowerOpen] = useState(false);
   const deck = useRef<DeckHandle | null>(null);
+  const themeId = useTermTheme();
   const setDeck = useCallback((h: DeckHandle | null) => (deck.current = h), []);
   const phase = snap?.phase ?? "preparing";
   const live = phase === "connected" || phase === "reconnecting";
@@ -82,6 +85,13 @@ export function TerminalPane({
       disabled: !live,
     },
     { label: "Paste", icon: "paste", onSelect: () => void deck.current?.paste(), disabled: !live },
+    { label: "Find…", icon: "search", onSelect: () => deck.current?.find(), disabled: !live },
+    {
+      label: "Upload a file here…",
+      icon: "upload",
+      onSelect: () => deck.current?.upload(),
+      disabled: !live || !snap?.files,
+    },
     ...(touch
       ? [
           {
@@ -94,6 +104,11 @@ export function TerminalPane({
       : []),
     { label: "Larger text", icon: "zoomIn", onSelect: () => deck.current?.zoom(1) },
     { label: "Smaller text", icon: "zoomOut", onSelect: () => deck.current?.zoom(-1) },
+    {
+      label: `Theme: ${TERMINAL_THEMES[themeId].name}`,
+      icon: "palette",
+      onSelect: () => setTermTheme(nextTheme(themeId)),
+    },
     ...(onSwitchMode
       ? [
           {
@@ -150,6 +165,7 @@ export function TerminalPane({
           connected={live}
           onHotkey={onHotkey}
           deckRef={setDeck}
+          files={snap?.files ?? null}
         />
         <SessionOverlays
           snap={snap}

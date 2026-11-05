@@ -46,6 +46,7 @@ export type TermMsg =
   | { t: "opened"; id: TermRequestId; term: TermId; source: TermSource; window: number }
   | { t: "closed"; term: TermId; reason: string; exitCode: number | null }
   | { t: "title"; term: TermId; title: string }
+  | { t: "cwd"; id: TermRequestId; path: string }
   | { t: "error"; id: TermRequestId | null; term: TermId | null; code: string; detail: string };
 
 // ---------- binary frames ----------
@@ -124,6 +125,9 @@ export function resizeMsg(term: TermId, size: TermSize): string {
 export const ackMsg = (term: TermId, bytes: number) => JSON.stringify({ t: "ack", term, bytes });
 export const detachMsg = (term: TermId) => JSON.stringify({ t: "detach", term });
 export const killMsg = (term: TermId) => JSON.stringify({ t: "kill", term });
+/** Asks for the working directory of a terminal's shell. */
+export const cwdRequest = (id: TermRequestId, term: TermId) =>
+  JSON.stringify({ t: "cwd", id, term });
 
 // ---------- incoming JSON ----------
 
@@ -197,6 +201,9 @@ export function parseTermMsg(text: string): TermMsg | null {
     case "title":
       if (!isU(m.term, 0xffff) || !isStr(m.title)) return null;
       return { t: "title", term: m.term as TermId, title: m.title };
+    case "cwd":
+      if (!isU(m.id) || !isStr(m.path) || !m.path) return null;
+      return { t: "cwd", id: m.id as TermRequestId, path: m.path };
     case "error":
       if (!isStr(m.code)) return null;
       return {
@@ -286,4 +293,31 @@ export function kindLabel(s: Pick<TermSource, "kind" | "fidelity">): string {
     case "app":
       return "Window";
   }
+}
+
+// ---------- paths typed into a shell ----------
+
+/** True for a Windows path ("C:\\x", "\\\\server\\share"). */
+export const isWindowsPath = (p: string) => /^[A-Za-z]:[\\/]/.test(p) || p.startsWith("\\\\");
+
+/**
+ * A path quoted for the shell it is typed into: single quotes for POSIX
+ * shells, double quotes for Windows shells (whose paths cannot hold "),
+ * nothing when the path needs none.
+ */
+export function shellQuote(path: string, windows = isWindowsPath(path)): string {
+  if (windows) return /^[A-Za-z0-9_.\\:@%+=,-]+$/.test(path) ? path : `"${path}"`;
+  return /^[A-Za-z0-9_./:@%+=,-]+$/.test(path) ? path : `'${path.replaceAll("'", `'\\''`)}'`;
+}
+
+/** The name to type for an uploaded file: relative to dir when it landed there. */
+export function typedPath(path: string, dir: string | null): string {
+  if (dir) {
+    const windows = isWindowsPath(path);
+    const sep = windows ? "\\" : "/";
+    const prefix = dir.endsWith(sep) ? dir : dir + sep;
+    if (path.startsWith(prefix) && !path.slice(prefix.length).includes(sep))
+      return shellQuote(path.slice(prefix.length), windows);
+  }
+  return shellQuote(path);
 }

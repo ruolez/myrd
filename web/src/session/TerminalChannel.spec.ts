@@ -140,4 +140,18 @@ describe("TerminalChannel", () => {
     await flush();
     expect([titles, t.title]).toEqual([["vim notes.txt"], "vim notes.txt"]);
   });
+
+  test("cwd resolves with the path, or rejects with the agent's code", async () => {
+    const ch = new FakeChan();
+    const tc = new TerminalChannel(ch);
+    const t = await opened(ch, tc);
+    const p = tc.cwd(t.id);
+    const req = ch.json().at(-1)!;
+    expect(req).toEqual({ t: "cwd", id: req.id, term: 5 });
+    ch.deliver({ t: "cwd", id: req.id, path: "/home/dev/src" });
+    expect(await p).toBe("/home/dev/src");
+    const q = tc.cwd(t.id);
+    ch.deliver({ t: "error", id: ch.json().at(-1)!.id, code: "unsupported", detail: "" });
+    await expect(q).rejects.toMatchObject({ code: "unsupported" });
+  });
 });

@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { vectors } from "../test/vectors";
 import {
   attachRequest,
+  cwdRequest,
   clampSize,
   closedLine,
   decodeTermData,
@@ -10,6 +11,8 @@ import {
   openRequest,
   parseTermMsg,
   resizeMsg,
+  shellQuote,
+  typedPath,
   TERM_INPUT,
   TERM_MAX_PAYLOAD,
   TERM_OUTPUT,
@@ -71,6 +74,9 @@ describe("requests", () => {
         attachRequest(4 as TermRequestId, "tmux:main" as TermSourceId, { cols: 44, rows: 20 }),
       ),
     ).toEqual(byName["attach tmux"]);
+  });
+  test("cwd", () => {
+    expect(JSON.parse(cwdRequest(8 as TermRequestId, 1 as TermId))).toEqual(byName["cwd"]);
   });
   test("resize clamps to the largest accepted size", () => {
     expect(JSON.parse(resizeMsg(1 as TermId, { cols: 5000, rows: 900 }))).toEqual(byName["resize"]);
@@ -194,5 +200,33 @@ describe("closedLine", () => {
     ["whatever", null, "[Terminal closed]"],
   ] as const)("%s %s", (reason, code, want) => {
     expect(closedLine(reason, code)).toBe(want);
+  });
+});
+
+describe("shellQuote", () => {
+  test.each([
+    ["/home/dev/report.pdf", "/home/dev/report.pdf"],
+    ["/home/dev/my report.pdf", "'/home/dev/my report.pdf'"],
+    ["/tmp/it's here", "'/tmp/it'\\''s here'"],
+    ["/tmp/$HOME`x`", "'/tmp/$HOME`x`'"],
+    ["/tmp/back\\slash", "'/tmp/back\\slash'"],
+    ["C:\\Users\\Ann\\a.txt", "C:\\Users\\Ann\\a.txt"],
+    ["C:\\Users\\Ann Lee\\a b.txt", '"C:\\Users\\Ann Lee\\a b.txt"'],
+  ])("%s", (path, want) => {
+    expect(shellQuote(path)).toBe(want);
+  });
+});
+
+describe("typedPath", () => {
+  test.each([
+    ["/home/dev/a b.txt", "/home/dev", "'a b.txt'"],
+    ["/home/dev/a.txt", "/home/dev/", "a.txt"],
+    ["/home/dev/sub/a.txt", "/home/dev", "/home/dev/sub/a.txt"],
+    ["/home/devx/a.txt", "/home/dev", "/home/devx/a.txt"],
+    ["/Users/a/Downloads/a.txt", null, "/Users/a/Downloads/a.txt"],
+    ["C:\\Users\\Ann\\a.txt", "C:\\Users\\Ann", "a.txt"],
+    ["C:\\Users\\Ann\\a b.txt", "C:\\Users\\Ann", '"a b.txt"'],
+  ])("%s in %s", (path, dir, want) => {
+    expect(typedPath(path, dir)).toBe(want);
   });
 });

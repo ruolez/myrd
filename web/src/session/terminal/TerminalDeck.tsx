@@ -9,7 +9,7 @@ import { Icon } from "../../components/icons";
 import { Spinner } from "../../components/ui";
 import type { Hotkey } from "../../lib/shortcuts";
 import { defaultFontSize, MAX_FONT, MIN_FONT } from "../../lib/termGestures";
-import { describeTermError, TermError } from "../../lib/terminal";
+import { describeTermError, TermError, typedPath } from "../../lib/terminal";
 import type {
   TerminalAvailability,
   TermId,
@@ -21,15 +21,20 @@ import type {
 import { fontKey, openKey, readList, writeList } from "../../lib/termHistory";
 import { afterKey, isOn, keySequence, pasteBytes, tapMod, withMods } from "../../lib/termKeys";
 import type { ModState, Mods, NamedKey } from "../../lib/termKeys";
+import { isFinal } from "../FileChannel";
+import type { FileChannel, Transfer } from "../FileChannel";
 import type { Term, TerminalChannel } from "../TerminalChannel";
 import { AccessoryBar } from "./AccessoryBar";
 import { ComposeBar } from "./ComposeBar";
+import { SearchBar } from "./SearchBar";
 import { SelectSheet } from "./SelectSheet";
 import { TerminalPicker } from "./TerminalPicker";
 import type { PickerTab } from "./TerminalPicker";
 import { TermKeyboard } from "./TermKeyboard";
 import { TerminalView } from "./TerminalView";
-import type { TerminalViewHandle } from "./TerminalView";
+import type { FindResults, TerminalViewHandle } from "./TerminalView";
+import { TERMINAL_THEMES } from "./theme";
+import { useTermTheme } from "./useTermTheme";
 
 /** `lost`: it ended only because the connection did; it keeps running on the device. */
 type Tab = { term: Term; title: string; ended: boolean; lost: boolean };
@@ -40,6 +45,9 @@ export type DeckHandle = {
   paste: () => Promise<void>;
   selectText: () => void;
   zoom: (step: 1 | -1) => void;
+  find: () => void;
+  /** Picks files to upload into the terminal's working directory. */
+  upload: () => void;
 };
 
 type Props = {
@@ -57,6 +65,8 @@ type Props = {
   /** Extra controls at the end of the deck's header. */
   headerEnd?: ReactNode;
   deckRef?: (h: DeckHandle | null) => void;
+  /** The session's file channel: files dropped on the terminal go to its working directory. */
+  files?: FileChannel | null;
 };
 
 const readFont = (deviceId: string) => {
@@ -77,6 +87,7 @@ export function TerminalDeck({
   onHotkey,
   headerEnd,
   deckRef,
+  files = null,
 }: Props) {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeId, setActiveId] = useState<TermId | null>(null);
@@ -93,6 +104,11 @@ export function TerminalDeck({
   const [alt, setAlt] = useState<ModState>("off");
   const [selectText, setSelectText] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [finding, setFinding] = useState(false);
+  const [findResults, setFindResults] = useState<FindResults | null>(null);
+  const [dropping, setDropping] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const theme = TERMINAL_THEMES[useTermTheme()].theme;
   const modTaps = useRef({ ctrl: 0, alt: 0 });
   const mods = useRef({ ctrl, alt });
   mods.current = { ctrl, alt };
@@ -380,6 +396,53 @@ export function TerminalDeck({
     return () => clearTimeout(t);
   }, [notice]);
 
+  // ---------- find ----------
+  const find = (query: string, back: boolean) => {
+    const h = activeId !== null ? handles.current.get(activeId) : null;
+    if (!h) return;
+    if (!query) {
+      h.clearFind();
+      setFindResults(null);
+    } else if (!h.find(query, back)) setFindResults({ index: -1, count: 0 });
+  };
+  const closeFind = () => {
+    if (activeId !== null) handles.current.get(activeId)?.clearFind();
+    setFinding(false);
+    setFindResults(null);
+    if (!touch && activeId !== null) handles.current.get(activeId)?.focus();
+  };
+
+  // ---------- upload into the working directory ----------
+  const upload = useCallback(
+    async (list: File[]) => {
+      if (!list.length) return;
+      if (!files) {
+        setNotice("This device can't receive files.");
+        return;
+      }
+      const t = tabs.find((x) => x.term.id === activeId && !x.ended) ?? null;
+      let dir: string | null = null;
+      if (t && channel) dir = await channel.cwd(t.term.id).catch(() => null);
+      setBusy(
+        list.length === 1 ? `Uploading ${list[0]!.name}…` : `Uploading ${list.length} files…`,
+      );
+      try {
+        const done = await uploadAll(files, list, dir);
+        const ok = done.filter((x) => x.status === "done" && x.path);
+        // The names go on the command line, ready to use.
+        if (ok.length && t) type(ok.map((x) => typedPath(x.path!, dir)).join(" ") + " ");
+        setNotice(
+          ok.length < done.length
+            ? `${done.length - ok.length} of ${done.length} files were not uploaded.`
+            : `Uploaded to ${dir ?? "the Downloads folder"}`,
+        );
+      } finally {
+        setBusy(null);
+      }
+    },
+    [files, tabs, activeId, channel, type],
+  );
+
   const handle = useMemo<DeckHandle>(
     () => ({
       newShell: () => void newShell(),
@@ -393,6 +456,8 @@ export function TerminalDeck({
         if (h) setSelectText(h.text());
       },
       zoom,
+      find: () => setFinding(true),
+      upload: () => fileInput.current?.click(),
     }),
     [newShell, pasteText, activeId, zoom],
   );
@@ -529,7 +594,25 @@ export function TerminalDeck({
   return (
     <div className="relative flex min-h-0 flex-1 flex-col bg-[#131314] text-white">
       {header}
-      <div ref={areaRef} className="relative min-h-0 flex-1 overflow-hidden">
+      <div
+        ref={areaRef}
+        className="relative min-h-0 flex-1 overflow-hidden"
+        onDragOver={(e) => {
+          if (!live || !e.dataTransfer.types.includes("Files")) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+          setDropping(true);
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropping(false);
+        }}
+        onDrop={(e) => {
+          if (!e.dataTransfer.types.includes("Files")) return;
+          e.preventDefault();
+          setDropping(false);
+          void upload(droppedFiles(e.dataTransfer));
+        }}
+      >
         {body}
         {tabs.map((t) => (
           <TerminalView
@@ -542,6 +625,9 @@ export function TerminalDeck({
             onSize={(s) => (lastSize.current = s)}
             onTap={onTap}
             onHotkey={onHotkey}
+            theme={theme}
+            onFind={() => setFinding(true)}
+            onFindResults={t.term.id === activeId ? setFindResults : undefined}
             handleRef={(h) => {
               if (h) handles.current.set(t.term.id, h);
               else handles.current.delete(t.term.id);
@@ -565,6 +651,14 @@ export function TerminalDeck({
             >
               Close
             </button>
+          </div>
+        )}
+        {finding && tabs.length > 0 && (
+          <SearchBar results={findResults} onFind={find} onClose={closeFind} />
+        )}
+        {dropping && (
+          <div className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-xl border-2 border-dashed border-[#8ab4f8] bg-[#131314]/80 text-sm text-white">
+            Drop to upload into this terminal's folder
           </div>
         )}
         {notice && (
@@ -635,8 +729,46 @@ export function TerminalDeck({
         />
       )}
       {selectText !== null && <SelectSheet text={selectText} onClose={() => setSelectText(null)} />}
+      <input
+        ref={fileInput}
+        type="file"
+        multiple
+        hidden
+        onChange={(e) => {
+          const list = [...(e.target.files ?? [])];
+          e.target.value = "";
+          void upload(list);
+        }}
+      />
     </div>
   );
+}
+
+/** Uploads files into dir (null: the agent's default) and resolves once all of them finished. */
+function uploadAll(fc: FileChannel, list: File[], dir: string | null): Promise<Transfer[]> {
+  const ids = list.map((f) => fc.upload(f, dir));
+  return new Promise((resolve) => {
+    let off = () => {};
+    const check = () => {
+      const ts = fc.getTransfers().filter((t) => ids.includes(t.xfer));
+      if (ts.length === ids.length && ts.every(isFinal)) {
+        off();
+        resolve(ts);
+      }
+    };
+    off = fc.subscribe(check);
+    check();
+  });
+}
+
+/** The files of a drop, without folders. */
+function droppedFiles(dt: DataTransfer): File[] {
+  const items = [...dt.items];
+  if (!items.length) return [...dt.files];
+  return items
+    .filter((it) => it.kind === "file" && !it.webkitGetAsEntry()?.isDirectory)
+    .map((it) => it.getAsFile())
+    .filter((f): f is File => f !== null);
 }
 
 function Empty({
