@@ -47,14 +47,23 @@ func decideConsent(trusted, autoAccept bool) consentMode {
 	}
 }
 
-func consentText(mode consentMode, label, email, firstSeen string) (title, message string) {
+// consentText words the prompt; terminal sessions say so, since they run
+// commands without showing anything on the screen.
+func consentText(mode consentMode, terminal bool, label, email, firstSeen string) (title, message string) {
 	if label == "" {
 		label = "unnamed browser"
 	}
 	if mode == consentNewKey {
+		what := "this new browser"
+		if terminal {
+			what = "a terminal session (commands on this computer) from this new browser"
+		}
 		return "Allow this new browser?",
-			fmt.Sprintf("Allow this new browser: %s, first seen %s? (user %s)\n\n"+
-				"Allow and remember also lets every other browser signed in as %s connect without asking.", label, firstSeen, email, email)
+			fmt.Sprintf("Allow %s: %s, first seen %s? (user %s)\n\n"+
+				"Allow and remember also lets every other browser signed in as %s connect without asking.", what, label, firstSeen, email, email)
+	}
+	if terminal {
+		return "Remote terminal request", fmt.Sprintf("Allow a terminal session (commands on this computer) from %s? (%s)", label, email)
 	}
 	return "Remote session request", fmt.Sprintf("Allow session from %s? (%s)", label, email)
 }

@@ -159,6 +159,17 @@ export function DeviceDetail() {
               <Icon name="back" size={18} />
               Devices
             </Link>
+            {config?.terminal === true && d.features.includes("terminal") && (
+              <button
+                className="btn-outline"
+                disabled={!canConnect}
+                onClick={() => navigate(`/session/${d.id}?mode=terminal`)}
+                title="A command-line terminal on the device, without its screen"
+              >
+                <Icon name="terminal" size={18} />
+                Terminal
+              </button>
+            )}
             <button
               className="btn-primary"
               disabled={!canConnect}

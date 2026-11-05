@@ -84,6 +84,7 @@ function render(s) {
   if (document.activeElement !== $("pause")) $("pause").checked = st.paused;
   if (document.activeElement !== $("ask-new")) $("ask-new").checked = st.ask_new_browsers;
   if (document.activeElement !== $("previews")) $("previews").checked = st.screen_previews;
+  if (document.activeElement !== $("terminal")) $("terminal").checked = st.terminal;
   $("preview-line").hidden = !st.preview;
   $("preview-line").textContent = st.preview || "";
 
@@ -125,6 +126,9 @@ $("end-btn").addEventListener("click", () => post("/api/session/end").then(refre
 $("pause").addEventListener("change", (e) => post("/api/pause", { paused: e.target.checked }).then(refresh));
 $("previews").addEventListener("change", (e) =>
   post("/api/prefs", { screen_previews: e.target.checked }).then(refresh),
+);
+$("terminal").addEventListener("change", (e) =>
+  post("/api/prefs", { terminal: e.target.checked }).then(refresh),
 );
 $("ask-new").addEventListener("change", (e) =>
   post("/api/prefs", { ask_new_browsers: e.target.checked }).then(refresh),

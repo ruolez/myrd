@@ -7,6 +7,7 @@ replace github.com/ruolez/remotectl/proto => ../proto
 require (
 	fyne.io/systray v1.12.2
 	github.com/coder/websocket v1.8.15
+	github.com/creack/pty v1.1.24
 	github.com/pion/ice/v4 v4.4.7
 	github.com/pion/interceptor v0.1.49
 	github.com/pion/logging v0.2.4

@@ -63,7 +63,7 @@ Release   { "id","version","os":"darwin|windows","arch":"amd64|arm64|universal|a
 |---|---|---|
 | GET | `/healthz` (via Caddy also `/v1/healthz`) | `{"ok":true,"db":true}` |
 | GET | `/v1/releases/{id}/file` | the installer of a published release (`Content-Disposition` = its filename, `X-Content-SHA256`, Range supported); 404 when unpublished, except for admins |
-| GET | `/v1/config` | `{"product_name":"remotectl","version","signup_allowed":bool,"webauthn":{"rp_id","origin"},"downloads":{"macos":url\|null,"windows":url\|null},"features":["organization","device_info","previews"],"screen_previews":bool}`; `features` lists optional APIs (absent on older servers) |
+| GET | `/v1/config` | `{"product_name":"remotectl","version","signup_allowed":bool,"webauthn":{"rp_id","origin"},"downloads":{"macos":url\|null,"windows":url\|null},"features":["organization","device_info","previews"],"screen_previews":bool,"terminal":bool}`; `features` lists optional APIs (absent on older servers) |
 
 ### Auth
 | Method | Path | Body → Response |
@@ -177,7 +177,7 @@ The served file name is the uploaded one with `.link-<code>` before the extensio
 | POST | `/v1/admin/devices/{id}/update` | `{force?:bool}` → 202 `{version}`; as `/v1/devices/{id}/update` for any device |
 | POST | `/v1/admin/devices/{id}/virtual-display` | `{action}` → 202 `{}`; as `/v1/devices/{id}/virtual-display` for any device |
 | POST | `/v1/admin/updates/push` | `{os?:"darwin"\|"windows"}` → `{queued:int}`; "Update all outdated": `update.check{explicit:true}` (never forced) to every online outdated device, spread over up to 10 min |
-| GET / PUT | `/v1/admin/settings` | `{signup_allowed:bool, default_auto_accept:bool, max_session_hours:int, download_macos_url, download_windows_url, screen_previews:bool}`; turning `screen_previews` off drops every stored preview |
+| GET / PUT | `/v1/admin/settings` | `{signup_allowed:bool, default_auto_accept:bool, max_session_hours:int, download_macos_url, download_windows_url, screen_previews:bool, terminal_allowed:bool}`; turning `screen_previews` off drops every stored preview; changing `terminal_allowed` (default true) is pushed to every connected agent (`device.update{terminal}`) |
 
 `GET /v1/admin/overview` →
 ```jsonc
@@ -207,7 +207,7 @@ Prometheus text metrics at `GET /metrics` on the API's internal listener `:9090`
 
 ```
 Browser                         Server                              Agent
- ── session.create{req,device_id,client_key_id,force_relay} ─▶
+ ── session.create{req,device_id,client_key_id,force_relay,mode?} ─▶
                                 checks owner / online / not busy / key not revoked
                                 inserts sessions(state=pending), audit session.created
  ◀─ session.created{req,session_id,ice_servers,ice_ttl,device{id,name,public_key}}
@@ -230,6 +230,7 @@ Browser                         Server                              Agent
 
 Rules:
 - One pending/active session per device (`device_busy` otherwise).
+- `mode` is `"desktop"` (default) or `"terminal"` (since 0.7.0; anything else → `bad_request`). It is stored on the session (`sessions.mode`, `Session.mode` in the REST objects), audited in `session.created` meta, and added by the server to every `session.offer` it forwards (`mode`). A terminal session has no video: the browser offers no video transceiver and opens only `control`, `file` and `term`; the agent needs no screen or input permission, starts no capture, closes `input`, `move` and `cursor`, ignores `control` messages other than `ping` and `power`, and its consent prompt says it is a terminal. The mode is a hint, not a permission: the `term` channel works in desktop sessions too, and the device's trust in the browser key is what authorizes either. An organization that turned terminals off (`terminal_allowed`, §2 Admin settings) refuses `mode:"terminal"` with `error{code:"terminal_disabled"}`.
 - Pending sessions not active within 90 s → `failed` / `timeout`, `session.end` to both.
 - A second `session.offer` for an **active** session is an ICE restart; the server forwards it, the agent renegotiates on the existing peer connection (same fingerprint checks). The agent first applies the offer's `ice_servers` to that peer connection (`SetConfiguration`, every other setting kept), so the restart gathers relay candidates with the fresh credentials.
 - Browser socket closes → its pending/active sessions get `session.end{peer_disconnected}` to the agent **only for pending** sessions; active P2P sessions continue (the media path does not need the server). The agent ends the session itself when ICE fails.
@@ -256,12 +257,13 @@ Rules:
 - Server pushes `virtual_display{action:"install"|"remove"}` (Windows devices only; older agents ignore it): install or remove the bundled virtual display driver. The agent reports progress and the result in `device.info` (`virtual_display.driver`), not in a reply.
 - `permissions{permissions}` whenever TCC state changes; `pins.sync{pinned_client_keys}` after any pin change.
 - `token.renew{}` → `token{token,expires_at}` (the agent keeps it for the next reconnect).
-- Server pushes `device.update{name,auto_accept}`, `client_key.revoked{public_key}`.
+- Server pushes `device.update{name,auto_accept,terminal?}`, `client_key.revoked{public_key}`. `terminal` (since 0.7.0) is sent when the organization's `terminal_allowed` changes (and with every device edit): agents stop opening new terminals while it is false.
+- `session.terminal{session_id, terminals:[TerminalRecord]}` (feature `"terminal"`, audit only, never relayed, ≤ 50 records per message, accepted like `session.file`): `TerminalRecord = {term, action: "opened"|"attached"|"closed", source: "shell"|"tmux"|"screen"|"console"|"app" (or "unknown" for a failed attach), title, admin?, result: "ok"|"error", error?, reason? (closed: "detached"|"exited"|"killed"|"session_ended"), exit_code?, bytes_in?, bytes_out?, duration_ms?}`. Audit events: `terminal.opened`, `terminal.open_failed`, `terminal.attached`, `terminal.attach_failed`, `terminal.closed` (meta: term, source, title, admin, error, and for `closed` reason, exit_code, bytes_in, bytes_out, duration_ms). Never what was typed or shown.
 - `session.file{session_id, files:[FileRecord]}` (audit only, never relayed): one record per finished file transfer, batched (≤ 50 records per message). `FileRecord = {xfer, direction: "upload"|"download", name, dir, size, bytes, sha256, result: "ok"|"cancelled"|"error", error, duration_ms}`; `upload` = browser → device. The server accepts it for a session of this device that connected, also after it ended (records are flushed just before `session.end`), and audits each record as above; batches over 50 are rejected with `bad_request`.
 
 ### Optional features
 
-Both sides list optional message sets they accept: the agent in `hello.capabilities.features`, the server in `hello_ack.features`. Neither sends a feature's messages unless the other listed it (the server answers unknown types with `error`). Features: `device_info`, `preview` (the agent lists it when its backend can take snapshots).
+Both sides list optional message sets they accept: the agent in `hello.capabilities.features`, the server in `hello_ack.features`. Neither sends a feature's messages unless the other listed it (the server answers unknown types with `error`). Features: `device_info`, `preview` (the agent lists it when its backend can take snapshots), `terminal` (the agent: it can run terminals and the person at the device allows them, so dashboards offer Terminal; the server: it accepts `session.terminal` and the organization allows terminals. An agent serves the `term` channel only while the server listed it, or a later `device.update` said `terminal:true`).
 
 ### Device info (feature `device_info`)
 
@@ -362,7 +364,7 @@ A user can save a device's sign-in so that opening a session on its lock screen 
 
 ## 5. Data channels
 
-The browser creates the offer with one `recvonly` video transceiver (H.264, packetization-mode=1, preferring high 640c1f/64001f, then main 4d001f, then constrained baseline 42e01f; then VP9 `profile-id=1` for full color; then the repair formats rtx, red, ulpfec, `flexfec-03`) and five data channels (exact labels).
+The browser creates the offer with one `recvonly` video transceiver (H.264, packetization-mode=1, preferring high 640c1f/64001f, then main 4d001f, then constrained baseline 42e01f; then VP9 `profile-id=1` for full color; then the repair formats rtx, red, ulpfec, `flexfec-03`) and these data channels (exact labels); a terminal session (§3 `mode`) omits the video transceiver and `input`, `move`, `cursor`.
 
 Video: the agent encodes at most the negotiated profile (high without B-frames, i.e. constrained high), stamps each frame's RTP timestamp with its capture time (90 kHz), sends a keyframe only when the browser asks (PLI/FIR, at most every 300 ms), and paces packets at 2.5× the bandwidth estimate (no packet waits more than 50 ms). The estimate is GCC (forked in `agent/internal/gcc`): it holds instead of climbing while the screen sends less than it allows, every large frame doubles as a bandwidth probe, and loss is judged over windows of at least 20 packets (up to 1 s or 100 packets), each packet counted once even when the browser reports it again. Once the screen has not changed for 200 ms the agent re-encodes the last frame in passes of falling quantizer (36 → 18, each paced to half the target bitrate) until text is sharp. An encoder that cannot bound its quantizer (some Windows hardware encoders) gets repeat passes instead: the same picture under the normal rate control, at most 24, until one comes back under 1500 bytes. A change to a small area (about 2% of the screen or less: a caret, a clock) does not restart the passes still to come, which cover it; after the last pass it sends the finest one again (repeat passes: the last 3 again). Larger changes start over. The first frame the encoder returns after a pass was requested counts as that pass whatever its flags (a Windows encoder may lose the static flag or return a keyframe), and at most twice a full ladder of passes (14, or 48 repeat passes) follows the last real content change or keyframe, so a blinking caret cannot keep passes flowing. A capture whose pixels did not change (an OS damage report without new content) is not new content.
 
@@ -377,6 +379,7 @@ Repair (forward error correction): when the browser offered `flexfec-03`, the ag
 | `cursor` | `ordered:false, maxRetransmits:0` | agent → browser, binary |
 | `control` | ordered, reliable | both; JSON text + binary clipboard frames |
 | `file` | ordered, reliable | both; JSON text + binary `0x40` data frames (see below). Agents without file transfer close it. |
+| `term` | ordered, reliable | both; JSON text + binary `0x50`/`0x51` frames (feature `"terminal"`, since 0.7.0). Agents without terminals, or while terminals are not allowed, close it. |
 
 ### `input` (binary, little-endian, first byte = type)
 
@@ -416,7 +419,7 @@ JSON text messages, `{"t": "...", ...}`:
 
 | t | dir | fields |
 |---|---|---|
-| `hello` | A→B on open | `monitors:[Monitor]`, `active:index`, `encoder`, `codec:"h264"`, `fps` (current target), `max_fps` (encoder cap), `features:[string]` (`"stream"`, `"move"`, `"files"`, `"file_ops"`, `"wallpaper"`, `"unlock"`, `"power"`, `"display"`; absent on old agents), `permissions:{screen,input}`, `agent_version`, `os`, `locked` (the device shows its unlock screen; absent on old agents = false), `unlock_key`, `unlock_key_sig` (with `"unlock"`, §4.2), `power:[string]` (with `"power"`: the restarts offered, `"restart"` and/or `"restart_agent"`) |
+| `hello` | A→B on open | `monitors:[Monitor]`, `active:index`, `encoder`, `codec:"h264"`, `fps` (current target), `max_fps` (encoder cap), `features:[string]` (`"stream"`, `"move"`, `"files"`, `"file_ops"`, `"wallpaper"`, `"unlock"`, `"power"`, `"display"`, `"terminal"`; absent on old agents), `permissions:{screen,input}`, `agent_version`, `os`, `locked` (the device shows its unlock screen; absent on old agents = false), `unlock_key`, `unlock_key_sig` (with `"unlock"`, §4.2), `power:[string]` (with `"power"`: the restarts offered, `"restart"` and/or `"restart_agent"`) |
 | `monitor` | A→B | `active:index`, `width`, `height` (native pixels, after a switch) |
 | `screen` | A→B on change | `locked:bool`. Polled once a second, every 150 ms for 10 s after an `unlock` typed the password. The viewer says the device is locked and that typing the password unlocks it: macOS blanks the unlock screen for ScreenCaptureKit, so while locked the macOS backend captures with CGDisplayStream instead, and every macOS capture wakes the display and keeps it on. Windows (since 0.5.0) reports a lock while the input desktop is the secure one and LogonUI runs in the console session (lock and sign-in screens, not UAC prompts); the Linux demo device never does |
 | `unlock` | B→A | `id` (u32), `credential: SealedCredential`: type the saved password on the lock screen (feature `"unlock"`, §4.2) |
@@ -538,9 +541,48 @@ Rules:
 - The agent runs at most 4 transfers and 2 requests (`roots`, `list`, `mkdir`, `rename`, `delete`) at once (`too_many`); 60 s without progress cancels a transfer (`stalled`). `get` on anything but a regular file is `not_file`.
 - File operations (feature `"file_ops"`, since 0.6.5). Names are sanitized like upload names and `ok.path` carries the result. `mkdir` fails with `exists` when the name is taken, unless `exist_ok` and it is a folder. `rename` never replaces another entry (`exists`); a case-only change works on case-insensitive file systems. `delete` removes a folder recursively without following links inside it, and deleting a link removes the link. Neither `rename` nor `delete` touches a file-system root, a `roots` entry or an ancestor of one (`protected`), nor the agent's state directory or anything containing it (`denied`). `put` with `replace` writes to the hidden part file as usual and, after the checksum matches, atomically replaces a regular file of the same name (a folder or link of that name is never replaced: the upload takes a free name instead); without it uploads never replace. Each operation, like each transfer, is one `session.file` record: `direction` `mkdir`|`rename`|`delete`, `xfer` = the request `id`, `name` + `dir` of the entry, `to` (rename), `kind` (`dir`|`file`|`other`), `result` `ok`|`error`; a replacing upload's record has `replaced: true`. Audit events: `file.folder_created`, `file.renamed`, `file.deleted` and their `*_failed` forms (`file.folder_create_failed`, `file.rename_failed`, `file.delete_failed`).
 
+### `term` (feature `"terminal"`)
+
+Command-line terminals on the device, in both session modes: shells the agent starts and keeps running, and terminals already open there that the browser takes over. Every terminal is a VT byte stream (xterm-256color); several are multiplexed on the one channel, each with a `term` id the agent assigns. The agent reports each open, takeover and close for the audit log (`session.terminal`, §3), never the bytes.
+
+Binary frames:
+
+| type | name | dir | layout after the type byte | total |
+|---|---|---|---|---|
+| `0x50` | TermOutput | A→B | `term u16, payload 1..16384 bytes` | 4..16387 |
+| `0x51` | TermInput | B→A | `term u16, payload 1..16384 bytes` | 4..16387 |
+
+JSON text frames `{"t": ...}`. The browser allocates request `id`s (u32).
+
+| t | dir | fields |
+|---|---|---|
+| `list` | B→A | `id` |
+| `sources` | A→B | `id`, `sources:[Source]`, `shells:[{id, name, path}]` (programs `open` can start, the default first), `admin` (`open` can start an elevated shell) |
+| `open` | B→A | `id`, `cols`, `rows`, `shell` (an `id` from `shells`; optional = the default), `admin` (optional): start a shell and attach to it |
+| `attach` | B→A | `id`, `source` (a `Source.id`), `cols`, `rows`: take over a terminal |
+| `opened` | A→B | `id`, `term`, `source: Source`, `window`: output for `term` follows |
+| `resize` | B→A | `term`, `cols`, `rows` |
+| `ack` | B→A | `term`, `bytes` (cumulative output bytes rendered) |
+| `title` | A→B | `term`, `title` (the program set its window title) |
+| `detach` | B→A | `term`: stop watching; the terminal keeps running on the device |
+| `kill` | B→A | `term`: end the program |
+| `closed` | A→B | `term`, `reason` (`detached`, `exited`, `killed`, `session_ended`), `exit_code` (exited / killed; -1 = ended by a signal) |
+| `error` | A→B | `id` or `term`, `code`, `detail` |
+
+`Source = {id, kind, title, detail, attached, admin, fidelity, created}`: `id` like `shell:3`, `tmux:main`, `screen:1234.work`; `kind` `shell` (a shell the agent keeps), `tmux`, `screen`, `console` (a Windows console window), `app` (a Terminal.app / iTerm2 tab); `detail` (working directory, window count…); `attached` (viewers now, browsers and people at the device); `fidelity` `full` (the program's own byte stream) or `mirror` (a screen read and redrawn: no scrollback, possibly no colors); `created` unix ms (0 = unknown).
+
+Error codes: `not_found` (no such source), `denied`, `no_user` (nobody signed in), `unsupported` (e.g. `admin` where elevation is not offered), `too_many` (8 terminals per channel, 16 shells per device), `audit_unavailable` (the audit queue is nearly full: no new terminals), `spawn_failed`, `protocol` (malformed frame, `cols`/`rows` outside 1..1000 / 1..500, flow-control violation).
+
+Rules:
+- Flow control: the agent keeps at most `window` output bytes (256 KiB) of a terminal beyond the browser's last `ack`, and stops reading the program's output while it waits, so a program that prints a lot is slowed down rather than flooding the browser. The browser acks as it renders, at least every 32 KiB. An `ack` beyond what was sent ends that terminal with `error{term, code:"protocol"}`.
+- Shells started with `open` keep running when their viewer detaches or the session ends, and can be reattached from any later session (`list` shows them with `attached:0`). Reattaching replays up to 256 KiB of recent output (from a line start; from the switch to the alternate screen when a full-screen program runs), then the program's tracked modes (cursor keys, mouse reporting, bracketed paste, cursor visibility); a full-screen program is made to redraw by a resize. The size of a terminal is that of its last viewer to resize it.
+- tmux and screen sessions of the device's user are listed (`tmux list-sessions`, `screen -ls`) and attached as their own clients (`tmux attach-session -t =<name>`, `screen -x <id>`), so everyone attached sees the same session; the client ends with its last browser viewer, the session lives on.
+- Programs run as the device's signed-in user, with `TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM=remotectl` and a UTF-8 locale; new shells are login shells started in the user's home folder.
+- Output and input of one terminal stay in order; nothing is buffered for a terminal no browser watches, except the replay buffer.
+
 ## 6. Agent device-local surfaces
 
-- macOS/Windows: tray icon (red during a session) with Pause / Ask before new browsers connect / Show screen previews (on by default; `prefs.json` `no_screen_previews`; for 5 minutes after one the menu says "Screen preview sent to <browser> at <time>") / End session (kill switch) / Quit, native consent prompt (no border overlay on the screen; the native `rc_indicator_show` is kept but unused). An unenrolled macOS agent asks for the token in a dialog (before the permission prompts, which follow enrollment) and keeps an **Enroll this device…** menu item that reopens it; an agent waiting for enrollment also picks up `remote-agent enroll --server … --token …` run in a terminal by the same user (it polls its state file every 2 s).
+- macOS/Windows: tray icon (red during a session) with Pause / Ask before new browsers connect / Allow remote terminal (on by default; `prefs.json` `no_terminal`; off: the agent advertises no `terminal` and closes `term` channels) / Show screen previews (on by default; `prefs.json` `no_screen_previews`; for 5 minutes after one the menu says "Screen preview sent to <browser> at <time>") / End session (kill switch) / Quit, native consent prompt (no border overlay on the screen; the native `rc_indicator_show` is kept but unused). An unenrolled macOS agent asks for the token in a dialog (before the permission prompts, which follow enrollment) and keeps an **Enroll this device…** menu item that reopens it; an agent waiting for enrollment also picks up `remote-agent enroll --server … --token …` run in a terminal by the same user (it polls its state file every 2 s).
 - Linux Docker demo device: a local "device console" web page (port 5562 on the host) stands in for the physical screen: enrollment token entry, consent prompts, kill switch, Ask before new browsers connect, Show screen previews, pinned browsers list, session indicator.
 
 ## 7. Agent updates

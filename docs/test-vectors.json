@@ -221,5 +221,34 @@
         "sig": "iGFOex+Dr14yeLCBDcoBQhmYImEzuu3noJlZjqpn92e8LGqkgSTmGYHOU5bsbtScnETKE2sK+xZjhS3gPJWzlQ=="
       }
     ]
-  }
+  },
+  "term_data": [
+    { "name": "output", "type": 80, "term": 1, "payload_hex": "6869", "hex": "5001006869" },
+    { "name": "input, highest term id", "type": 81, "term": 65535, "payload_hex": "0d", "hex": "51ffff0d" },
+    { "name": "input, escape and utf-8", "type": 81, "term": 258, "payload_hex": "1b5b41e282ac", "hex": "5102011b5b41e282ac" }
+  ],
+  "term_data_invalid": [
+    { "name": "empty", "hex": "" },
+    { "name": "no payload", "hex": "500100" },
+    { "name": "truncated header", "hex": "5001" },
+    { "name": "file frame type", "hex": "4001000000ff" }
+  ],
+  "term_messages": [
+    { "name": "list", "json": { "t": "list", "id": 1 } },
+    { "name": "open default shell", "json": { "t": "open", "id": 2, "cols": 80, "rows": 24 } },
+    { "name": "open admin PowerShell", "json": { "t": "open", "id": 3, "shell": "powershell", "admin": true, "cols": 120, "rows": 40 } },
+    { "name": "attach tmux", "json": { "t": "attach", "id": 4, "source": "tmux:main", "cols": 44, "rows": 20 } },
+    { "name": "resize", "json": { "t": "resize", "term": 1, "cols": 1000, "rows": 500 } },
+    { "name": "ack", "json": { "t": "ack", "term": 1, "bytes": 32768 } },
+    { "name": "detach", "json": { "t": "detach", "term": 1 } },
+    { "name": "kill", "json": { "t": "kill", "term": 2 } }
+  ],
+  "term_messages_invalid": [
+    { "name": "zero columns", "json": { "t": "open", "id": 5, "cols": 0, "rows": 24 } },
+    { "name": "too many rows", "json": { "t": "resize", "term": 1, "cols": 80, "rows": 501 } },
+    { "name": "attach without source", "json": { "t": "attach", "id": 6, "cols": 80, "rows": 24 } },
+    { "name": "ack without term", "json": { "t": "ack", "bytes": 10 } },
+    { "name": "negative ack", "json": { "t": "ack", "term": 1, "bytes": -1 } },
+    { "name": "unknown type", "json": { "t": "exec", "id": 7 } }
+  ]
 }

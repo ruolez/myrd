@@ -10,8 +10,8 @@ import { Badge } from "../components/ui";
 import { viewKey } from "../lib/dashboardState";
 import { folderPath } from "../lib/folders";
 import { osName } from "../lib/format";
-import { canConnect } from "../pages/devices/actions";
-import { useUser } from "./auth";
+import { canConnect, hasTerminal } from "../pages/devices/actions";
+import { useAuth, useUser } from "./auth";
 import { useDirectory } from "./directory";
 import { useWorkspace, useWorkspaceState } from "./workspace";
 
@@ -26,6 +26,7 @@ export function PaletteProvider({ children }: { children: ReactNode }) {
   const [extra, setExtra] = useState<PaletteItem[] | null>(null);
   const { devices, folders, tags } = useDirectory();
   const user = useUser();
+  const terminalsAllowed = useAuth().config?.terminal === true;
   const navigate = useNavigate();
   const ws = useWorkspace();
   const wsState = useWorkspaceState();
@@ -74,6 +75,18 @@ export function PaletteProvider({ children }: { children: ReactNode }) {
             : undefined,
       };
     });
+    // "term <name>" finds a device's terminal.
+    const terms: PaletteItem[] = devices
+      .filter((d) => hasTerminal(d, terminalsAllowed) && (canConnect(d) || d.id in wsState.entries))
+      .map((d) => ({
+        id: `term:${d.id}`,
+        group: "Terminals",
+        label: `Terminal on ${d.name}`,
+        detail: [osName(d.os), d.hostname].filter(Boolean).join(" · "),
+        keywords: ["terminal", "shell", "console", "command line"],
+        icon: "terminal" as const,
+        run: () => navigate(`/session/${d.id}?mode=terminal`),
+      }));
     const pageList: [string, string, IconName][] = [
       ["/devices", "Devices", "devices"],
       ["/devices/add", "Add device", "add"],
@@ -115,6 +128,7 @@ export function PaletteProvider({ children }: { children: ReactNode }) {
       ...openSessions,
       ...(extra ?? []),
       ...devs,
+      ...terms,
       ...folders.map((f) => ({
         id: f.id,
         group: "Folders",
@@ -131,7 +145,7 @@ export function PaletteProvider({ children }: { children: ReactNode }) {
       })),
       ...pages,
     ];
-  }, [open, devices, folders, tags, extra, navigate, user.is_admin, ws, wsState]);
+  }, [open, devices, folders, tags, extra, navigate, user.is_admin, ws, wsState, terminalsAllowed]);
 
   const close = useCallback(() => setOpen(false), []);
   const api = useMemo<PaletteApi>(() => ({ open: () => setOpen(true), extra: setExtra }), []);

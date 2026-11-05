@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ruolez/remotectl/agent/internal/files"
+	"github.com/ruolez/remotectl/agent/internal/terminal"
 	"github.com/ruolez/remotectl/proto"
 )
 
@@ -20,12 +21,13 @@ const (
 type auditRecord struct {
 	sessionID string
 	rec       proto.FileRecord
-	size      int // JSON bytes
+	term      *proto.TerminalRecord // set: a terminal record (session.terminal) instead of rec
+	size      int                   // JSON bytes
 }
 
-// fileAudit reports finished transfers to the server (session.file) in
-// batches of ≤ proto.MaxFileRecords records / 48 KiB, one session per
-// message. It belongs to the Manager, so unsent records survive the session
+// fileAudit reports finished transfers to the server (session.file), and
+// terminal events (session.terminal), in batches of ≤ 50 records / 48 KiB,
+// one session and one kind per message. It belongs to the Manager, so unsent records survive the session
 // and a signaling reconnect; the queue is bounded, and while it is nearly
 // full ok() refuses new transfers (audit_unavailable) so that every running
 // transfer still has room for its record.
@@ -60,11 +62,27 @@ func (a *fileAudit) record(sessionID string, r proto.FileRecord) {
 	a.queue = append(a.queue, auditRecord{sessionID: sessionID, rec: r, size: len(b) + 1})
 }
 
-// ok reports whether a new transfer may start.
+// recordTerminal queues one terminal record; it never blocks.
+func (a *fileAudit) recordTerminal(sessionID string, r proto.TerminalRecord) {
+	b, _ := json.Marshal(r)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.queue) >= a.capacity {
+		a.log.Error("terminal audit queue full, record dropped", "session", sessionID, "term", r.Term, "action", r.Action)
+		return
+	}
+	a.queue = append(a.queue, auditRecord{sessionID: sessionID, term: &r, size: len(b) + 1})
+}
+
+// auditMargin keeps room for the records of everything already running:
+// each transfer and request ends with one, each terminal with two.
+const auditMargin = files.MaxActive + files.MaxRequests + 2*terminal.MaxTerms + terminal.MaxRequests
+
+// ok reports whether a new transfer or terminal may start.
 func (a *fileAudit) ok() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return len(a.queue)+files.MaxActive+files.MaxRequests < a.capacity
+	return len(a.queue)+auditMargin < a.capacity
 }
 
 func (a *fileAudit) pending(sessionID string) int {
@@ -80,10 +98,11 @@ func (a *fileAudit) pending(sessionID string) int {
 }
 
 // nextBatch returns how many leading queue entries form the next message:
-// the same session, at most maxRecords records and maxBytes of records.
+// the same session and kind, at most maxRecords records and maxBytes of
+// records.
 func nextBatch(q []auditRecord, maxRecords, maxBytes int) int {
 	n, size := 0, 0
-	for n < len(q) && n < maxRecords && q[n].sessionID == q[0].sessionID {
+	for n < len(q) && n < maxRecords && q[n].sessionID == q[0].sessionID && (q[n].term == nil) == (q[0].term == nil) {
 		if n > 0 && size+q[n].size > maxBytes {
 			break
 		}
@@ -111,12 +130,22 @@ func (a *fileAudit) sendNext(sessionID string) bool {
 		return false
 	}
 	id := a.queue[start].sessionID
-	batch := make([]proto.FileRecord, n)
-	for i := range batch {
-		batch[i] = a.queue[start+i].rec
+	typ, msg := proto.TypeSessionFile, any(nil)
+	if a.queue[start].term != nil {
+		batch := make([]proto.TerminalRecord, n)
+		for i := range batch {
+			batch[i] = *a.queue[start+i].term
+		}
+		typ, msg = proto.TypeSessionTerminal, proto.SessionTerminal{SessionID: id, Terminals: batch}
+	} else {
+		batch := make([]proto.FileRecord, n)
+		for i := range batch {
+			batch[i] = a.queue[start+i].rec
+		}
+		msg = proto.SessionFile{SessionID: id, Files: batch}
 	}
 	a.mu.Unlock()
-	if err := a.send(proto.TypeSessionFile, proto.SessionFile{SessionID: id, Files: batch}); err != nil {
+	if err := a.send(typ, msg); err != nil {
 		a.log.Debug("file audit send failed, will retry", "session", id, "records", n, "err", err)
 		return false
 	}

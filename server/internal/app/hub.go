@@ -176,6 +176,7 @@ type liveSession struct {
 	connectedAt time.Time
 	browser     *browserConn
 	clientKey   proto.ClientKeyInfo
+	mode        string // proto.ModeDesktop | proto.ModeTerminal
 }
 
 // Hub owns presence (device → socket), browser sockets and live sessions.
@@ -360,7 +361,29 @@ func (h *Hub) PushOrgChanged(userID, kind string, ids []string) {
 
 func (h *Hub) PushDeviceUpdate(deviceID, name string, autoAccept bool) {
 	if ac := h.agent(deviceID); ac != nil {
-		h.sendMsg(ac.wsConn, proto.TypeDeviceUpdate, proto.DeviceUpdate{Name: name, AutoAccept: autoAccept})
+		on := h.app.Settings().TerminalAllowed
+		h.sendMsg(ac.wsConn, proto.TypeDeviceUpdate, proto.DeviceUpdate{Name: name, AutoAccept: autoAccept, Terminal: &on})
+	}
+}
+
+// PushTerminalAllowed tells every connected agent whether the organization
+// allows terminals now. Sessions in progress keep the terminals they have;
+// agents refuse new ones.
+func (h *Hub) PushTerminalAllowed(on bool) {
+	h.mu.Lock()
+	targets := make([]*agentConn, 0, len(h.agents))
+	for _, ac := range h.agents {
+		targets = append(targets, ac)
+	}
+	h.mu.Unlock()
+	ctx, cancel := dbctx()
+	defer cancel()
+	for _, ac := range targets {
+		d, err := store.DeviceByID(ctx, h.app.pool, ac.deviceID)
+		if err != nil {
+			continue
+		}
+		h.sendMsg(ac.wsConn, proto.TypeDeviceUpdate, proto.DeviceUpdate{Name: d.Name, AutoAccept: d.AutoAccept, Terminal: &on})
 	}
 }
 
@@ -630,6 +653,18 @@ func (h *Hub) ownedByUser(sessionID, userID string) *liveSession {
 
 func (h *Hub) createSession(bc *browserConn, m proto.SessionCreate) {
 	fail := func(code, msg string) { h.sendErr(bc.wsConn, m.Req, "", code, msg) }
+	if !proto.ValidMode(m.Mode) {
+		fail(proto.ErrBadRequest, "unknown session mode")
+		return
+	}
+	mode := m.Mode
+	if mode == "" {
+		mode = proto.ModeDesktop
+	}
+	if mode == proto.ModeTerminal && !h.app.Settings().TerminalAllowed {
+		fail(proto.ErrTerminalDisabled, "terminals are turned off for this organization")
+		return
+	}
 	ctx, cancel := dbctx()
 	defer cancel()
 	pool := h.app.pool
@@ -683,7 +718,7 @@ func (h *Hub) createSession(bc *browserConn, m proto.SessionCreate) {
 		return
 	}
 
-	id, err := store.CreateSession(ctx, pool, d.ID, bc.user.ID, ck.ID, bc.ip)
+	id, err := store.CreateSession(ctx, pool, d.ID, bc.user.ID, ck.ID, bc.ip, mode)
 	if err != nil {
 		h.app.log.Error("create session", "err", err)
 		fail(proto.ErrInternal, "internal error")
@@ -691,10 +726,11 @@ func (h *Hub) createSession(bc *browserConn, m proto.SessionCreate) {
 	}
 	_ = store.TouchClientKey(ctx, pool, ck.ID)
 	h.app.audit(ctx, store.Audit{Actor: "user", Event: "session.created", UserID: bc.user.ID, DeviceID: d.ID, SessionID: id,
-		IP: bc.ip, Meta: map[string]any{"device_name": d.Name, "client_key_id": ck.ID, "client_key_label": ck.Label, "force_relay": m.ForceRelay}})
+		IP: bc.ip, Meta: map[string]any{"device_name": d.Name, "client_key_id": ck.ID, "client_key_label": ck.Label, "force_relay": m.ForceRelay,
+			"mode": mode}})
 
 	ls := &liveSession{id: id, deviceID: d.ID, userID: bc.user.ID, userEmail: bc.user.Email, state: "pending",
-		createdAt: time.Now(), browser: bc,
+		createdAt: time.Now(), browser: bc, mode: mode,
 		clientKey: proto.ClientKeyInfo{ID: ck.ID, PublicKey: base64.StdEncoding.EncodeToString(ck.PublicKey),
 			Label: ck.Label, CreatedAt: ck.CreatedAt.UTC().Format(time.RFC3339)}}
 	h.mu.Lock()
@@ -731,7 +767,7 @@ func (h *Hub) relayOffer(bc *browserConn, m proto.SessionOffer) {
 	// in a long session must still be able to allocate a relay.
 	h.sendMsg(ac.wsConn, proto.TypeSessionOffer, proto.SessionOffer{SessionID: s.id, SDP: m.SDP, FPSig: m.FPSig,
 		ClientKey: &ck, User: &proto.UserInfo{ID: s.userID, Email: s.userEmail},
-		ICEServers: h.app.iceServers(s.id, "a", h.app.cfg.TURNURLsAgent)})
+		ICEServers: h.app.iceServers(s.id, "a", h.app.cfg.TURNURLsAgent), Mode: s.mode})
 }
 
 // renewICE answers session.ice with fresh browser-side ICE servers, so a
@@ -978,6 +1014,31 @@ func (h *Hub) onAgent(ac *agentConn, typ string, raw []byte) {
 			a.audit(ctx, store.Audit{Actor: "agent", Event: fileEvent(r), UserID: userID, DeviceID: ac.deviceID,
 				SessionID: m.SessionID, IP: ac.ip, Meta: fileMeta(r)})
 		}
+	case proto.TypeSessionTerminal:
+		var m proto.SessionTerminal
+		if json.Unmarshal(raw, &m) != nil {
+			h.sendErr(ac.wsConn, "", "", proto.ErrBadRequest, "invalid session.terminal")
+			return
+		}
+		if len(m.Terminals) > proto.MaxTerminalRecords {
+			h.sendErr(ac.wsConn, "", m.SessionID, proto.ErrBadRequest, "too many terminal records")
+			return
+		}
+		userID, ok := h.fileSessionUser(ac, m.SessionID)
+		if !ok {
+			h.sendErr(ac.wsConn, "", m.SessionID, proto.ErrNotFound, "unknown session")
+			return
+		}
+		ctx, cancel := dbctx()
+		defer cancel()
+		for _, r := range m.Terminals {
+			if !validTerminalRecord(r) {
+				a.log.Warn("invalid terminal record", "session", m.SessionID, "term", r.Term)
+				continue
+			}
+			a.audit(ctx, store.Audit{Actor: "agent", Event: terminalEvent(r), UserID: userID, DeviceID: ac.deviceID,
+				SessionID: m.SessionID, IP: ac.ip, Meta: terminalMeta(r)})
+		}
 	case proto.TypeTokenRenew:
 		tok, exp, err := security.IssueAgentJWT(a.cfg.JWTSecret, ac.deviceID, time.Now(), agentJWTTTL)
 		if err != nil {
@@ -1114,7 +1175,7 @@ func (h *Hub) onHello(ac *agentConn, m proto.Hello) {
 	}
 	ack := proto.HelloAck{ServerTime: time.Now().UTC().Format(time.RFC3339Nano),
 		Device:            proto.DeviceInfo{ID: d.ID, Name: d.Name, AutoAccept: d.AutoAccept},
-		RevokedClientKeys: []string{}, Features: agentFeatures}
+		RevokedClientKeys: []string{}, Features: h.agentFeatures()}
 	if rels, err := store.ListReleases(ctx, a.pool); err != nil {
 		a.log.Error("hello releases", "err", err)
 	} else if rel := pickRelease(rels, m.OS, m.Arch, m.AgentVersion, proto.RolloutBucket(d.ID), false); rel != nil {
@@ -1141,7 +1202,7 @@ func (h *Hub) claim(ctx context.Context, id string) {
 		return
 	}
 	s := &liveSession{id: row.ID, deviceID: row.DeviceID, userID: row.UserID, userEmail: row.UserEmail,
-		state: "active", createdAt: row.CreatedAt}
+		state: "active", createdAt: row.CreatedAt, mode: row.Mode}
 	if row.ConnectedAt != nil {
 		s.connectedAt = *row.ConnectedAt
 	}

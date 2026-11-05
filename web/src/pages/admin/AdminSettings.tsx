@@ -78,6 +78,18 @@ export function AdminSettingsPage() {
             onChange={(v) => setF({ ...f, screen_previews: v })}
           />
         </Row>
+        {f.terminal_allowed !== undefined && (
+          <Row
+            title="Remote terminals"
+            description="Owners may open a command-line terminal on their devices and take over terminals already open there (shells, tmux, screen). Terminal traffic is end-to-end encrypted like the screen; this server logs only when terminals open and close. The person at a device can turn terminals off there (“Allow remote terminal” in the agent's menu). Turning this off stops new terminals at once."
+          >
+            <Toggle
+              label="Remote terminals"
+              checked={f.terminal_allowed}
+              onChange={(v) => setF({ ...f, terminal_allowed: v })}
+            />
+          </Row>
+        )}
         <Field
           label="Maximum session length (hours)"
           hint="The server ends sessions that run longer. 0 disables the limit."

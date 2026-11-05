@@ -835,7 +835,7 @@ func (p *mediaPipe) setControlChannel(dc *webrtc.DataChannel) {
 	}
 	p.sendControl(hello)
 	p.sendStreamState(true)
-	if locked {
+	if locked && p.s.desktop() {
 		go p.s.m.raiseSignIn()
 	}
 }
@@ -899,6 +899,9 @@ func (p *mediaPipe) onControlText(b []byte) {
 	var m controlMsg
 	if json.Unmarshal(b, &m) != nil {
 		return
+	}
+	if !p.s.desktop() && m.T != "ping" && m.T != "power" {
+		return // a terminal session has no screen to stream, unlock or resize
 	}
 	switch m.T {
 	case "ping":

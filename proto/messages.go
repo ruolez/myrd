@@ -186,6 +186,9 @@ type DeviceUpdate struct {
 	Type       string `json:"type"`
 	Name       string `json:"name"`
 	AutoAccept bool   `json:"auto_accept"`
+	// Terminal, when set, says whether the organization allows terminals
+	// now (it changed since hello_ack); agents before 0.7.0 ignore it.
+	Terminal *bool `json:"terminal,omitempty"`
 }
 
 // UpdateCheck asks the agent to look for a release now. Explicit skips the
@@ -244,6 +247,7 @@ type SessionCreate struct {
 	DeviceID    string `json:"device_id"`
 	ClientKeyID string `json:"client_key_id"`
 	ForceRelay  bool   `json:"force_relay,omitempty"`
+	Mode        string `json:"mode,omitempty"` // ModeDesktop (default) | ModeTerminal
 }
 
 type SessionDevice struct {
@@ -327,6 +331,7 @@ type SessionOffer struct {
 	ClientKey  *ClientKeyInfo `json:"client_key,omitempty"`
 	User       *UserInfo      `json:"user,omitempty"`
 	ICEServers []ICEServer    `json:"ice_servers,omitempty"`
+	Mode       string         `json:"mode,omitempty"` // added by the server: ModeDesktop | ModeTerminal
 }
 
 type SessionAnswer struct {

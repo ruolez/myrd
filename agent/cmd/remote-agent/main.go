@@ -162,12 +162,13 @@ func cmdRun(log *slog.Logger, args []string) error {
 	// tray.Run owns the main thread on macOS/Windows; on Linux it just blocks.
 	go func() {
 		<-ctx.Done()
+		var err error
 		select {
-		case err := <-errc:
-			exit(log, err)
+		case err = <-errc:
 		case <-time.After(5 * time.Second):
-			exit(log, nil)
 		}
+		a.Close() // hang up the shells this agent kept
+		exit(log, err)
 	}()
 	tray.Run(a.TrayHooks(quit), func(update func(tray.State)) {
 		a.SetTrayUpdater(update)

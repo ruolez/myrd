@@ -10,6 +10,7 @@ export type Hotkey =
   | { t: "dashboard" }
   | { t: "prev" }
   | { t: "next" }
+  | { t: "newTerminal" }
   | { t: "focus"; n: number };
 
 export type HotkeyEvent = {
@@ -34,6 +35,8 @@ export function workspaceHotkey(e: HotkeyEvent, keyboardLocked = false): Hotkey 
       return { t: "palette" };
     case "KeyD":
       return { t: "dashboard" };
+    case "KeyT":
+      return { t: "newTerminal" };
     case "ArrowLeft":
       return { t: "prev" };
     case "ArrowRight":
@@ -49,5 +52,6 @@ export const HOTKEY_HELP: [string, string][] = [
   ["Ctrl+Alt+Shift+D", "Devices dashboard"],
   ["Ctrl+Alt+Shift+K", "Command palette"],
   ["Ctrl+Alt+Shift+S", "Stream settings"],
+  ["Ctrl+Alt+Shift+T", "New terminal (opens the Terminal of the session)"],
   ["Ctrl+Tab", "Next session (fullscreen with keyboard lock)"],
 ];

@@ -425,6 +425,7 @@ func (a *App) adminPutSettings(w http.ResponseWriter, r *http.Request) error {
 	}
 	ctx := r.Context()
 	previewsWereOn := a.Settings().ScreenPreviews
+	terminalWas := a.Settings().TerminalAllowed
 	if err := store.SaveSettings(ctx, a.pool, s); err != nil {
 		return err
 	}
@@ -434,8 +435,12 @@ func (a *App) adminPutSettings(w http.ResponseWriter, r *http.Request) error {
 	if err := a.reloadSettings(ctx); err != nil {
 		return err
 	}
+	if terminalWas != s.TerminalAllowed {
+		a.hub.PushTerminalAllowed(s.TerminalAllowed)
+	}
 	a.adminAudit(r, store.Audit{Event: "settings.updated", Meta: map[string]any{"signup_allowed": s.SignupAllowed,
-		"default_auto_accept": s.DefaultAutoAccept, "max_session_hours": s.MaxSessionHours, "screen_previews": s.ScreenPreviews}})
+		"default_auto_accept": s.DefaultAutoAccept, "max_session_hours": s.MaxSessionHours, "screen_previews": s.ScreenPreviews,
+		"terminal_allowed": s.TerminalAllowed}})
 	writeJSON(w, http.StatusOK, a.Settings())
 	return nil
 }

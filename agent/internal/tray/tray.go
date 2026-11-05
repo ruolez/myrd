@@ -14,6 +14,7 @@ type State struct {
 	Paused    bool   // new sessions refused while paused
 	AskNew    bool   // "Ask before new browsers connect" (config.Prefs.AskNewBrowsers)
 	Previews  bool   // "Show screen previews" (!config.Prefs.NoScreenPreviews)
+	Terminal  bool   // "Allow remote terminal" (!config.Prefs.NoTerminal)
 	Preview   string // "Screen preview sent to <browser> at 10:42", for a few minutes after one
 	Peer      string // "<label> (<email>)" of the controlling browser
 	Status    string // one-line human status, e.g. "Online", "Waiting for enrollment"
@@ -26,6 +27,7 @@ type Hooks struct {
 	OnPause      func(paused bool) // refuse new sessions while paused
 	OnAskNew     func(ask bool)    // "Ask before new browsers connect"; nil hides it
 	OnPreviews   func(on bool)     // "Show screen previews"; nil hides it
+	OnTerminal   func(on bool)     // "Allow remote terminal"; nil hides it
 	OnQuit       func()
 	OnUninstall  func() // macOS "Uninstall RemoteAgent" menu item; nil hides it
 	OnEnroll     func() // "Enroll this device…" while not enrolled; nil hides it

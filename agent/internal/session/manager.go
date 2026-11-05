@@ -22,6 +22,7 @@ import (
 	"github.com/ruolez/remotectl/agent/internal/keymap"
 	"github.com/ruolez/remotectl/agent/internal/pins"
 	"github.com/ruolez/remotectl/agent/internal/platform"
+	"github.com/ruolez/remotectl/agent/internal/terminal"
 	"github.com/ruolez/remotectl/proto"
 )
 
@@ -80,6 +81,15 @@ type Options struct {
 	FileDeny       []string
 	OnFileActivity func(files.Activity)
 
+	// Terminal enables the `term` channel (shells and terminals on the
+	// device); nil disables it and the channel is closed. TerminalAllowed
+	// must say yes too (nil = no): the server accepts terminal audit and
+	// both the organization and the device allow terminals.
+	// OnTerminalChange feeds the tray / device console and must not block.
+	Terminal         terminal.Host
+	TerminalAllowed  func() bool
+	OnTerminalChange func(open []terminal.Source)
+
 	ConsentTimeout time.Duration // default 60 s
 	FailedTimeout  time.Duration // ICE failed → end; default 15 s
 	Keymap         keymap.Table  // default keymap.For(runtime.GOOS)
@@ -89,6 +99,7 @@ type Options struct {
 // Info describes the current session for local UI.
 type Info struct {
 	SessionID string
+	Mode      string // proto.ModeDesktop | proto.ModeTerminal
 	State     string // "awaiting_approval" | "connecting" | "active"
 	Label     string
 	Email     string
@@ -101,7 +112,7 @@ type Manager struct {
 	o      Options
 	udpMux ice.UDPMux
 
-	audit *fileAudit // nil without Files
+	audit *fileAudit // nil without Files and Terminal
 
 	// Saved sign-in: the unlock key derived from DeviceKey, its SPKI and the
 	// device key's signature over it (nil without Options.UnlockOS).
@@ -148,6 +159,9 @@ func NewManager(o Options) (*Manager, error) {
 	if o.AskNewBrowsers == nil {
 		o.AskNewBrowsers = func() bool { return false }
 	}
+	if o.TerminalAllowed == nil {
+		o.TerminalAllowed = func() bool { return false }
+	}
 	m := &Manager{o: o, revoked: map[string]bool{}, sleep: sleepCtx, now: time.Now, displayDelay: displayRestoreDelay}
 	m.recoverDisplays()
 	if o.UnlockOS != "" {
@@ -162,7 +176,7 @@ func NewManager(o Options) (*Manager, error) {
 		m.unlockKey, m.unlockSPKI = k, spki
 		m.unlockSig = base64.StdEncoding.EncodeToString(ed25519.Sign(o.DeviceKey, proto.UnlockKeyMessage(proto.SPKIHash(spki))))
 	}
-	if o.Files != nil {
+	if o.Files != nil || o.Terminal != nil {
 		m.audit = newFileAudit(o.Send, o.Log)
 		go m.audit.run()
 	}
@@ -316,6 +330,9 @@ func (m *Manager) Current() *Info {
 	}
 	return cur.info()
 }
+
+// terminalOn reports whether this agent serves the `term` channel now.
+func (o Options) terminalOn() bool { return o.Terminal != nil && o.TerminalAllowed() }
 
 // Close ends any session, makes a last attempt at unsent file audit records
 // and releases the UDP port.

@@ -11,8 +11,12 @@ import { Icon } from "../components/icons";
 import type { Hotkey } from "../lib/shortcuts";
 import { workspaceHotkey } from "../lib/shortcuts";
 import { SessionPane } from "./SessionPane";
+import type { TerminalRequest } from "./SessionPane";
 import { SessionTabs } from "./SessionTabs";
+import { useVisualViewport } from "./terminal/useVisualViewport";
+import { touchFirst } from "./useTouchInput";
 import { afterClose, byIndex, MAX_LIVE_SESSIONS, neighbor } from "./workspaceState";
+import type { SessionMode } from "./workspaceState";
 
 type KeyboardLock = { lock?: (codes?: string[]) => Promise<void>; unlock?: () => void };
 const keyboardApi = () => (navigator as Navigator & { keyboard?: KeyboardLock }).keyboard;
@@ -22,6 +26,7 @@ export function WorkspaceView() {
   const id = deviceId as DeviceId;
   const [params] = useSearchParams();
   const relay = params.get("relay") === "1";
+  const mode: SessionMode = params.get("mode") === "terminal" ? "terminal" : "desktop";
   const navigate = useNavigate();
   const location = useLocation();
   const ws = useWorkspace();
@@ -33,6 +38,22 @@ export function WorkspaceView() {
   const [keyboardLocked, setKeyboardLocked] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const [toolbar, setToolbar] = useState<HTMLDivElement | null>(null);
+  // Terminal panels asked for by the route (?mode=terminal on a desktop session).
+  const [termRequests, setTermRequests] = useState<Partial<Record<DeviceId, TerminalRequest>>>({});
+  const requestTerminal = useCallback(
+    (x: DeviceId, shell: boolean) =>
+      setTermRequests((q) => ({ ...q, [x]: { n: (q[x]?.n ?? 0) + 1, shell } })),
+    [],
+  );
+  const [panelFor, setPanelFor] = useState<DeviceId | null>(null);
+  const [touch] = useState(touchFirst);
+  // A terminal on a phone sits right on the keyboard: the workspace follows
+  // the visible viewport instead of 100dvh while one is in view.
+  const focusedMode = st.focused ? st.entries[st.focused]?.mode : undefined;
+  const port = useVisualViewport(
+    touch && !!st.focused && (focusedMode === "terminal" || panelFor === st.focused),
+  );
+  const compact = !!port?.keyboard && port.height < 480;
   const nameOf = (x: DeviceId | null) => (x && labels.get(x)?.name) || "a device";
 
   // No pull-to-refresh or bounce while controlling a device.
@@ -47,15 +68,17 @@ export function WorkspaceView() {
 
   // The route decides what is in view; leaving it puts every session in the background.
   useEffect(() => {
-    const r = ws.open(id, relay);
+    const r = ws.open(id, relay, mode);
     if (!r.ok) {
       setBlocked(r.victim);
       return;
     }
     setBlocked(false);
     ws.focus(id);
+    if (mode === "terminal" && ws.getState().entries[id]?.mode === "desktop")
+      requestTerminal(id, false);
     return () => ws.focus(null);
-  }, [ws, id, relay]);
+  }, [ws, id, relay, mode, requestTerminal]);
 
   const go = useCallback(
     (to: DeviceId | null, replace = true) =>
@@ -77,7 +100,9 @@ export function WorkspaceView() {
       const s = ws.getState();
       if (h.t === "palette") palette.open();
       else if (h.t === "dashboard") navigate("/devices");
-      else if (h.t === "prev" || h.t === "next") {
+      else if (h.t === "newTerminal") {
+        if (s.focused) requestTerminal(s.focused, true);
+      } else if (h.t === "prev" || h.t === "next") {
         const to = neighbor(s, s.focused, h.t === "next" ? 1 : -1);
         if (to && to !== s.focused) go(to);
       } else if (h.t === "focus") {
@@ -85,7 +110,7 @@ export function WorkspaceView() {
         if (to && to !== s.focused) go(to);
       }
     },
-    [ws, palette, navigate, go],
+    [ws, palette, navigate, go, requestTerminal],
   );
 
   // Shortcuts while focus is on the toolbar rather than the remote screen
@@ -161,7 +186,7 @@ export function WorkspaceView() {
                 onClick={() => {
                   ws.close(blocked);
                   setBlocked(false);
-                  if (ws.open(id, relay).ok) ws.focus(id);
+                  if (ws.open(id, relay, mode).ok) ws.focus(id);
                 }}
               >
                 End {nameOf(blocked)} and open
@@ -214,9 +239,12 @@ export function WorkspaceView() {
     // address bar shows); no browser zoom, which would fight the session's own.
     <div
       ref={rootRef}
-      className="flex h-dvh touch-pan-x touch-pan-y flex-col overflow-hidden bg-black text-white"
+      className={`flex touch-pan-x touch-pan-y flex-col overflow-hidden bg-black text-white ${port ? "fixed inset-x-0 top-0" : "h-dvh"}`}
+      style={
+        port ? { height: port.height, transform: `translateY(${port.offsetTop}px)` } : undefined
+      }
     >
-      {!fullscreen && (
+      {!fullscreen && !compact && (
         <div className="flex h-12 shrink-0 items-center gap-1 border-b border-white/10 bg-[#161718] pr-2 pl-1.5">
           {back}
           <SessionTabs onSelect={(x) => go(x)} onClose={close} onAdd={() => palette.open()} />
@@ -248,6 +276,12 @@ export function WorkspaceView() {
             onBack={() => navigate("/devices")}
             toolbar={toolbar}
             fullscreenExtras={switcher}
+            onSwitchMode={(m) => {
+              ws.open(x, e.forceRelay, m);
+              navigate(`/session/${x}`, { replace: true });
+            }}
+            terminalRequest={termRequests[x]}
+            onTerminalPanel={(open) => setPanelFor((p) => (open ? x : p === x ? null : p))}
           />
         );
       })}

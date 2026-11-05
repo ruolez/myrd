@@ -3,11 +3,15 @@
 
 import type { DeviceId } from "../api/types";
 
+export type SessionMode = "desktop" | "terminal";
+
 export const MAX_LIVE_SESSIONS = 6;
 
 export type Entry = {
   id: DeviceId;
   forceRelay: boolean;
+  /** A terminal session has no video; a desktop one can open terminals too. */
+  mode: SessionMode;
   trustKey?: string;
   /** Bumped by every reconnect: the pane and RemoteSession are new. */
   gen: number;
@@ -24,10 +28,10 @@ export type WsState = {
 export const emptyWorkspace: WsState = { order: [], entries: {}, focused: null };
 
 export type WsAction =
-  | { t: "open"; id: DeviceId; forceRelay: boolean; now: number }
+  | { t: "open"; id: DeviceId; forceRelay: boolean; mode?: SessionMode; now: number }
   | { t: "focus"; id: DeviceId | null; now: number }
   | { t: "close"; id: DeviceId }
-  | { t: "replace"; id: DeviceId; forceRelay?: boolean; trustKey?: string }
+  | { t: "replace"; id: DeviceId; forceRelay?: boolean; trustKey?: string; mode?: SessionMode }
   | { t: "reorder"; id: DeviceId; to: number };
 
 export function workspaceReducer(s: WsState, a: WsAction): WsState {
@@ -37,6 +41,7 @@ export function workspaceReducer(s: WsState, a: WsAction): WsState {
       const e: Entry = {
         id: a.id,
         forceRelay: a.forceRelay,
+        mode: a.mode ?? "desktop",
         gen: 0,
         openedAt: a.now,
         lastFocusedAt: a.now,
@@ -71,6 +76,7 @@ export function workspaceReducer(s: WsState, a: WsAction): WsState {
         gen: e.gen + 1,
         forceRelay: a.forceRelay ?? e.forceRelay,
         trustKey: a.trustKey ?? e.trustKey,
+        mode: a.mode ?? e.mode,
       };
       return { ...s, entries: { ...s.entries, [a.id]: next } };
     }

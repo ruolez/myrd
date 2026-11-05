@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { useNavigate } from "react-router";
 import { api } from "../../api/client";
 import type { Device } from "../../api/types";
+import { useAuth } from "../../app/auth";
 import { useDirectory } from "../../app/directory";
 import { useWorkspace, useWorkspaceState } from "../../app/workspace";
 import type { MenuEntry } from "../../components/menu";
@@ -12,6 +13,10 @@ import { canUpdate } from "../../lib/update";
 import { useOrgDialog } from "./dialogs";
 
 export const canConnect = (d: Device) => d.online && d.status !== "disabled" && !d.busy;
+
+/** The device's agent offers terminals and the organization allows them. */
+export const hasTerminal = (d: Device, orgAllows: boolean) =>
+  orgAllows && d.features.includes("terminal");
 
 /** iPhone Safari has no element fullscreen. */
 export const canFullscreen = () => document.fullscreenEnabled;
@@ -32,12 +37,18 @@ export function useDeviceActions() {
   const { editDevices, organization, kickUpdates } = useDirectory();
   const ws = useWorkspace();
   const wsState = useWorkspaceState();
+  const terminalsAllowed = useAuth().config?.terminal === true;
   const openHere = useCallback((d: Device) => d.id in wsState.entries, [wsState]);
 
   /** Opens the session; with fullscreen, the workspace goes fullscreen as it opens. */
   const connect = useCallback(
     (d: Device, fullscreen = false) =>
       navigate(`/session/${d.id}`, fullscreen ? { state: { fullscreen: true } } : undefined),
+    [navigate],
+  );
+  /** A terminal: its own session without video, or the Terminal panel of an open desktop session. */
+  const terminal = useCallback(
+    (d: Device) => navigate(`/session/${d.id}?mode=terminal`),
     [navigate],
   );
   /** Connects without leaving the page; the session waits in the workspace. */
@@ -127,6 +138,16 @@ export function useDeviceActions() {
           disabled: !here && !canConnect(d),
           onSelect: () => connect(d),
         },
+        ...(hasTerminal(d, terminalsAllowed)
+          ? [
+              {
+                label: here ? "Terminal" : "Open terminal",
+                icon: "terminal" as const,
+                disabled: !here && !canConnect(d),
+                onSelect: () => terminal(d),
+              },
+            ]
+          : []),
         ...(canFullscreen() && (here || canConnect(d))
           ? [
               {
@@ -197,9 +218,21 @@ export function useDeviceActions() {
       toast,
       openHere,
       openInBackground,
+      terminal,
+      terminalsAllowed,
       ws,
     ],
   );
 
-  return { connect, details, setFavorite, rename, menu, dialog, openHere, openInBackground };
+  return {
+    connect,
+    terminal,
+    details,
+    setFavorite,
+    rename,
+    menu,
+    dialog,
+    openHere,
+    openInBackground,
+  };
 }

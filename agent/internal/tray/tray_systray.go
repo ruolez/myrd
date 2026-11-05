@@ -73,6 +73,11 @@ func onReady(h Hooks, ready func(update func(State))) {
 		previews = systray.AddMenuItemCheckbox("Show screen previews",
 			"Send a small picture of this screen about once a minute to your dashboard while it is open. It is encrypted for your approved browsers only.", false)
 	}
+	var term *systray.MenuItem
+	if h.OnTerminal != nil {
+		term = systray.AddMenuItemCheckbox("Allow remote terminal",
+			"Let your approved browsers open a command-line terminal on this computer, and take over terminals already open here.", false)
+	}
 	end := systray.AddMenuItem("End session", "Disconnect the controlling browser now")
 	end.Disable()
 	systray.AddSeparator()
@@ -184,10 +189,20 @@ func onReady(h Hooks, ready func(update func(State))) {
 				previews.Uncheck()
 			}
 		}
+		if term != nil {
+			if s.Terminal {
+				term.Check()
+			} else {
+				term.Uncheck()
+			}
+		}
 	}
 
 	go func() {
-		var uninstallCh, enrollCh, askNewCh, previewsCh chan struct{}
+		var uninstallCh, enrollCh, askNewCh, previewsCh, termCh chan struct{}
+		if term != nil {
+			termCh = term.ClickedCh
+		}
 		if askNew != nil {
 			askNewCh = askNew.ClickedCh
 		}
@@ -234,6 +249,16 @@ func onReady(h Hooks, ready func(update func(State))) {
 					previews.Uncheck()
 				}
 				h.OnPreviews(on)
+			case <-termCh:
+				mu.Lock()
+				on := !last.Terminal
+				mu.Unlock()
+				if on {
+					term.Check()
+				} else {
+					term.Uncheck()
+				}
+				h.OnTerminal(on)
 			case <-end.ClickedCh:
 				if h.OnEndSession != nil {
 					h.OnEndSession()

@@ -132,6 +132,9 @@ type Prefs struct {
 	// NoScreenPreviews stops the small screen pictures the owner's
 	// dashboard shows (named as a negative so the zero value keeps them on).
 	NoScreenPreviews bool `json:"no_screen_previews,omitempty"`
+	// NoTerminal refuses remote terminals on this device ("Allow remote
+	// terminal" unchecked; negative so the zero value allows them).
+	NoTerminal bool `json:"no_terminal,omitempty"`
 }
 
 // PrefsPath is prefs.json in the data dir.

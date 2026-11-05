@@ -17,6 +17,7 @@ import (
 	"github.com/ruolez/remotectl/agent/internal/files"
 	"github.com/ruolez/remotectl/agent/internal/gcc"
 	"github.com/ruolez/remotectl/agent/internal/platform"
+	"github.com/ruolez/remotectl/agent/internal/terminal"
 	"github.com/ruolez/remotectl/proto"
 )
 
@@ -43,6 +44,7 @@ type sess struct {
 	m          *Manager
 	id         string
 	clientKey  proto.ClientKeyInfo
+	mode       string // proto.ModeDesktop | proto.ModeTerminal
 	userID     string
 	email      string
 	iceServers []webrtc.ICEServer
@@ -66,14 +68,18 @@ type sess struct {
 	media  *mediaPipe
 	fec    *fecControl
 	in     *inputState
-	files  *files.Service // set when the browser opens the file channel
+	files  *files.Service    // set when the browser opens the file channel
+	term   *terminal.Service // set when the browser opens the term channel
 	unlock unlockGate
 }
 
 func newSess(m *Manager, o proto.SessionOffer) *sess {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &sess{m: m, id: o.SessionID, log: m.o.Log.With("session", o.SessionID), ctx: ctx, cancel: cancel,
-		since: time.Now(), state: stateConnecting, done: make(chan struct{}), fec: &fecControl{}}
+		since: time.Now(), state: stateConnecting, done: make(chan struct{}), fec: &fecControl{}, mode: proto.ModeDesktop}
+	if o.Mode == proto.ModeTerminal {
+		s.mode = proto.ModeTerminal
+	}
 	if o.ClientKey != nil {
 		s.clientKey = *o.ClientKey
 	}
@@ -95,7 +101,7 @@ func iceServers(in []proto.ICEServer) []webrtc.ICEServer {
 func (s *sess) info() *Info {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return &Info{SessionID: s.id, State: s.state, Label: s.clientKey.Label, Email: s.email, Path: s.path, Since: s.since}
+	return &Info{SessionID: s.id, Mode: s.mode, State: s.state, Label: s.clientKey.Label, Email: s.email, Path: s.path, Since: s.since}
 }
 
 func (s *sess) isConnected() bool {
@@ -144,7 +150,8 @@ func (s *sess) run(o proto.SessionOffer) {
 		s.end(proto.EndNotApproved, true)
 		return
 	}
-	if p := m.o.Backend.Permissions(); !p.Screen || !p.Input {
+	// A terminal session neither captures the screen nor injects input.
+	if p := m.o.Backend.Permissions(); s.desktop() && (!p.Screen || !p.Input) {
 		s.log.Warn("missing OS permission", "screen", p.Screen, "input", p.Input)
 		s.end(proto.EndPermission, true)
 		return
@@ -156,7 +163,7 @@ func (s *sess) run(o proto.SessionOffer) {
 	if mode != consentAuto {
 		s.setState(stateAwaiting)
 		s.send(proto.TypeSessionStatus, proto.SessionStatus{SessionID: s.id, Status: proto.StatusAwaitingApproval})
-		title, msg := consentText(mode, s.clientKey.Label, s.email, s.clientKey.CreatedAt)
+		title, msg := consentText(mode, !s.desktop(), s.clientKey.Label, s.email, s.clientKey.CreatedAt)
 		ctx, cancel := context.WithTimeout(s.ctx, m.o.ConsentTimeout)
 		c, err := askConsent(ctx, m.o.Backend, m.o.Prompter, ConsentRequest{
 			SessionID: s.id, Title: title, Message: msg, Label: s.clientKey.Label, Email: s.email,
@@ -281,10 +288,12 @@ func (s *sess) setupPeer() error {
 		pc.Close()
 		return err
 	}
-	sender, err := pc.AddTrack(track)
-	if err != nil {
-		pc.Close()
-		return err
+	var sender *webrtc.RTPSender
+	if s.desktop() {
+		if sender, err = pc.AddTrack(track); err != nil {
+			pc.Close()
+			return err
+		}
 	}
 
 	s.in = newInputState(s.m.o.Backend, s.m.o.Keymap)
@@ -302,7 +311,9 @@ func (s *sess) setupPeer() error {
 		case <-s.ctx.Done():
 		}
 	}()
-	go s.readRTCP(sender)
+	if sender != nil {
+		go s.readRTCP(sender)
+	}
 
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c == nil {
@@ -323,6 +334,15 @@ func (s *sess) setupPeer() error {
 		}
 	})
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+		switch dc.Label() {
+		case "input", "move", "cursor":
+			if !s.desktop() {
+				// The device approved a terminal, not control of its screen.
+				s.log.Warn("desktop channel in a terminal session", "label", dc.Label())
+				dc.Close()
+				return
+			}
+		}
 		switch dc.Label() {
 		case "input":
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
@@ -347,6 +367,8 @@ func (s *sess) setupPeer() error {
 			})
 		case "file":
 			s.attachFiles(dc)
+		case "term":
+			s.attachTerminal(dc)
 		default:
 			s.log.Warn("unexpected data channel", "label", dc.Label())
 			dc.Close()
@@ -381,6 +403,36 @@ func (s *sess) attachFiles(dc *webrtc.DataChannel) {
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) { svc.Handle(msg.IsString, msg.Data) })
 	dc.OnClose(func() { go svc.Close("file channel closed") })
 }
+
+// attachTerminal serves the `term` channel; without Options.Terminal, while
+// terminals are not allowed, or for a second term channel it is closed.
+func (s *sess) attachTerminal(dc *webrtc.DataChannel) {
+	o := s.m.o
+	if !o.terminalOn() {
+		s.log.Info("term channel refused: terminals are off")
+		dc.Close()
+		return
+	}
+	svc := terminal.NewService(terminal.Config{Host: o.Terminal,
+		Record:  func(r proto.TerminalRecord) { s.m.audit.recordTerminal(s.id, r) },
+		AuditOK: s.m.audit.ok, OnChange: o.OnTerminalChange, Log: s.log})
+	s.mu.Lock()
+	refuse := s.ended || s.term != nil
+	if !refuse {
+		s.term = svc
+	}
+	s.mu.Unlock()
+	if refuse {
+		svc.Close("refused")
+		dc.Close()
+		return
+	}
+	dc.OnOpen(func() { svc.Attach(dc) })
+	dc.OnMessage(func(msg webrtc.DataChannelMessage) { svc.Handle(msg.IsString, msg.Data) })
+	dc.OnClose(func() { go svc.Close("term channel closed") })
+}
+
+func (s *sess) desktop() bool { return s.mode != proto.ModeTerminal }
 
 func (s *sess) currentPath() string {
 	s.mu.Lock()
@@ -537,7 +589,7 @@ func (s *sess) onConnected() {
 	s.setState(stateActive)
 	s.send(proto.TypeSessionState, st)
 	s.media.setPath(st.Path)
-	if first {
+	if first && s.desktop() {
 		s.media.start()
 	}
 }
@@ -566,11 +618,15 @@ func (s *sess) end(reason string, send bool) {
 	s.state = stateEnded
 	pc := s.pc
 	fsvc := s.files
+	tsvc := s.term
 	s.mu.Unlock()
 	s.cancel()
 
-	// Transfers end first so their `cancelled` records reach the server
-	// before session.end.
+	// Transfers and terminals end first so their records reach the server
+	// before session.end; kept shells go on running on the device.
+	if tsvc != nil {
+		tsvc.Close("session ended")
+	}
 	if fsvc != nil {
 		fsvc.Close("session ended")
 	}

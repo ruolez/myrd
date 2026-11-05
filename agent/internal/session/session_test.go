@@ -67,6 +67,7 @@ type harness struct {
 	cursor  *webrtc.DataChannel
 	move    *webrtc.DataChannel
 	file    *webrtc.DataChannel
+	term    *webrtc.DataChannel
 
 	mu          sync.Mutex
 	statuses    []string
@@ -83,6 +84,10 @@ type harness struct {
 	signalOrder []string // session.file / session.end, as sent
 	fileText    chan map[string]any
 	fileData    chan []byte
+	mode        string // session.offer mode ("" = desktop)
+	termText    chan map[string]any
+	termData    chan []byte
+	termRecs    []proto.SessionTerminal
 	videoFmtp   string  // codec the browser side received
 	pts         []uint8 // payload types received, one entry per change
 
@@ -113,7 +118,8 @@ func newHarness(t *testing.T, answer platform.Consent, tweaks ...func(*Options))
 		devPub: pub, clientK: ck, spki: base64.StdEncoding.EncodeToString(der), askNew: true,
 		answerOK: make(chan error, 4), controlMsgs: make(chan map[string]any, 64),
 		cursorMsgs: make(chan []byte, 256), rtpPackets: make(chan struct{}, 1),
-		fileText: make(chan map[string]any, 256), fileData: make(chan []byte, 1024)}
+		fileText: make(chan map[string]any, 256), fileData: make(chan []byte, 1024),
+		termText: make(chan map[string]any, 256), termData: make(chan []byte, 1024)}
 	opts := Options{
 		Backend: h.backend, DeviceKey: priv, Pins: ps, Send: h.fromAgent, Prompter: h.prompter,
 		AutoAccept:     func() bool { h.mu.Lock(); defer h.mu.Unlock(); return h.autoAccept },
@@ -189,6 +195,13 @@ func (h *harness) fromAgent(typ string, msg any) error {
 		h.fileRecs = append(h.fileRecs, m)
 		h.signalOrder = append(h.signalOrder, typ)
 		h.mu.Unlock()
+	case proto.TypeSessionTerminal:
+		var m proto.SessionTerminal
+		_ = json.Unmarshal(b, &m)
+		h.mu.Lock()
+		h.termRecs = append(h.termRecs, m)
+		h.signalOrder = append(h.signalOrder, typ)
+		h.mu.Unlock()
 	}
 	return nil
 }
@@ -232,9 +245,11 @@ func (h *harness) offer(tamper bool) {
 		t.Fatal(err)
 	}
 	h.browser = pc
-	if _, err := pc.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo,
-		webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly}); err != nil {
-		t.Fatal(err)
+	if h.mode != proto.ModeTerminal {
+		if _, err := pc.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo,
+			webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	ordered := false
 	zero := uint16(0)
@@ -243,6 +258,17 @@ func (h *harness) offer(tamper bool) {
 	h.move, _ = pc.CreateDataChannel("move", &webrtc.DataChannelInit{Ordered: &ordered, MaxRetransmits: &zero})
 	h.control, _ = pc.CreateDataChannel("control", nil)
 	h.file, _ = pc.CreateDataChannel("file", nil)
+	h.term, _ = pc.CreateDataChannel("term", nil)
+	h.term.OnMessage(func(m webrtc.DataChannelMessage) {
+		if !m.IsString {
+			h.termData <- m.Data
+			return
+		}
+		var v map[string]any
+		if json.Unmarshal(m.Data, &v) == nil {
+			h.termText <- v
+		}
+	})
 	h.file.OnMessage(func(m webrtc.DataChannelMessage) {
 		if !m.IsString {
 			h.fileData <- m.Data
@@ -315,7 +341,7 @@ func (h *harness) offer(tamper bool) {
 	b, _ := proto.Encode(proto.TypeSessionOffer, proto.SessionOffer{SessionID: sessionID, SDP: pc.LocalDescription().SDP,
 		FPSig: h.signFP(fp), ClientKey: &proto.ClientKeyInfo{ID: "ck1", PublicKey: h.spki, Label: "Test Chrome",
 			CreatedAt: "2026-10-19T00:00:00Z"}, User: &proto.UserInfo{ID: ownerID, Email: "owner@example.com"},
-		ICEServers: h.agentICE})
+		ICEServers: h.agentICE, Mode: h.mode})
 	h.mgr.HandleSignal(proto.TypeSessionOffer, b)
 }
 

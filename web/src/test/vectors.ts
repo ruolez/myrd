@@ -82,6 +82,10 @@ export type Vectors = {
   file_data_invalid: { name: string; hex: string }[];
   file_messages: { name: string; json: Json }[];
   file_sha256: { name: string; chunks_hex: string[]; sha256: string }[];
+  term_data: { name: string; type: number; term: number; payload_hex: string; hex: string }[];
+  term_data_invalid: { name: string; hex: string }[];
+  term_messages: { name: string; json: Json }[];
+  term_messages_invalid: { name: string; json: Json }[];
   versions: string[];
   preview: PreviewVectors;
   unlock: UnlockVectors;

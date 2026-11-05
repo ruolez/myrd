@@ -15,6 +15,7 @@ type Session struct {
 	UserEmail      string     `json:"user_email"`
 	ClientKeyID    *string    `json:"client_key_id"`
 	ClientKeyLabel *string    `json:"client_key_label"`
+	Mode           string     `json:"mode"` // desktop | terminal
 	State          string     `json:"state"`
 	CreatedAt      time.Time  `json:"created_at"`
 	ConnectedAt    *time.Time `json:"connected_at"`
@@ -28,7 +29,7 @@ type Session struct {
 	DurationS      *int       `json:"duration_s"`
 }
 
-const sessionCols = `s.id, s.device_id, d.name, s.user_id, u.email, s.client_key_id, k.label, s.state, s.created_at,
+const sessionCols = `s.id, s.device_id, d.name, s.user_id, u.email, s.client_key_id, k.label, s.mode, s.state, s.created_at,
 	s.connected_at, s.ended_at, s.end_reason, s.ice_path, s.bytes_sent, s.bytes_recv, host(s.client_ip), host(s.agent_ip),
 	CASE WHEN s.connected_at IS NOT NULL THEN extract(epoch FROM coalesce(s.ended_at, now()) - s.connected_at)::int END`
 
@@ -37,7 +38,7 @@ const sessionFrom = ` FROM sessions s JOIN devices d ON d.id = s.device_id JOIN 
 
 func scanSession(row interface{ Scan(...any) error }) (*Session, error) {
 	var s Session
-	err := row.Scan(&s.ID, &s.DeviceID, &s.DeviceName, &s.UserID, &s.UserEmail, &s.ClientKeyID, &s.ClientKeyLabel, &s.State,
+	err := row.Scan(&s.ID, &s.DeviceID, &s.DeviceName, &s.UserID, &s.UserEmail, &s.ClientKeyID, &s.ClientKeyLabel, &s.Mode, &s.State,
 		&s.CreatedAt, &s.ConnectedAt, &s.EndedAt, &s.EndReason, &s.ICEPath, &s.BytesSent, &s.BytesRecv, &s.ClientIP, &s.AgentIP, &s.DurationS)
 	if err != nil {
 		return nil, notFound(err)
@@ -49,10 +50,11 @@ func SessionByID(ctx context.Context, q db.Querier, id string) (*Session, error)
 	return scanSession(q.QueryRow(ctx, `SELECT `+sessionCols+sessionFrom+`WHERE s.id = $1`, id))
 }
 
-func CreateSession(ctx context.Context, q db.Querier, deviceID, userID, clientKeyID, clientIP string) (string, error) {
+// CreateSession records a pending session; mode is "desktop" or "terminal".
+func CreateSession(ctx context.Context, q db.Querier, deviceID, userID, clientKeyID, clientIP, mode string) (string, error) {
 	var id string
-	err := q.QueryRow(ctx, `INSERT INTO sessions (device_id, user_id, client_key_id, client_ip)
-		VALUES ($1, $2, $3, NULLIF($4, '')::inet) RETURNING id`, deviceID, userID, clientKeyID, clientIP).Scan(&id)
+	err := q.QueryRow(ctx, `INSERT INTO sessions (device_id, user_id, client_key_id, client_ip, mode)
+		VALUES ($1, $2, $3, NULLIF($4, '')::inet, $5) RETURNING id`, deviceID, userID, clientKeyID, clientIP, mode).Scan(&id)
 	return id, err
 }
 

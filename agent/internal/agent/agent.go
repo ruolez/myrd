@@ -33,6 +33,7 @@ import (
 	"github.com/ruolez/remotectl/agent/internal/session"
 	"github.com/ruolez/remotectl/agent/internal/signal"
 	"github.com/ruolez/remotectl/agent/internal/sysinfo"
+	"github.com/ruolez/remotectl/agent/internal/terminal"
 	"github.com/ruolez/remotectl/agent/internal/tray"
 	"github.com/ruolez/remotectl/agent/internal/update"
 	"github.com/ruolez/remotectl/proto"
@@ -85,7 +86,15 @@ type Agent struct {
 	prompting  atomic.Bool // the enrollment token dialog is open
 	serverInfo atomic.Bool // the server accepts device.info (hello_ack.features)
 	noPreviews atomic.Bool // config.Prefs.NoScreenPreviews
-	runCtx     context.Context
+	noTerminal atomic.Bool // config.Prefs.NoTerminal
+	// serverTerminal: the server accepts terminal audit and the
+	// organization allows terminals (hello_ack.features, device.update).
+	serverTerminal atomic.Bool
+	// termHost keeps shells across sessions and reconnects; nil when this
+	// process does not run sessions as the user (Windows service mode).
+	termHost  terminal.Host
+	termClose func()
+	runCtx    context.Context
 }
 
 // enrollPoll is how often an unenrolled agent looks for an enrollment made
@@ -117,6 +126,10 @@ func New(cfg Config) (*Agent, error) {
 	a := &Agent{cfg: cfg, log: cfg.Log, ks: cfg.Keystore, pins: ps, state: st, enrolled: make(chan struct{})}
 	a.askNew.Store(prefs.AskNewBrowsers)
 	a.noPreviews.Store(prefs.NoScreenPreviews)
+	a.noTerminal.Store(prefs.NoTerminal)
+	if cfg.Handler == nil {
+		a.termHost, a.termClose = terminal.Default(cfg.Log)
+	}
 	a.fileFeed = tray.NewActivityFeed(a.setActivity, tray.Notify)
 	if st.Enrolled() {
 		close(a.enrolled)
@@ -248,6 +261,29 @@ func (a *Agent) SetScreenPreviews(on bool) {
 	a.pushTray()
 }
 
+// SetTerminal is the local "Allow remote terminal" switch. Turning it off
+// does not end a terminal session in progress; it refuses new terminals.
+func (a *Agent) SetTerminal(on bool) {
+	a.noTerminal.Store(!on)
+	if err := config.UpdatePrefs(a.cfg.Settings.DataDir, func(p *config.Prefs) { p.NoTerminal = !on }); err != nil {
+		a.log.Error("saving prefs failed", "err", err)
+	}
+	a.log.Info("remote terminal", "on", on)
+	a.pushTray()
+}
+
+// terminalAllowed: the device and the server both allow terminals.
+func (a *Agent) terminalAllowed() bool {
+	return a.termHost != nil && !a.noTerminal.Load() && a.serverTerminal.Load()
+}
+
+// Close hangs up the shells this agent keeps.
+func (a *Agent) Close() {
+	if a.termClose != nil {
+		a.termClose()
+	}
+}
+
 // previewShownFor is how long the tray shows the latest preview sent.
 const previewShownFor = 5 * time.Minute
 
@@ -279,10 +315,20 @@ func (a *Agent) TrayHooks(quit func()) tray.Hooks {
 		OnPause:      a.SetPaused,
 		OnAskNew:     a.SetAskNewBrowsers,
 		OnPreviews:   a.SetScreenPreviews,
+		OnTerminal:   a.terminalHook(),
 		OnQuit:       quit,
 		OnUninstall:  uninstallAction,
 		OnEnroll:     a.enrollAction(),
 	}
+}
+
+// terminalHook backs "Allow remote terminal"; nil hides it where this
+// process starts no shells.
+func (a *Agent) terminalHook() func(bool) {
+	if a.termHost == nil {
+		return nil
+	}
+	return a.SetTerminal
 }
 
 // enrollAction reopens the token dialog from the tray ("Enroll this
@@ -327,7 +373,8 @@ func (a *Agent) pushTray() {
 	a.mu.Lock()
 	up := a.trayUp
 	st := tray.State{Enrolled: a.state.Enrolled(), Online: a.sigState.Online, Paused: a.paused.Load(), Activity: a.activity,
-		Update: a.updLine, AskNew: a.askNew.Load(), Previews: !a.noPreviews.Load(), Preview: a.recentPreviewLocked()}
+		Update: a.updLine, AskNew: a.askNew.Load(), Previews: !a.noPreviews.Load(), Preview: a.recentPreviewLocked(),
+		Terminal: !a.noTerminal.Load()}
 	mgr := a.mgr
 	sigState := a.sigState
 	a.mu.Unlock()
@@ -350,6 +397,8 @@ func (a *Agent) pushTray() {
 			st.Peer = fmt.Sprintf("%s (%s)", info.Label, info.Email)
 			if info.State == proto.StatusAwaitingApproval {
 				st.Status = "Approval requested by " + st.Peer
+			} else if st.InSession && info.Mode == proto.ModeTerminal {
+				st.Status = "Terminal session in progress: " + st.Peer
 			} else if st.InSession {
 				st.Status = "Session in progress: " + st.Peer
 			}
@@ -367,7 +416,7 @@ func (a *Agent) consoleStatus() devconsole.Status {
 	out := devconsole.Status{Enrolled: st.Enrolled(), DeviceID: st.DeviceID, Name: st.Name, ServerURL: st.ServerURL,
 		Hostname: a.cfg.Settings.Hostname, Version: a.cfg.Version, Online: ss.Online, LastError: ss.LastError,
 		Fatal: ss.Fatal, Paused: a.paused.Load(), AskNewBrowsers: a.askNew.Load(), Encoder: a.cfg.Backend.EncoderName(), Transfers: a.transfers.List(),
-		ScreenPreviews: !a.noPreviews.Load(), Preview: previewLine}
+		ScreenPreviews: !a.noPreviews.Load(), Preview: previewLine, Terminal: !a.noTerminal.Load()}
 	if mgr != nil {
 		out.Session = mgr.Current()
 	}
@@ -391,6 +440,9 @@ func (a *Agent) hello() proto.Hello {
 		h.Capabilities.Features = []string{proto.FeatureDeviceInfo}
 		if a.cfg.Backend.Name() != "none" { // the cgo-less stub cannot take pictures
 			h.Capabilities.Features = append(h.Capabilities.Features, proto.FeaturePreview)
+		}
+		if a.termHost != nil && !a.noTerminal.Load() {
+			h.Capabilities.Features = append(h.Capabilities.Features, proto.FeatureTerminal)
 		}
 		p := a.cfg.Backend.Permissions()
 		h.Permissions = proto.Permissions{Screen: p.Screen, Input: p.Input}
@@ -467,7 +519,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.cfg.Settings.ConsoleAddr != "" {
 		a.console = devconsole.New(devconsole.Options{Addr: a.cfg.Settings.ConsoleAddr, Log: a.log, Pins: a.pins,
 			Status: a.consoleStatus, Enroll: a.Enroll, EndSession: a.EndSession, SetPaused: a.SetPaused,
-			SetAskNewBrowsers: a.SetAskNewBrowsers, SetScreenPreviews: a.SetScreenPreviews, OnPinsChanged: a.syncPins})
+			SetAskNewBrowsers: a.SetAskNewBrowsers, SetScreenPreviews: a.SetScreenPreviews, SetTerminal: a.terminalHook(),
+			OnPinsChanged: a.syncPins})
 		go func() {
 			if err := a.console.Run(ctx); err != nil {
 				a.log.Error("device console failed", "err", err)
@@ -593,6 +646,7 @@ func (a *Agent) runConnected(ctx context.Context) error {
 			UnlockOS: unlockOS(a.cfg.Backend), Restart: restartDevice, RestartAgent: restartAgent,
 			DisplayMarker: filepath.Join(a.cfg.Settings.DataDir, session.DisplayMarkerName),
 			Files:         files.LocalHost{}, FileDeny: []string{a.cfg.Settings.DataDir}, OnFileActivity: a.onFileActivity,
+			Terminal: a.termHost, TerminalAllowed: a.terminalAllowed,
 		})
 		if err != nil {
 			return err
@@ -648,6 +702,7 @@ func (a *Agent) runConnected(ctx context.Context) error {
 		API: client, DeviceID: st.DeviceID, Key: key, Handler: handler, Log: a.log, Hello: a.hello,
 		OnHelloAck: func(m proto.HelloAck) {
 			a.serverInfo.Store(slices.Contains(m.Features, proto.FeatureDeviceInfo))
+			a.serverTerminal.Store(slices.Contains(m.Features, proto.FeatureTerminal))
 			infoReporter.Kick()
 			a.autoAccept.Store(m.Device.AutoAccept)
 			a.renamed(m.Device.Name)
@@ -669,6 +724,9 @@ func (a *Agent) runConnected(ctx context.Context) error {
 		},
 		OnDeviceUpdate: func(m proto.DeviceUpdate) {
 			a.autoAccept.Store(m.AutoAccept)
+			if m.Terminal != nil {
+				a.serverTerminal.Store(*m.Terminal)
+			}
 			a.renamed(m.Name)
 		},
 		OnKeyRevoked: func(m proto.KeyRevoked) {

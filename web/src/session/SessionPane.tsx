@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type {
   DragEvent as ReactDragEvent,
@@ -10,7 +10,6 @@ import { useSessionSnap } from "../app/workspace";
 import { Icon } from "../components/icons";
 import { PowerDialog } from "../components/PowerDialog";
 import { Spinner } from "../components/ui";
-import { keyFingerprint } from "../lib/devicePins";
 import { displayRect } from "../lib/geometry";
 import { comboInput } from "../lib/combos";
 import type { Combo } from "../lib/combos";
@@ -32,8 +31,18 @@ import { TransferPill } from "./files/TransferPill";
 import { Hud } from "./Hud";
 import { KeysButton } from "./KeysMenu";
 import { MoreMenu } from "./MoreMenu";
-import { END_REASONS } from "./RemoteSession";
-import type { RemoteSession, Snapshot } from "./RemoteSession";
+import type { RemoteSession } from "./RemoteSession";
+import { SessionOverlays } from "./SessionOverlays";
+import type { DeckHandle } from "./terminal/TerminalDeck";
+
+// xterm.js is large: terminals load with the first one opened.
+const TerminalPane = lazy(() =>
+  import("./terminal/TerminalPane").then((m) => ({ default: m.TerminalPane })),
+);
+const TerminalDeck = lazy(() =>
+  import("./terminal/TerminalDeck").then((m) => ({ default: m.TerminalDeck })),
+);
+import type { SessionMode } from "./workspaceState";
 import { StreamButton, StreamMenu } from "./StreamMenu";
 import { LockedBanner, SignInDialog, UnlockingOverlay, useSavedSignIn } from "./SavedSignIn";
 import { useRemoteInput } from "./useRemoteInput";
@@ -129,13 +138,6 @@ function useVideoSize(ref: RefObject<HTMLVideoElement | null>) {
   return size;
 }
 
-const phaseText: Partial<Record<Snapshot["phase"], string>> = {
-  preparing: "Preparing this browser's signing key…",
-  creating: "Requesting a session…",
-  awaiting_approval: "Waiting for approval on the device…",
-  connecting: "Connecting to the device…",
-};
-
 export type PaneProps = {
   session: RemoteSession;
   /** Name from the device list until the session reports its own. */
@@ -158,9 +160,38 @@ export type PaneProps = {
   toolbar: HTMLElement | null;
   /** Extra controls in the fullscreen bar (session switching). */
   fullscreenExtras?: ReactNode;
+  /** Reconnects as the other kind of session (terminal ↔ desktop). */
+  onSwitchMode?: (mode: SessionMode) => void;
+  /** A new request opens the Terminal (panel) of the session; shell: start a new shell in it. */
+  terminalRequest?: TerminalRequest;
+  /** A terminal panel is open in this (focused) desktop session. */
+  onTerminalPanel?: (open: boolean) => void;
 };
 
-export function SessionPane({
+export type TerminalRequest = { n: number; shell: boolean };
+
+/** A terminal session shows terminals only; a desktop one the screen, with terminals in a panel. */
+export function SessionPane(props: PaneProps) {
+  return props.session.snapshot.mode === "terminal" ? (
+    <Suspense fallback={<LoadingPane focused={props.focused} />}>
+      <TerminalPane {...props} />
+    </Suspense>
+  ) : (
+    <DesktopPane {...props} />
+  );
+}
+
+function LoadingPane({ focused }: { focused: boolean }) {
+  return (
+    <div
+      className={`min-h-0 flex-1 items-center justify-center bg-[#131314] ${focused ? "flex" : "hidden"}`}
+    >
+      <Spinner size={32} />
+    </div>
+  );
+}
+
+function DesktopPane({
   session,
   name: listName,
   consoleUser,
@@ -176,6 +207,8 @@ export function SessionPane({
   onBack,
   toolbar,
   fullscreenExtras,
+  terminalRequest,
+  onTerminalPanel,
 }: PaneProps) {
   const [hud, setHud] = useState(readHudPref);
   const [touchMode, setTouchMode] = useState(readTouchMode);
@@ -187,6 +220,9 @@ export function SessionPane({
   const [filesOpen, setFilesOpen] = useState(false);
   const [keysOpen, setKeysOpen] = useState(false);
   const [powerOpen, setPowerOpen] = useState(false);
+  // The Terminal panel stays mounted once opened, so its terminals keep their scrollback.
+  const [termOpen, setTermOpen] = useState(false);
+  const [termMounted, setTermMounted] = useState(false);
   const [filesFolder, setFilesFolder] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
@@ -219,7 +255,27 @@ export function SessionPane({
   }, [snap?.stream]);
 
   const live = snap?.phase === "connected" || snap?.phase === "reconnecting";
-  const active = live && focused;
+  const active = live && focused && !termOpen;
+  const openTerminal = useCallback(() => {
+    setTermMounted(true);
+    setTermOpen(true);
+  }, []);
+  const termDeck = useRef<DeckHandle | null>(null);
+  const setTermDeck = useCallback((h: DeckHandle | null) => (termDeck.current = h), []);
+  useEffect(() => {
+    if (!terminalRequest) return;
+    if (terminalRequest.shell && termOpenRef.current) termDeck.current?.newShell();
+    openTerminal();
+    // Only new requests count.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [terminalRequest]);
+  const termOpenRef = useRef(termOpen);
+  termOpenRef.current = termOpen;
+  useEffect(() => {
+    onTerminalPanel?.(focused && termOpen);
+  }, [focused, termOpen, onTerminalPanel]);
+  const terminalLabel =
+    snap?.terminalState === "unsupported" ? "Terminal (not offered by this device)" : "Terminal";
   const files = snap?.filesState === "ready" ? snap.files : null;
   const fileOps = fileOpsAvailable(snap?.features ?? null);
   const conflicts = useConflictPrompt();
@@ -550,6 +606,16 @@ export function SessionPane({
                 text="Files"
               />
             )}
+            {!coarse && (
+              <ToolButton
+                label={terminalLabel}
+                icon="terminal"
+                active={termOpen}
+                onClick={() => (termOpen ? setTermOpen(false) : openTerminal())}
+                disabled={!live || snap?.terminalState === "unsupported"}
+                text="Terminal"
+              />
+            )}
             {keyboardButton}
             <KeysButton
               icon={coarse ? "keyboardCommand" : "keyboard"}
@@ -563,7 +629,7 @@ export function SessionPane({
             />
             <MoreMenu
               items={[
-                // A phone's toolbar has no room for Files.
+                // A phone's toolbar has no room for Files or Terminal.
                 ...(coarse
                   ? [
                       {
@@ -571,6 +637,12 @@ export function SessionPane({
                         icon: "folder" as const,
                         onSelect: () => openPanel("files"),
                         disabled: !live || !files,
+                      },
+                      {
+                        label: terminalLabel,
+                        icon: "terminal" as const,
+                        onSelect: openTerminal,
+                        disabled: !live || snap?.terminalState === "unsupported",
                       },
                     ]
                   : []),
@@ -856,6 +928,39 @@ export function SessionPane({
             onFolder={setFilesFolder}
           />
         )}
+        {termMounted && (
+          <aside
+            aria-label="Terminal"
+            className={`absolute inset-0 z-30 flex flex-col overflow-hidden bg-[#131314] sm:inset-3 sm:rounded-xl sm:border sm:border-white/10 sm:shadow-2xl ${termOpen ? "" : "hidden"}`}
+          >
+            <Suspense fallback={<LoadingPane focused />}>
+              <TerminalDeck
+                deviceId={session.deviceId}
+                channel={snap?.terminal ?? null}
+                state={snap?.terminalState ?? "pending"}
+                visible={focused && termOpen}
+                touch={coarse}
+                autoStart
+                connected={live}
+                onHotkey={onHotkey}
+                deckRef={setTermDeck}
+                headerEnd={
+                  <button
+                    className="btn btn-sm shrink-0 px-2 text-white/80 hover:bg-white/10"
+                    aria-label="Back to the screen (terminals keep running)"
+                    title="Back to the screen"
+                    onClick={() => {
+                      setTermOpen(false);
+                      refocus();
+                    }}
+                  >
+                    <Icon name="close" size={18} />
+                  </button>
+                }
+              />
+            </Suspense>
+          </aside>
+        )}
         {streamOpen && snap && live && (
           <StreamMenu
             className="top-3 right-3"
@@ -891,98 +996,15 @@ export function SessionPane({
             {snap.endDetail}
           </div>
         )}
-        {phase === "reconnecting" && (
-          <div className="absolute top-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/70 px-4 py-2 text-sm">
-            <Spinner size={16} />
-            Connection interrupted — restarting ICE…
-          </div>
-        )}
-
-        {phaseText[phase] && (
-          <Overlay>
-            <Spinner size={36} />
-            <div className="text-lg">{phaseText[phase]}</div>
-            {phase === "awaiting_approval" && (
-              <p className="max-w-sm text-center text-sm text-white/70">
-                Someone at <b>{name}</b> must allow this session on the device's own screen.
-              </p>
-            )}
-            <button
-              className="btn-outline mt-2 border-white/30 text-white hover:bg-white/10"
-              onClick={onClose}
-            >
-              Cancel
-            </button>
-          </Overlay>
-        )}
-
-        {phase === "ended" && snap && (
-          <Overlay>
-            <Icon
-              name={snap.endReason === "user_hangup" ? "check" : "warning"}
-              size={40}
-              className="text-white/80"
-            />
-            <div className="text-lg">
-              {snap.endReason === "user_hangup" ? "Session ended" : "Session closed"}
-            </div>
-            <p className="max-w-md text-center text-sm text-white/70">
-              {END_REASONS[snap.endReason ?? ""] ?? snap.endReason}
-              {snap.endDetail && snap.endDetail !== END_REASONS[snap.endReason ?? ""] && (
-                <>
-                  <br />
-                  <span className="text-white/50">{snap.endDetail}</span>
-                </>
-              )}
-            </p>
-            <div className="mt-2 flex flex-wrap justify-center gap-2">
-              {snap.canReconnect && (
-                <button className="btn-primary" onClick={() => reconnect()}>
-                  <Icon name="refresh" size={18} />
-                  Reconnect
-                </button>
-              )}
-              {snap.canReconnect && !forceRelay && (
-                <button
-                  className="btn-outline border-white/30 text-white hover:bg-white/10"
-                  onClick={() => reconnect(true)}
-                >
-                  Reconnect via relay
-                </button>
-              )}
-              {forceRelay && (
-                <button
-                  className="btn-outline border-white/30 text-white hover:bg-white/10"
-                  onClick={() => reconnect(false)}
-                >
-                  Reconnect direct
-                </button>
-              )}
-              <button
-                className="btn-outline border-white/30 text-white hover:bg-white/10"
-                onClick={onClose}
-              >
-                Close
-              </button>
-              <button
-                className="btn-outline border-white/30 text-white hover:bg-white/10"
-                onClick={onBack}
-              >
-                Back to devices
-              </button>
-            </div>
-          </Overlay>
-        )}
-
-        {phase === "pin_mismatch" && snap?.pinMismatch && (
-          <PinMismatch
-            name={name}
-            pinned={snap.pinMismatch.pinned}
-            offered={snap.pinMismatch.offered}
-            onCancel={onClose}
-            onTrust={() => snap.pinMismatch && onTrust(snap.pinMismatch.offered)}
-          />
-        )}
+        <SessionOverlays
+          snap={snap}
+          name={name}
+          forceRelay={forceRelay}
+          onReconnect={reconnect}
+          onClose={onClose}
+          onBack={onBack}
+          onTrust={onTrust}
+        />
       </div>
     </div>
   );
@@ -1018,77 +1040,5 @@ function ToolButton({
       <Icon name={icon} size={18} />
       {text && <span className="hidden sm:inline">{text}</span>}
     </button>
-  );
-}
-
-function Overlay({ children }: { children: ReactNode }) {
-  return (
-    <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-black/80 p-6">
-      {children}
-    </div>
-  );
-}
-
-function PinMismatch({
-  name,
-  pinned,
-  offered,
-  onCancel,
-  onTrust,
-}: {
-  name: string;
-  pinned: string;
-  offered: string;
-  onCancel: () => void;
-  onTrust: () => void;
-}) {
-  const [fps, setFps] = useState<[string, string]>(["…", "…"]);
-  const [ack, setAck] = useState(false);
-  useEffect(() => {
-    void Promise.all([keyFingerprint(pinned), keyFingerprint(offered)]).then(([a, b]) =>
-      setFps([a, b]),
-    );
-  }, [pinned, offered]);
-  return (
-    <div className="absolute inset-0 z-40 flex items-center justify-center bg-[#3c1f1d]/95 p-6">
-      <div className="max-w-lg space-y-4 rounded-2xl border border-[#f28b82]/40 bg-black/60 p-6">
-        <div className="flex items-center gap-3 text-[#f28b82]">
-          <Icon name="warning" size={32} />
-          <h2 className="text-xl font-medium">Device identity changed</h2>
-        </div>
-        <p className="text-sm text-white/80">
-          <b>{name}</b> presented a different identity key than the one this browser pinned on your
-          first session. This happens if the agent was reinstalled — or if someone is impersonating
-          the device. The session was refused.
-        </p>
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-xs">
-          <dt className="text-white/50">Pinned</dt>
-          <dd>{fps[0]}</dd>
-          <dt className="text-white/50">Offered</dt>
-          <dd className="text-[#f28b82]">{fps[1]}</dd>
-        </dl>
-        <label className="flex items-start gap-2 text-sm text-white/80">
-          <input
-            type="checkbox"
-            className="mt-1"
-            checked={ack}
-            onChange={(e) => setAck(e.target.checked)}
-          />
-          I reinstalled or re-enrolled this device myself and want to trust the new key.
-        </label>
-        <div className="flex justify-end gap-2">
-          <button className="btn-primary" onClick={onCancel}>
-            Keep me safe
-          </button>
-          <button
-            className="btn-outline border-[#f28b82]/50 text-[#f28b82] hover:bg-white/5"
-            disabled={!ack}
-            onClick={onTrust}
-          >
-            Trust new key
-          </button>
-        </div>
-      </div>
-    </div>
   );
 }

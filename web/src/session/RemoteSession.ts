@@ -46,6 +46,10 @@ import {
 } from "../lib/stream";
 import type { StreamPrefs, StreamRequestId, StreamState, StreamView } from "../lib/stream";
 import { FileChannel } from "./FileChannel";
+import { terminalAvailability } from "../lib/terminal";
+import type { TerminalAvailability } from "../lib/terminal";
+import { TerminalChannel } from "./TerminalChannel";
+import type { SessionMode } from "./workspaceState";
 
 export type Phase =
   | "preparing"
@@ -125,6 +129,9 @@ export type Snapshot = {
   features: string[] | null;
   files: FileChannel | null;
   filesState: FilesAvailability;
+  mode: SessionMode;
+  terminal: TerminalChannel | null;
+  terminalState: TerminalAvailability;
   forceRelay: boolean;
   pinMismatch: { pinned: string; offered: string } | null;
   /** Connection path ("host", "srflx", "relay"); the rest of the stats are in `stats`. */
@@ -240,6 +247,8 @@ export const END_REASONS: Record<string, string> = {
   agent_update: "The device is installing an update. Reconnect in a minute.",
   device_restart: "The device is restarting. Reconnect in a minute or two.",
   agent_restart: "The device's agent is restarting. Reconnect in a few seconds.",
+  terminal_disabled:
+    "Terminals are turned off for your organization. An administrator can turn them on in System settings.",
 };
 
 type Options = {
@@ -248,6 +257,7 @@ type Options = {
   userId: UserId;
   forceRelay: boolean;
   trustNewDeviceKey?: string; // re-trust explicitly accepted by the user
+  mode?: SessionMode;
 };
 
 type Listener = (s: Snapshot) => void;
@@ -266,6 +276,8 @@ export class RemoteSession {
   private control: RTCDataChannel | null = null;
   private file: RTCDataChannel | null = null;
   private fileChannel: FileChannel | null = null;
+  private term: RTCDataChannel | null = null;
+  private termChannel: TerminalChannel | null = null;
   private streamReqId = 0;
   private streamTimer: ReturnType<typeof setTimeout> | null = null;
   private view: StreamView | null = null;
@@ -325,6 +337,9 @@ export class RemoteSession {
       features: null,
       files: null,
       filesState: "pending",
+      mode: opts.mode ?? "desktop",
+      terminal: null,
+      terminalState: "pending",
       forceRelay: opts.forceRelay,
       pinMismatch: null,
       path: null,
@@ -420,6 +435,7 @@ export class RemoteSession {
         this.opts.deviceId,
         this.clientKey.id,
         this.opts.forceRelay,
+        this.snap.mode,
       );
       if (this.ended) {
         signaling.send({
@@ -494,28 +510,34 @@ export class RemoteSession {
     });
     this.pc = pc;
 
-    const tr = pc.addTransceiver("video", { direction: "recvonly" });
-    preferCodecs(tr);
-
-    this.input = pc.createDataChannel("input", { ordered: true });
-    // Absolute moves, latest wins: a lost one is superseded, never waited for.
-    this.move = pc.createDataChannel("move", { ordered: false, maxRetransmits: 0 });
-    const cursor = pc.createDataChannel("cursor", { ordered: false, maxRetransmits: 0 });
+    // A terminal session asks for no video and opens no input channels:
+    // the device approved a shell, not its screen.
+    const desktop = this.snap.mode === "desktop";
+    if (desktop) {
+      const tr = pc.addTransceiver("video", { direction: "recvonly" });
+      preferCodecs(tr);
+      this.input = pc.createDataChannel("input", { ordered: true });
+      // Absolute moves, latest wins: a lost one is superseded, never waited for.
+      this.move = pc.createDataChannel("move", { ordered: false, maxRetransmits: 0 });
+      const cursor = pc.createDataChannel("cursor", { ordered: false, maxRetransmits: 0 });
+      for (const ch of [this.input, this.move, cursor]) ch.binaryType = "arraybuffer";
+      cursor.onmessage = (ev) => {
+        if (!(ev.data instanceof ArrayBuffer)) return;
+        const msg = decodeCursor(new Uint8Array(ev.data));
+        if (!msg) return;
+        this.remember(msg);
+        for (const l of this.cursorListeners) l(msg);
+      };
+    }
     this.control = pc.createDataChannel("control", { ordered: true });
     this.file = pc.createDataChannel("file", { ordered: true });
-    for (const ch of [this.input, this.move, cursor, this.control, this.file])
-      ch.binaryType = "arraybuffer";
-    // Agents without file transfer close this channel; that means "unsupported".
+    this.term = pc.createDataChannel("term", { ordered: true });
+    for (const ch of [this.control, this.file, this.term]) ch.binaryType = "arraybuffer";
+    // Agents without file transfer (or terminals) close the channel; that means "unsupported".
     this.file.addEventListener("open", () => this.refreshFiles());
     this.file.addEventListener("close", () => this.refreshFiles());
-
-    cursor.onmessage = (ev) => {
-      if (!(ev.data instanceof ArrayBuffer)) return;
-      const msg = decodeCursor(new Uint8Array(ev.data));
-      if (!msg) return;
-      this.remember(msg);
-      for (const l of this.cursorListeners) l(msg);
-    };
+    this.term.addEventListener("open", () => this.refreshTerminal());
+    this.term.addEventListener("close", () => this.refreshTerminal());
     this.control.onmessage = (ev) => this.onControl(ev.data);
 
     pc.ontrack = (ev) => {
@@ -784,6 +806,7 @@ export class RemoteSession {
         this.displayApplied = false;
         this.applyStream();
         this.refreshFiles();
+        this.refreshTerminal();
         if (features?.includes("unlock") && typeof m.unlock_key === "string")
           void this.checkUnlockKey(m.unlock_key, String(m.unlock_key_sig));
         break;
@@ -936,6 +959,7 @@ export class RemoteSession {
 
   /** `stream` on control for agents with the feature, legacy `0x20 op 3` otherwise. */
   private applyStream() {
+    if (this.snap.mode !== "desktop") return;
     const hidden = document.hidden || this.background;
     const prefs = this.snap.streamPrefs;
     if (this.snap.streamFeature === true) {
@@ -954,6 +978,15 @@ export class RemoteSession {
     if (state === "ready" && dc && !this.fileChannel) this.fileChannel = new FileChannel(dc);
     if (state !== this.snap.filesState || this.fileChannel !== this.snap.files) {
       this.update({ filesState: state, files: this.fileChannel });
+    }
+  }
+
+  private refreshTerminal() {
+    const dc = this.term;
+    const state = terminalAvailability(this.snap.features, dc?.readyState ?? "closed");
+    if (state === "ready" && dc && !this.termChannel) this.termChannel = new TerminalChannel(dc);
+    if (state !== this.snap.terminalState || this.termChannel !== this.snap.terminal) {
+      this.update({ terminalState: state, terminal: this.termChannel });
     }
   }
 
@@ -1084,6 +1117,7 @@ export class RemoteSession {
     if (this.streamTimer) clearTimeout(this.streamTimer);
     this.streamTimer = null;
     this.fileChannel?.dispose("session_ended");
+    this.termChannel?.dispose("session_ended");
     for (const off of this.offs) off();
     this.offs = [];
     for (const t of this.timers) clearInterval(t);
@@ -1098,6 +1132,7 @@ export class RemoteSession {
     this.move = null;
     this.control = null;
     this.file = null;
+    this.term = null;
   }
 }
 

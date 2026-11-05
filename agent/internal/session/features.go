@@ -8,7 +8,8 @@ import "github.com/ruolez/remotectl/proto"
 // backend can hide the wallpaper, "unlock" when the device types saved
 // passwords on its lock screen (Options.UnlockOS), "power" when it restarts on
 // request (Options.Restart / RestartAgent), "display" when the backend can
-// read (and so possibly switch) the monitor's display modes.
+// read (and so possibly switch) the monitor's display modes, "terminal" when
+// it serves the `term` channel (Options.Terminal, allowed now).
 func helloFeatures(o Options, wallpaper, display bool) []string {
 	f := []string{"stream", "move"}
 	if o.Files != nil {
@@ -25,6 +26,9 @@ func helloFeatures(o Options, wallpaper, display bool) []string {
 	}
 	if display {
 		f = append(f, proto.FeatureDisplay)
+	}
+	if o.terminalOn() {
+		f = append(f, proto.FeatureTerminal)
 	}
 	return f
 }

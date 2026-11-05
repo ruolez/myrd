@@ -6,7 +6,7 @@
 import type { DeviceId, UserId } from "../api/types";
 import { RemoteSession } from "./RemoteSession";
 import { emptyWorkspace, lruVictim, MAX_LIVE_SESSIONS, workspaceReducer } from "./workspaceState";
-import type { Entry, WsAction, WsState } from "./workspaceState";
+import type { Entry, SessionMode, WsAction, WsState } from "./workspaceState";
 
 export type OpenResult = { ok: true } | { ok: false; victim: DeviceId | null };
 
@@ -49,12 +49,19 @@ export class SessionWorkspace {
   /**
    * Opens a session to id unless one is open already. At the limit it opens
    * nothing and names the session to end first (the least recently used).
+   * A desktop session serves terminals too, so asking for a terminal where
+   * one is open keeps it; asking for the desktop where only a terminal
+   * session is open reconnects with video.
    */
-  open(id: DeviceId, forceRelay = false): OpenResult {
-    if (this.has(id)) return { ok: true };
+  open(id: DeviceId, forceRelay = false, mode: SessionMode = "desktop"): OpenResult {
+    const cur = this.state.entries[id];
+    if (cur) {
+      if (mode === "desktop" && cur.mode === "terminal") this.replace(id, { mode: "desktop" });
+      return { ok: true };
+    }
     const live = this.state.order.filter(this.isLive).length;
     if (live >= MAX_LIVE_SESSIONS) return { ok: false, victim: lruVictim(this.state, this.isLive) };
-    this.dispatch({ t: "open", id, forceRelay, now: Date.now() });
+    this.dispatch({ t: "open", id, forceRelay, mode, now: Date.now() });
     const e = this.state.entries[id];
     if (e) this.create(e);
     return { ok: true };
@@ -73,7 +80,10 @@ export class SessionWorkspace {
   }
 
   /** Reconnect: ends the current session and starts a new one for the same device. */
-  replace(id: DeviceId, opts: { forceRelay?: boolean; trustKey?: string } = {}) {
+  replace(
+    id: DeviceId,
+    opts: { forceRelay?: boolean; trustKey?: string; mode?: SessionMode } = {},
+  ) {
     if (!this.has(id)) return;
     this.sessions.get(id)?.end("user_hangup");
     this.dispatch({ t: "replace", id, ...opts });
@@ -99,6 +109,7 @@ export class SessionWorkspace {
       userId: this.userId,
       forceRelay: e.forceRelay,
       trustNewDeviceKey: e.trustKey,
+      mode: e.mode,
     });
     this.sessions.set(e.id, s);
     s.setBackground(e.id !== this.state.focused);

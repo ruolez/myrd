@@ -45,6 +45,7 @@ type Status struct {
 	// AskNewBrowsers: "Ask before new browsers connect" (config.Prefs).
 	AskNewBrowsers bool             `json:"ask_new_browsers"`
 	ScreenPreviews bool             `json:"screen_previews"` // "Show screen previews" (config.Prefs)
+	Terminal       bool             `json:"terminal"`        // "Allow remote terminal" (config.Prefs)
 	Preview        string           `json:"preview"`         // the latest preview sent, for a few minutes
 	Encoder        string           `json:"encoder"`
 	Session        *session.Info    `json:"session"`
@@ -63,7 +64,9 @@ type Options struct {
 	SetAskNewBrowsers func(bool)
 	// SetScreenPreviews is the "Show screen previews" switch.
 	SetScreenPreviews func(bool)
-	OnPinsChanged     func()
+	// SetTerminal is the "Allow remote terminal" switch.
+	SetTerminal   func(bool)
+	OnPinsChanged func()
 }
 
 type prompt struct {
@@ -155,6 +158,7 @@ func (c *Console) Handler() http.Handler {
 		var in struct {
 			AskNewBrowsers *bool `json:"ask_new_browsers"`
 			ScreenPreviews *bool `json:"screen_previews"`
+			Terminal       *bool `json:"terminal"`
 		}
 		if json.NewDecoder(r.Body).Decode(&in) != nil {
 			writeErr(w, http.StatusBadRequest, "bad json")
@@ -165,6 +169,9 @@ func (c *Console) Handler() http.Handler {
 		}
 		if in.ScreenPreviews != nil && c.o.SetScreenPreviews != nil {
 			c.o.SetScreenPreviews(*in.ScreenPreviews)
+		}
+		if in.Terminal != nil && c.o.SetTerminal != nil {
+			c.o.SetTerminal(*in.Terminal)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{})
 	}))

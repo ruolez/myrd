@@ -305,6 +305,8 @@ export type AppConfig = {
   features?: string[];
   /** The admin allows screen previews (servers with the "previews" feature). */
   screen_previews?: boolean;
+  /** The organization allows terminals (absent on older servers, which have none). */
+  terminal?: boolean;
 };
 
 export type AdminOverview = {
@@ -339,6 +341,8 @@ export type AdminOverview = {
 export type AdminSettings = {
   signup_allowed: boolean;
   screen_previews?: boolean;
+  /** Browsers may open terminals on devices (absent on older servers). */
+  terminal_allowed?: boolean;
   default_auto_accept: boolean;
   max_session_hours: number;
   download_macos_url: string;

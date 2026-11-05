@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useSessionSnap } from "../app/workspace";
-import { OsIcon } from "../components/icons";
+import { Icon, OsIcon } from "../components/icons";
 import type { RemoteSession } from "./RemoteSession";
 
 /**
@@ -49,7 +49,11 @@ export function LiveThumb({
         />
       ) : (
         <span className="absolute inset-0 flex items-center justify-center text-white/40">
-          <OsIcon os={os} size={18} />
+          {snap?.mode === "terminal" ? (
+            <Icon name="terminal" size={18} className="text-[#81c995]/80" />
+          ) : (
+            <OsIcon os={os} size={18} />
+          )}
         </span>
       )}
     </span>

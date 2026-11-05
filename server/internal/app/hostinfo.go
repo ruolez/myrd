@@ -13,8 +13,19 @@ import (
 // minInfoInterval drops device.info reports that come faster than this.
 const minInfoInterval = 5 * time.Second
 
-// agentFeatures is what the server accepts from agents (hello_ack.features).
-var agentFeatures = []string{proto.FeatureDeviceInfo, proto.FeaturePreview}
+// baseAgentFeatures is what the server always accepts from agents
+// (hello_ack.features).
+var baseAgentFeatures = []string{proto.FeatureDeviceInfo, proto.FeaturePreview}
+
+// agentFeatures adds "terminal" while the organization allows terminals:
+// agents serve the `term` channel only then (and audit to this server).
+func (h *Hub) agentFeatures() []string {
+	f := append([]string(nil), baseAgentFeatures...)
+	if h.app.Settings().TerminalAllowed {
+		f = append(f, proto.FeatureTerminal)
+	}
+	return f
+}
 
 // cleanHostInfo bounds a report before it is stored and shown: text is
 // truncated, disks are capped, CPU is clamped, memory used never

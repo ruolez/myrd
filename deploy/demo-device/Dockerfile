@@ -28,7 +28,7 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
       xvfb xauth dbus-x11 x11-xserver-utils x11-utils xclip procps ca-certificates \
-      xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-settings xfconf xfce4-terminal mousepad thunar \
+      xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-settings xfconf xfce4-terminal mousepad thunar tmux screen vim-tiny less htop \
       adwaita-icon-theme fonts-dejavu-core fonts-noto-color-emoji \
       libx11-6 libxext6 libxfixes3 libxtst6 libxdamage1 libxrandr2 libx264-164 libswscale6 libavutil57 \
     && rm -rf /var/lib/apt/lists/* \

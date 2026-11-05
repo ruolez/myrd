@@ -160,6 +160,7 @@ class Signaling {
     deviceId: string,
     clientKeyId: string,
     forceRelay: boolean,
+    mode: "desktop" | "terminal" = "desktop",
   ): Promise<SessionCreated> {
     await this.waitOpen();
     return this.request<SessionCreated>("session.created", 15_000, {
@@ -167,6 +168,7 @@ class Signaling {
       device_id: deviceId,
       client_key_id: clientKeyId,
       force_relay: forceRelay,
+      ...(mode === "terminal" ? { mode } : {}),
     });
   }
 

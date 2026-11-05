@@ -9,6 +9,7 @@ describe("workspaceHotkey", () => {
     ["Digit1", { t: "focus", n: 1 }],
     ["Digit9", { t: "focus", n: 9 }],
     ["KeyS", { t: "streamMenu" }],
+    ["KeyT", { t: "newTerminal" }],
     ["KeyK", { t: "palette" }],
     ["KeyD", { t: "dashboard" }],
     ["ArrowLeft", { t: "prev" }],

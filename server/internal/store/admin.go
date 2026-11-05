@@ -16,11 +16,12 @@ type Settings struct {
 	MaxSessionHours    int    `json:"max_session_hours"`
 	DownloadMacOSURL   string `json:"download_macos_url"`
 	DownloadWindowsURL string `json:"download_windows_url"`
-	ScreenPreviews     bool   `json:"screen_previews"` // dashboards may show device screens (E2E encrypted)
+	ScreenPreviews     bool   `json:"screen_previews"`  // dashboards may show device screens (E2E encrypted)
+	TerminalAllowed    bool   `json:"terminal_allowed"` // browsers may open terminals on devices (shells, takeover)
 }
 
 func LoadSettings(ctx context.Context, q db.Querier) (Settings, error) {
-	s := Settings{MaxSessionHours: 12, DefaultAutoAccept: true, ScreenPreviews: true}
+	s := Settings{MaxSessionHours: 12, DefaultAutoAccept: true, ScreenPreviews: true, TerminalAllowed: true}
 	rows, err := q.Query(ctx, `SELECT key, value FROM app_settings`)
 	if err != nil {
 		return s, err
@@ -46,6 +47,8 @@ func LoadSettings(ctx context.Context, q db.Querier) (Settings, error) {
 			dst = &s.DownloadWindowsURL
 		case "screen_previews":
 			dst = &s.ScreenPreviews
+		case "terminal_allowed":
+			dst = &s.TerminalAllowed
 		default:
 			continue
 		}
@@ -64,6 +67,7 @@ func SaveSettings(ctx context.Context, q db.Querier, s Settings) error {
 		"download_macos_url":   s.DownloadMacOSURL,
 		"download_windows_url": s.DownloadWindowsURL,
 		"screen_previews":      s.ScreenPreviews,
+		"terminal_allowed":     s.TerminalAllowed,
 	}
 	for k, v := range vals {
 		raw, _ := json.Marshal(v)

@@ -366,6 +366,7 @@ func (a *App) getConfig(w http.ResponseWriter, r *http.Request) error {
 		"downloads":       downloads,
 		"features":        serverFeatures,
 		"screen_previews": s.ScreenPreviews,
+		"terminal":        s.TerminalAllowed,
 	})
 	return nil
 }
