@@ -1,7 +1,8 @@
-// The terminals of one session: tabs (or, on phones, one terminal at a time
-// with a switcher), the picker to take over or start terminals, and the
-// phone key bar, keyboard and command line. After a reconnect it reattaches
-// the terminals this tab had open.
+// The terminals of one session: a tab for every terminal on the device (or,
+// on phones, one terminal at a time with a switcher), attached when first
+// shown; the picker to start shells or take over others; and the phone key
+// bar, keyboard and command line. After a reconnect it reattaches the
+// terminals this tab had open.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
@@ -20,6 +21,7 @@ import type {
   TermSourceId,
 } from "../../lib/terminal";
 import { fontKey, openKey, readList, writeList } from "../../lib/termHistory";
+import { stripItems } from "../../lib/termStrip";
 import { afterKey, isOn, keySequence, pasteBytes, tapMod, withMods } from "../../lib/termKeys";
 import type { ModState, Mods, NamedKey } from "../../lib/termKeys";
 import { isFinal } from "../FileChannel";
@@ -39,6 +41,12 @@ import { useTermTheme } from "./useTermTheme";
 
 /** `lost`: it ended only because the connection did; it keeps running on the device. */
 type Tab = { term: Term; title: string; ended: boolean; lost: boolean };
+
+/** Terminals kept attached at once (the agent allows 8 per channel); switching
+ * to another detaches the one used least recently, which keeps running. */
+const MAX_ATTACHED = 6;
+/** How often the list of terminals on the device is refreshed while in view. */
+const LIST_EVERY_MS = 8000;
 
 export type DeckHandle = {
   newShell: () => void;
@@ -95,6 +103,9 @@ export function TerminalDeck({
   const [picker, setPicker] = useState(false);
   const [sources, setSources] = useState<TermSource[] | null>(null);
   const [blocked, setBlocked] = useState<TermBlocked[]>([]);
+  const [order, setOrder] = useState<TermSourceId[]>([]);
+  const [hidden, setHidden] = useState<ReadonlySet<TermSourceId>>(new Set());
+  const [opening, setOpening] = useState<TermSourceId | null>(null);
   const [shells, setShells] = useState<TermShell[]>([]);
   const [admin, setAdmin] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -123,6 +134,9 @@ export function TerminalDeck({
   const restored = useRef<TerminalChannel | null>(null);
   const [restoredTick, setRestoredTick] = useState(0);
 
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const lastUsed = useRef(new Map<TermId, number>());
   const active = tabs.find((t) => t.term.id === activeId) ?? null;
   const live = state === "ready" && !!channel;
 
@@ -155,6 +169,50 @@ export function TerminalDeck({
     ]);
     return () => offs.forEach((o) => o());
   }, [tabs]);
+
+  useEffect(() => {
+    if (activeId !== null) lastUsed.current.set(activeId, Date.now());
+  }, [activeId]);
+
+  // Tabs keep the place they got when first seen.
+  useEffect(() => {
+    setOrder((o) => {
+      const seen = new Set(o);
+      const add = [
+        ...tabs.map((t) => t.term.source.id),
+        ...(sources ?? []).map((s) => s.id),
+      ].filter((id) => !seen.has(id) && seen.add(id));
+      return add.length ? [...o, ...add] : o;
+    });
+  }, [tabs, sources]);
+
+  const strip = useMemo(
+    () => stripItems(order, tabs, (t) => t.term.source.id, sources ?? [], hidden),
+    [order, tabs, sources, hidden],
+  );
+
+  const setHiddenId = (id: TermSourceId, hide: boolean) =>
+    setHidden((h) => {
+      if (h.has(id) === hide) return h;
+      const next = new Set(h);
+      if (hide) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+
+  /** Detaches the attached terminal used least recently when no more may be attached. */
+  const makeRoom = useCallback(() => {
+    const open = tabsRef.current.filter((t) => !t.ended);
+    if (open.length < MAX_ATTACHED) return;
+    const [victim] = open
+      .filter((t) => t.term.id !== activeId)
+      .sort(
+        (a, b) => (lastUsed.current.get(a.term.id) ?? 0) - (lastUsed.current.get(b.term.id) ?? 0),
+      );
+    if (!victim) return;
+    victim.term.detach();
+    setTabs((ts) => ts.filter((t) => t.term !== victim.term));
+  }, [activeId]);
 
   // The terminals this tab watches, reattached after a reconnect.
   useEffect(() => {
@@ -206,6 +264,7 @@ export function TerminalDeck({
       if (!channel) return;
       setError(null);
       setBusy(asAdmin ? "Starting an administrator shell…" : "Starting a shell…");
+      makeRoom();
       try {
         addTab(await channel.openShell(size(), shell, asAdmin));
         setPicker(false);
@@ -216,25 +275,37 @@ export function TerminalDeck({
         setBusy(null);
       }
     },
-    [channel, addTab, size],
+    [channel, addTab, size, makeRoom],
   );
 
   const attach = useCallback(
     async (s: TermSource) => {
       if (!channel) return;
+      const open = tabsRef.current.find((t) => t.term.source.id === s.id && !t.ended);
+      if (open) {
+        setActiveId(open.term.id);
+        setPicker(false);
+        return;
+      }
       setError(null);
+      setHiddenId(s.id, false);
+      setOpening(s.id);
       setBusy(`Opening ${s.title}…`);
+      makeRoom();
       try {
         addTab(await channel.attach(s.id, size()));
         setPicker(false);
       } catch (e) {
         fail(e);
-        void refresh();
+        // From a tab the picker isn't open to show the error.
+        setNotice(`${s.title}: ${e instanceof TermError ? describeTermError(e.code) : String(e)}`);
+        void refresh({ quiet: true });
       } finally {
         setBusy(null);
+        setOpening(null);
       }
     },
-    [channel, addTab, size, refresh],
+    [channel, addTab, size, refresh, makeRoom],
   );
 
   /** Ends a kept shell from the list: attach to it, then end its program. */
@@ -263,7 +334,9 @@ export function TerminalDeck({
     [channel, size, refresh],
   );
 
+  /** Closes a tab here; the terminal keeps running on the device (and stays in the picker). */
   const closeTab = (term: Term) => {
+    setHiddenId(term.source.id, true);
     term.detach();
     setTabs((ts) => {
       const rest = ts.filter((t) => t.term !== term);
@@ -291,20 +364,35 @@ export function TerminalDeck({
       }
       restored.current = channel;
       setRestoredTick((n) => n + 1);
-      if (opened || !autoStart) return;
       try {
         const r = await channel.list();
         setSources(r.sources);
         setShells(r.shells);
         setAdmin(r.admin);
         setBlocked(r.blocked);
-        if (r.sources.length || r.blocked.length) setPicker(true);
+        if (r.blocked.length) setPicker(true);
+        if (opened || !autoStart) return;
+        // Every terminal on the device is a tab; show the first, or start a shell.
+        if (r.sources[0]) await attach(r.sources[0]);
         else await newShell();
       } catch (e) {
         fail(e);
       }
     })();
-  }, [channel, state, deviceId, autoStart, addTab, size, newShell]);
+  }, [channel, state, deviceId, autoStart, addTab, size, newShell, attach]);
+
+  // Typing goes to the terminal in view once the picker closes or a tab is picked.
+  useEffect(() => {
+    if (touch || picker || !visible || activeId === null) return;
+    handles.current.get(activeId)?.focus();
+  }, [touch, picker, visible, activeId]);
+
+  // Terminals opened or closed on the device come and go as tabs.
+  useEffect(() => {
+    if (!live || !visible) return;
+    const t = setInterval(() => void refresh({ quiet: true }), LIST_EVERY_MS);
+    return () => clearInterval(t);
+  }, [live, visible, refresh]);
 
   useEffect(() => {
     if (picker) void refresh();
@@ -501,9 +589,9 @@ export function TerminalDeck({
         >
           <Icon name="terminal" size={18} className="shrink-0 text-[#81c995]" />
           <span className="min-w-0 truncate text-sm">{active?.title ?? "Terminal"}</span>
-          {tabs.length > 1 && (
+          {strip.length > 1 && (
             <span className="shrink-0 rounded-full bg-white/15 px-1.5 text-[11px] tabular-nums">
-              {tabs.length}
+              {strip.length}
             </span>
           )}
           <Icon name="unfoldMore" size={16} className="shrink-0 text-white/60" />
@@ -514,33 +602,57 @@ export function TerminalDeck({
           aria-label="Terminals"
           className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
         >
-          {tabs.map((t) => (
-            <div
-              key={t.term.id}
-              className={`group flex h-8 max-w-56 shrink-0 items-center rounded-lg text-xs ${t.term.id === activeId ? "bg-white/[0.12] text-white" : "text-white/65 hover:bg-white/[0.06]"}`}
+          {strip.map(({ id, tab: t, source }) => {
+            const selected = t !== null && t.term.id === activeId;
+            const title = t?.title ?? source?.title ?? id;
+            return (
+              <div
+                key={id}
+                className={`group flex h-8 max-w-56 shrink-0 items-center rounded-lg text-xs ${selected ? "bg-white/[0.12] text-white" : t ? "text-white/70 hover:bg-white/[0.06]" : "text-white/50 hover:bg-white/[0.06] hover:text-white/80"}`}
+              >
+                <button
+                  role="tab"
+                  aria-selected={selected}
+                  data-attached={t !== null}
+                  className="flex min-w-0 items-center gap-1.5 py-1 pl-2"
+                  disabled={!t && (!live || opening !== null)}
+                  onClick={() => {
+                    if (!t) return source && void attach(source);
+                    setActiveId(t.term.id);
+                    handles.current.get(t.term.id)?.focus(); // also when it was already in view
+                  }}
+                  title={[title, source?.detail].filter(Boolean).join("\n")}
+                >
+                  {opening === id ? (
+                    <Spinner size={10} label="Opening" />
+                  ) : (
+                    <span
+                      className={`h-1.5 w-1.5 shrink-0 rounded-full ${!t ? "ring-1 ring-white/45" : t.ended ? "bg-white/30" : "bg-[#81c995]"}`}
+                    />
+                  )}
+                  <span className="truncate">{title}</span>
+                </button>
+                <button
+                  className="ml-1 rounded p-1 text-white/50 opacity-0 group-hover:opacity-100 hover:bg-white/15 hover:text-white focus-visible:opacity-100"
+                  aria-label={`Close ${title} here (it keeps running on the device)`}
+                  title="Close here (keeps running on the device)"
+                  onClick={() => (t ? closeTab(t.term) : setHiddenId(id, true))}
+                >
+                  <Icon name="close" size={12} />
+                </button>
+              </div>
+            );
+          })}
+          {blocked.length > 0 && (
+            <button
+              className="flex h-8 shrink-0 items-center gap-1 rounded-lg px-2 text-xs text-[#fdd663] hover:bg-white/[0.06]"
+              onClick={() => setPicker(true)}
+              title={blocked.map((b) => `${b.app} tabs need permission on the device`).join("\n")}
             >
-              <button
-                role="tab"
-                aria-selected={t.term.id === activeId}
-                className="flex min-w-0 items-center gap-1.5 py-1 pl-2"
-                onClick={() => setActiveId(t.term.id)}
-                title={t.title}
-              >
-                <span
-                  className={`h-1.5 w-1.5 shrink-0 rounded-full ${t.ended ? "bg-white/30" : "bg-[#81c995]"}`}
-                />
-                <span className="truncate">{t.title}</span>
-              </button>
-              <button
-                className="ml-1 rounded p-1 text-white/50 opacity-0 group-hover:opacity-100 hover:bg-white/15 hover:text-white focus-visible:opacity-100"
-                aria-label={`Close ${t.title} here (it keeps running on the device)`}
-                title="Close here (keeps running on the device)"
-                onClick={() => closeTab(t.term)}
-              >
-                <Icon name="close" size={12} />
-              </button>
-            </div>
-          ))}
+              <Icon name="warning" size={14} />
+              {blocked.map((b) => b.app).join(", ")} hidden
+            </button>
+          )}
           <button
             className="btn btn-sm shrink-0 px-2 text-white/80 hover:bg-white/10"
             aria-label="New shell"

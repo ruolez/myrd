@@ -139,7 +139,7 @@ function BlockedNotice({ b, onAskAgain }: { b: TermBlocked; onAskAgain: () => vo
 }
 
 const row =
-  "flex min-h-14 w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-white/[0.06] focus-visible:bg-white/[0.08] focus-visible:outline-none";
+  "flex min-h-14 min-w-0 flex-1 items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-white/[0.06] focus-visible:bg-white/[0.08] focus-visible:outline-none";
 
 export function TerminalPicker(p: Props) {
   const box = useRef<HTMLDivElement>(null);

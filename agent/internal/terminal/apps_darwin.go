@@ -398,10 +398,9 @@ func startMirror(kind, key string, cols, rows int) (Proc, error) {
 	}
 	pr, pw := io.Pipe()
 	m := &mirrorProc{kind: kind, key: key, cmd: cmd, pr: pr, pw: pw, cols: cols, rows: rows, done: make(chan struct{})}
+	// Terminal's tab is brought forward on the first key typed (Write), not
+	// here: looking at a tab from the browser leaves the Mac's windows alone.
 	go m.read(out)
-	if kind == appTerminal {
-		go m.selectTab()
-	}
 	return m, nil
 }
 

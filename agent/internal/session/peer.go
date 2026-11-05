@@ -413,10 +413,15 @@ func (s *sess) attachTerminal(dc *webrtc.DataChannel) {
 		dc.Close()
 		return
 	}
+	var told sync.Map // source ids the person at the device was told about
 	svc := terminal.NewService(terminal.Config{Host: o.Terminal,
 		Record:  func(r proto.TerminalRecord) { s.m.audit.recordTerminal(s.id, r) },
 		AuditOK: s.m.audit.ok, OnChange: o.OnTerminalChange, Log: s.log,
 		OnTakeover: func(src terminal.Source) {
+			// Switching tabs in the browser detaches and reattaches: tell once.
+			if _, seen := told.LoadOrStore(src.ID, true); seen {
+				return
+			}
 			s.log.Info("terminal taken over", "kind", src.Kind, "title", src.Title)
 			if o.OnTerminalTakeover != nil {
 				o.OnTerminalTakeover(s.info(), src)
