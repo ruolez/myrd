@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   denormalizePoint,
   displayRect,
+  nearRect,
   normalizePoint,
   placePopover,
   relativeRect,
@@ -146,5 +147,20 @@ describe("placePopover", () => {
     expect(placePopover(anchor(100, 400), { width: 200, height: 900 }, viewport, "start").top).toBe(
       8,
     );
+  });
+});
+
+describe("nearRect", () => {
+  const button = { left: 100, top: 100, width: 44, height: 44 };
+  const MARGIN = 24;
+  test.each([
+    ["inside", 120, 120, true],
+    ["just above, within the margin", 120, 100 - MARGIN, true],
+    ["left, within the margin", 100 - MARGIN, 120, true],
+    ["diagonal corner within both margins", 100 - MARGIN, 100 - MARGIN, true],
+    ["above, past the margin", 120, 100 - MARGIN - 1, false],
+    ["right, past the margin", 144 + MARGIN + 1, 120, false],
+  ])("%s → %s", (_name, x, y, want) => {
+    expect(nearRect(x, y, button, MARGIN)).toBe(want);
   });
 });

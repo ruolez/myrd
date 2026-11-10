@@ -33,6 +33,16 @@ export function displayRect(
 }
 
 /** inner's box relative to outer's top-left (both from getBoundingClientRect). */
+/** Whether (x, y) lies within `margin` px of the rectangle (or inside it). */
+export function nearRect(x: number, y: number, r: Rect, margin: number): boolean {
+  return (
+    x >= r.left - margin &&
+    x <= r.left + r.width + margin &&
+    y >= r.top - margin &&
+    y <= r.top + r.height + margin
+  );
+}
+
 export function relativeRect(outer: Rect, inner: Rect): Rect {
   return {
     left: inner.left - outer.left,

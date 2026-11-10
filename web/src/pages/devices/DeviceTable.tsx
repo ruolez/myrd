@@ -191,7 +191,7 @@ export function DeviceTable({
                     <Menu
                       label={`Actions for ${d.name}`}
                       items={actions.menu(d)}
-                      className="btn-text btn-sm px-1.5"
+                      className="btn-text btn-sm px-1.5 pointer-coarse:size-11 pointer-coarse:px-0"
                     >
                       <Icon name="moreVert" size={18} />
                     </Menu>

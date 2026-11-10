@@ -3,6 +3,7 @@ import type { Device, Tag } from "../../api/types";
 import { DeviceUpdateBadge, UpdateButton } from "../../components/devices";
 import { Icon } from "../../components/icons";
 import { Menu } from "../../components/menu";
+import { nearRect } from "../../lib/geometry";
 import { PreviewImage } from "../../components/PreviewImage";
 import { Meter, TagChip } from "../../components/ui";
 import { api } from "../../api/client";
@@ -201,6 +202,21 @@ function HealthLine({ device: d, now }: { device: Device; now: number }) {
 const onHover =
   "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 aria-expanded:opacity-100 pointer-coarse:opacity-100";
 
+// A finger-sized target on touch screens; the negative margin keeps the row height.
+const menuTouch =
+  "pointer-coarse:inline-flex pointer-coarse:size-11 pointer-coarse:items-center pointer-coarse:justify-center";
+
+/** How far from the ⋯ button a finger's tap on the picture still counts as aimed at it. */
+const MENU_SLOP_PX = 24;
+
+/** On touch, the tile's ⋯ button when a tap at (x, y) was meant for it. */
+function menuNear(tile: Element | null, x: number, y: number): HTMLElement | null {
+  if (!window.matchMedia("(pointer: coarse)").matches) return null;
+  const btn = tile?.querySelector<HTMLElement>('[aria-haspopup="menu"]');
+  const r = btn?.getBoundingClientRect();
+  return btn && r && nearRect(x, y, r, MENU_SLOP_PX) ? btn : null;
+}
+
 const overlayButton =
   "pointer-events-auto flex h-8 w-8 items-center justify-center rounded-full bg-black/60 text-white shadow transition-colors hover:bg-black/80 pointer-coarse:hidden";
 
@@ -243,11 +259,22 @@ export function DeviceTile(p: TileProps) {
     <Menu
       label={`Actions for ${d.name}`}
       items={actions.menu(d)}
-      className={`btn-sm shrink-0 rounded-full px-1 transition-opacity motion-reduce:transition-none ${tone} ${onHover}`}
+      className={`btn-sm shrink-0 rounded-full px-1 transition-opacity motion-reduce:transition-none ${tone} ${onHover} ${menuTouch}`}
     >
       <Icon name="moreVert" size={18} />
     </Menu>
   );
+
+  // The picture connects; the name and info below it open the details, so a
+  // tap that misses the ⋯ button never starts a session.
+  const infoClick = (e: MouseEvent<HTMLElement>) => {
+    const t = e.target as Element;
+    // Menus are portals: their clicks bubble here through React, not the DOM.
+    if (!e.currentTarget.contains(t) || t.closest("button, a, input, label")) return;
+    if (window.getSelection()?.toString()) return;
+    if (p.selecting || e.metaKey || e.ctrlKey || e.shiftKey) p.onSelect(e);
+    else actions.details(d);
+  };
 
   return (
     <article
@@ -269,9 +296,12 @@ export function DeviceTile(p: TileProps) {
           className={`relative block aspect-video w-full overflow-hidden ${
             zen ? "rounded-2xl" : "rounded-t-2xl"
           } ${d.online ? "bg-primary-soft/60" : "bg-surface-2"}`}
-          onClick={(e) =>
-            p.selecting || e.metaKey || e.ctrlKey || e.shiftKey ? p.onSelect(e) : primary.onClick()
-          }
+          onClick={(e) => {
+            if (p.selecting || e.metaKey || e.ctrlKey || e.shiftKey) return p.onSelect(e);
+            const aimed = menuNear(e.currentTarget.closest("article"), e.clientX, e.clientY);
+            if (aimed) aimed.click();
+            else primary.onClick();
+          }}
           title={zen ? `${primary.title}\n${line}` : primary.title}
           aria-label={`${primary.label}: ${d.name}`}
         >
@@ -313,13 +343,16 @@ export function DeviceTile(p: TileProps) {
           </div>
         )}
         {zen && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-2 rounded-b-2xl bg-linear-to-t from-black/80 via-black/40 to-transparent px-3 pt-10 pb-2 text-white">
+          <div
+            className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-2 rounded-b-2xl bg-linear-to-t from-black/80 via-black/40 to-transparent px-3 pt-10 pb-2 text-white pointer-coarse:pointer-events-auto pointer-coarse:pt-3"
+            onClick={infoClick}
+          >
             <StatusDot {...status} />
             <span className="min-w-0 flex-1 truncate text-sm font-medium [text-shadow:0_1px_2px_rgb(0_0_0/0.6)]">
               {d.name}
             </span>
             {warning}
-            <span className="pointer-events-auto -mr-1.5">
+            <span className="pointer-events-auto -mr-1.5 pointer-coarse:-my-2.5 pointer-coarse:-mr-3">
               {menu("text-white hover:bg-white/15")}
             </span>
           </div>
@@ -368,7 +401,8 @@ export function DeviceTile(p: TileProps) {
 
       {!zen && (
         <div
-          className={`flex flex-1 flex-col gap-1.5 ${size === "s" ? "p-3" : "px-4 pt-3 pb-3.5"}`}
+          className={`flex flex-1 cursor-pointer flex-col gap-1.5 ${size === "s" ? "p-3" : "px-4 pt-3 pb-3.5"}`}
+          onClick={infoClick}
         >
           <div className="flex items-center gap-2">
             <StatusDot {...status} />
@@ -376,7 +410,7 @@ export function DeviceTile(p: TileProps) {
               {d.name}
             </span>
             {warning}
-            <span className="-my-1 -mr-2">
+            <span className="-my-1 -mr-2 pointer-coarse:-my-2.5 pointer-coarse:-mr-3">
               {menu("text-muted hover:bg-surface-2 hover:text-text")}
             </span>
           </div>
