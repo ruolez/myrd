@@ -38,6 +38,7 @@ const (
 	fromAgent   = "agent"
 	fromAdmin   = "admin"
 	fromSystem  = "system"
+	fromOwner   = "owner" // the device's owner from another browser: both ends are told
 )
 
 type wsConn struct {
@@ -1267,7 +1268,7 @@ func (h *Hub) EndSession(id, reason, origin string, sent, recv int64) {
 		return
 	}
 	if ok {
-		actor := map[string]string{fromBrowser: "user", fromAgent: "agent", fromAdmin: "admin", fromSystem: "system"}[origin]
+		actor := map[string]string{fromBrowser: "user", fromOwner: "user", fromAgent: "agent", fromAdmin: "admin", fromSystem: "system"}[origin]
 		event := "session.ended"
 		if row.State == "failed" {
 			event = "session.failed"

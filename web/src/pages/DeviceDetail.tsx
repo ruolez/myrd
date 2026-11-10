@@ -4,6 +4,7 @@ import { api, ApiError, errorMessage } from "../api/client";
 import type { Device, DevicePatch, SavedCredential, VirtualDisplayAction } from "../api/types";
 import { useAuth } from "../app/auth";
 import { useDirectory } from "../app/directory";
+import { useWorkspaceState } from "../app/workspace";
 import {
   DeviceStatusBadge,
   DeviceUpdateBadge,
@@ -12,6 +13,7 @@ import {
   useLiveUpdates,
 } from "../components/devices";
 import { Icon, OsIcon } from "../components/icons";
+import { endDeviceSession, HolderSummary, useSessionHolder } from "../components/SessionHolder";
 import { AuditTable, SessionsTable } from "../components/tables";
 import {
   Badge,
@@ -297,6 +299,7 @@ export function DeviceDetail() {
         </section>
 
         <div className="space-y-6">
+          {d.busy && d.online && d.status !== "disabled" && <CurrentSessionCard device={d} />}
           {dir.organization && (
             <section className="card space-y-4 p-6" aria-labelledby="organize">
               <h2 id="organize" className="font-medium">
@@ -613,6 +616,64 @@ function VirtualDisplayRow({ device: d }: { device: Device }) {
         ))}
       </div>
     </div>
+  );
+}
+
+/** Who keeps the device busy, with taking over or ending that session. */
+function CurrentSessionCard({ device: d }: { device: Device }) {
+  const navigate = useNavigate();
+  const confirm = useConfirm();
+  const toast = useToast();
+  const here = d.id in useWorkspaceState().entries;
+  const holder = useSessionHolder(d.id, d.busy);
+  const [working, setWorking] = useState(false);
+  const onError = (m: string) => toast(m, "error");
+  const takeOver = async () => {
+    setWorking(true);
+    if (await endDeviceSession(d.id, true, onError)) navigate(`/session/${d.id}`);
+    else setWorking(false);
+  };
+  const end = async () => {
+    const ok = await confirm({
+      title: `End the session on ${d.name}?`,
+      message:
+        "The browser using it is disconnected and told that the session was ended from another browser.",
+      confirm: "End session",
+      danger: true,
+    });
+    if (!ok) return;
+    setWorking(true);
+    if (await endDeviceSession(d.id, false, onError)) toast("Session ended", "success");
+    setWorking(false);
+  };
+  return (
+    <section className="card space-y-3 p-6" aria-labelledby="current-session">
+      <h2 id="current-session" className="font-medium">
+        Current session
+      </h2>
+      <HolderSummary state={holder} />
+      {here ? (
+        <button className="btn-tonal btn-sm" onClick={() => navigate(`/session/${d.id}`)}>
+          <Icon name="sessions" size={16} />
+          Switch to session
+        </button>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          <button className="btn-tonal btn-sm" disabled={working} onClick={() => void takeOver()}>
+            <Icon name="sessions" size={16} />
+            Take over
+          </button>
+          <button
+            className="btn-outline btn-sm text-error"
+            disabled={working}
+            onClick={() => void end()}
+          >
+            <Icon name="callEnd" size={16} />
+            End session
+          </button>
+        </div>
+      )}
+    </section>
   );
 }
 

@@ -229,6 +229,12 @@ export const api = {
       request<{ version: string }>("POST", `/v1/devices/${id}/update`, { force }),
     virtualDisplay: (id: string, action: VirtualDisplayAction) =>
       request<object>("POST", `/v1/devices/${id}/virtual-display`, { action }),
+    /** The session keeping the device busy, or null when it is free. */
+    session: (id: string) =>
+      request<{ session: Session | null }>("GET", `/v1/devices/${id}/session`),
+    /** Ends the device's session; `takeover` tells its browser this one connects next. */
+    endSession: (id: string, takeover: boolean) =>
+      request<{ ended: number }>("POST", `/v1/devices/${id}/session/end`, { takeover }),
     enrollToken: () =>
       request<{ token: string; expires_at: string }>("POST", "/v1/enroll-tokens", {}),
   },

@@ -234,6 +234,7 @@ export function TerminalPane({
         <SessionOverlays
           hideEnded={auto}
           snap={snap}
+          deviceId={session.deviceId}
           name={name}
           forceRelay={forceRelay}
           onReconnect={reconnect}

@@ -999,6 +999,7 @@ function DesktopPane({
         )}
         <SessionOverlays
           snap={snap}
+          deviceId={session.deviceId}
           name={name}
           forceRelay={forceRelay}
           onReconnect={reconnect}

@@ -6,13 +6,17 @@ import { useAuth } from "../../app/auth";
 import { useDirectory } from "../../app/directory";
 import { useWorkspace, useWorkspaceState } from "../../app/workspace";
 import type { MenuEntry } from "../../components/menu";
-import { usePrompt, useToast } from "../../components/ui";
+import { endDeviceSession } from "../../components/SessionHolder";
+import { useConfirm, usePrompt, useToast } from "../../components/ui";
 import { canRestart } from "../../lib/power";
 import { canSaveSignIn } from "../../lib/unlock";
 import { canUpdate } from "../../lib/update";
 import { useOrgDialog } from "./dialogs";
 
 export const canConnect = (d: Device) => d.online && d.status !== "disabled" && !d.busy;
+
+/** In another browser's session, which this one may end or take over. */
+export const canTakeOver = (d: Device) => d.online && d.status !== "disabled" && d.busy;
 
 /** The device's agent offers terminals and the organization allows them. */
 export const hasTerminal = (d: Device, orgAllows: boolean) =>
@@ -32,6 +36,7 @@ export function connectTitle(d: Device): string {
 export function useDeviceActions() {
   const navigate = useNavigate();
   const prompt = usePrompt();
+  const confirm = useConfirm();
   const toast = useToast();
   const dialog = useOrgDialog();
   const { editDevices, organization, kickUpdates } = useDirectory();
@@ -61,6 +66,29 @@ export function useDeviceActions() {
     [ws, toast],
   );
   const details = useCallback((d: Device) => navigate(`/devices/${d.id}`), [navigate]);
+
+  /** Ends the other browser's session and connects here. */
+  const takeOver = useCallback(
+    async (d: Device) => {
+      if (await endDeviceSession(d.id, true, (m) => toast(m, "error"))) connect(d);
+    },
+    [connect, toast],
+  );
+  /** Ends the other browser's session without connecting. */
+  const endElsewhere = useCallback(
+    async (d: Device) => {
+      const ok = await confirm({
+        title: `End the session on ${d.name}?`,
+        message:
+          "The browser using it is disconnected and told that the session was ended from another browser.",
+        confirm: "End session",
+        danger: true,
+      });
+      if (ok && (await endDeviceSession(d.id, false, (m) => toast(m, "error"))))
+        toast(`Ended the session on ${d.name}`, "success");
+    },
+    [confirm, toast],
+  );
 
   const setFavorite = useCallback(
     (ids: string[], favorite: boolean) =>
@@ -131,13 +159,16 @@ export function useDeviceActions() {
           ]
         : [];
       const here = openHere(d);
+      const takeable = !here && canTakeOver(d);
       return [
-        {
-          label: here ? "Switch to session" : "Connect",
-          icon: "sessions",
-          disabled: !here && !canConnect(d),
-          onSelect: () => connect(d),
-        },
+        takeable
+          ? { label: "Take over", icon: "sessions", onSelect: () => void takeOver(d) }
+          : {
+              label: here ? "Switch to session" : "Connect",
+              icon: "sessions",
+              disabled: !here && !canConnect(d),
+              onSelect: () => connect(d),
+            },
         ...(hasTerminal(d, terminalsAllowed)
           ? [
               {
@@ -165,14 +196,22 @@ export function useDeviceActions() {
                 onSelect: () => ws.close(d.id),
               },
             ]
-          : [
-              {
-                label: "Open in background",
-                icon: "open" as const,
-                disabled: !canConnect(d),
-                onSelect: () => openInBackground(d),
-              },
-            ]),
+          : takeable
+            ? [
+                {
+                  label: "End session…",
+                  icon: "callEnd" as const,
+                  onSelect: () => void endElsewhere(d),
+                },
+              ]
+            : [
+                {
+                  label: "Open in background",
+                  icon: "open" as const,
+                  disabled: !canConnect(d),
+                  onSelect: () => openInBackground(d),
+                },
+              ]),
         { label: "Details", icon: "info", onSelect: () => details(d) },
         "separator",
         ...org,
@@ -221,6 +260,8 @@ export function useDeviceActions() {
       terminal,
       terminalsAllowed,
       ws,
+      takeOver,
+      endElsewhere,
     ],
   );
 
@@ -235,5 +276,7 @@ export function useDeviceActions() {
     dialog,
     openHere,
     openInBackground,
+    takeOver,
+    endElsewhere,
   };
 }

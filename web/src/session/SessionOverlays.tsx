@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "../components/icons";
+import { endDeviceSession, HolderSummary, useSessionHolder } from "../components/SessionHolder";
 import { Spinner } from "../components/ui";
 import { keyFingerprint } from "../lib/devicePins";
 import { END_REASONS } from "./RemoteSession";
@@ -20,6 +21,7 @@ const phaseText: Partial<Record<Snapshot["phase"], string>> = {
 export function SessionOverlays({
   hideEnded = false,
   snap,
+  deviceId,
   name,
   forceRelay,
   onReconnect: reconnect,
@@ -30,6 +32,7 @@ export function SessionOverlays({
   /** The pane reconnects by itself and says so: no "closed" overlay. */
   hideEnded?: boolean;
   snap: Snapshot | null;
+  deviceId: string;
   name: string;
   forceRelay: boolean;
   onReconnect: (relay?: boolean) => void;
@@ -65,7 +68,17 @@ export function SessionOverlays({
         </Overlay>
       )}
 
-      {phase === "ended" && snap && !hideEnded && (
+      {phase === "ended" && snap?.endReason === "device_busy" && !hideEnded && (
+        <BusyOverlay
+          deviceId={deviceId}
+          name={name}
+          onTakeOver={() => reconnect()}
+          onClose={onClose}
+          onBack={onBack}
+        />
+      )}
+
+      {phase === "ended" && snap && snap.endReason !== "device_busy" && !hideEnded && (
         <Overlay>
           <Icon
             name={snap.endReason === "user_hangup" ? "check" : "warning"}
@@ -133,6 +146,65 @@ export function SessionOverlays({
         />
       )}
     </>
+  );
+}
+
+/** The device is in someone else's session: who, and taking it over. */
+function BusyOverlay({
+  deviceId,
+  name,
+  onTakeOver,
+  onClose,
+  onBack,
+}: {
+  deviceId: string;
+  name: string;
+  onTakeOver: () => void;
+  onClose: () => void;
+  onBack: () => void;
+}) {
+  const holder = useSessionHolder(deviceId);
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const free = holder.holder === null;
+  const takeOver = async () => {
+    setWorking(true);
+    setError(null);
+    if (free || (await endDeviceSession(deviceId, true, setError))) onTakeOver();
+    else setWorking(false);
+  };
+  return (
+    <Overlay>
+      <Icon name="warning" size={40} className="text-white/80" />
+      <div className="text-lg">{name} is in another session</div>
+      <div className="w-full max-w-sm rounded-xl bg-white/10 px-4 py-3">
+        <HolderSummary state={holder} mutedClass="text-white/70" />
+      </div>
+      <p className="max-w-sm text-center text-sm text-white/70">
+        {free
+          ? "The device is free now."
+          : "Taking over ends that session right away and connects you. The other browser is told that its session was taken over."}
+      </p>
+      {error && <p className="max-w-sm text-center text-sm text-[#f28b82]">{error}</p>}
+      <div className="mt-2 flex flex-wrap justify-center gap-2">
+        <button className="btn-primary" disabled={working} onClick={() => void takeOver()}>
+          {working ? <Spinner size={16} /> : <Icon name="sessions" size={18} />}
+          {free ? "Connect" : "Take over"}
+        </button>
+        <button
+          className="btn-outline border-white/30 text-white hover:bg-white/10"
+          onClick={onClose}
+        >
+          Cancel
+        </button>
+        <button
+          className="btn-outline border-white/30 text-white hover:bg-white/10"
+          onClick={onBack}
+        >
+          Back to devices
+        </button>
+      </div>
+    </Overlay>
   );
 }
 

@@ -123,6 +123,8 @@ Rate limit: 10 failed attempts / 15 min per IP and per email → 429.
 | DELETE | `/v1/devices/{id}/credential` | → `{}`; audited `device.credential.removed` when one was saved |
 | POST | `/v1/devices/{id}/update` | `{force?:bool}` → 202 `{version}`; sends `update.check{explicit:true,force}`. 409 `device_offline` \| `up_to_date` \| `unsupported` (Linux demo). Audited `agent.update.requested` |
 | POST | `/v1/devices/{id}/virtual-display` | `{action:"install"\|"remove"}` → 202 `{}`; sends `virtual_display{action}`; the outcome arrives in `device.info` (`virtual_display`). 400 `bad_request` (unknown action); 409 `device_offline` \| `unsupported` (not Windows). Audited `device.virtual_display.requested` (meta: action) |
+| GET | `/v1/devices/{id}/session` | → `{session: Session \| null}`: the pending or active session that keeps the device busy (`mode`, `state`, `client_key_id`/`client_key_label` of the browser holding it, `client_ip`, `created_at`, `connected_at`), null when it is free |
+| POST | `/v1/devices/{id}/session/end` | `{takeover?:bool}` → `{ended: n}`; ends the device's live sessions with `session.end` to both ends, reason `taken_over` (the caller connects next) or `ended_remotely`. 200 with `ended: 0` when the device is free. Audited `session.taken_over` / `session.terminated` (actor user, IP), then `session.ended` / `session.failed` |
 | POST | `/v1/enroll-tokens` | `{}` → `{token:"XXXX-XXXX", expires_at}` (charset `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`, 15 min, single use, stored hashed) |
 | GET | `/v1/install-link` | → `{link: InstallLink \| null}`, the caller's install link (below) |
 | POST | `/v1/install-link` | `{}` → `{link: InstallLink}`; a new code, the previous one stops working. Audited `install_link.created` |

@@ -399,6 +399,8 @@ const (
 	EndCaptureFailed = "capture_failed"
 	EndDeviceRestart = "device_restart" // the controller restarted the device (control `power`)
 	EndAgentRestart  = "agent_restart"  // the controller restarted the agent (control `power`)
+	EndTakenOver     = "taken_over"     // another browser of the owner took the device over
+	EndEndedRemotely = "ended_remotely" // the owner ended it from another browser
 )
 
 type SessionEnd struct {

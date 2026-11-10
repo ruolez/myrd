@@ -237,6 +237,8 @@ export const END_REASONS: Record<string, string> = {
   permission_missing: "The device has not granted screen recording or input permission.",
   input_abuse: "The device ended the session after receiving invalid input.",
   device_busy: "The device is already in another session.",
+  taken_over: "Another browser on your account took over this device.",
+  ended_remotely: "The session was ended from another browser on your account.",
   device_disabled: "This device is disabled.",
   client_key_invalid: "This browser's key was revoked. Reload the page to register a new one.",
   rate_limited: "Too many requests. Wait a moment and try again.",

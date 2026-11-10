@@ -19,7 +19,9 @@ describe("shouldRetry", () => {
     ["ice_failed", true],
     ["peer_disconnected", true],
     ["device_restart", true],
-    ["device_busy", true],
+    ["device_busy", false],
+    ["taken_over", false],
+    ["ended_remotely", false],
     ["user_hangup", false],
     ["agent_kill_switch", false],
     ["not_approved", false],
@@ -27,6 +29,13 @@ describe("shouldRetry", () => {
     ["terminal_disabled", false],
   ])("%s → %s", (reason, want) => {
     expect(shouldRetry(reason, undefined, T)).toBe(want);
+  });
+
+  test("waits out a busy device only while retrying a dropped session", () => {
+    expect([
+      shouldRetry("device_busy", undefined, T),
+      shouldRetry("device_busy", { attempts: 1, since: T }, T),
+    ]).toEqual([false, true]);
   });
 
   test("gives up a quarter hour after the first drop", () => {

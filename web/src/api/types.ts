@@ -183,6 +183,7 @@ export type Session = {
   user_email: string;
   client_key_id: ClientKeyId | null;
   client_key_label: string | null;
+  mode: "desktop" | "terminal";
   state: SessionState;
   created_at: string;
   connected_at: string | null;

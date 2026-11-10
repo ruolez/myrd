@@ -277,6 +277,8 @@ func (a *App) Router() http.Handler {
 			r.Put("/devices/{id}/unlock-key", a.h(a.putUnlockKey))
 			r.Post("/devices/{id}/update", a.h(a.updateDevice))
 			r.Post("/devices/{id}/virtual-display", a.h(a.virtualDisplayDevice))
+			r.Get("/devices/{id}/session", a.h(a.getDeviceSession))
+			r.Post("/devices/{id}/session/end", a.h(a.endDeviceSession))
 			r.Post("/devices/bulk", a.h(a.bulkDevices))
 			r.Get("/folders", a.h(a.listFolders))
 			r.Post("/folders", a.h(a.createFolder))

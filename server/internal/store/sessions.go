@@ -64,6 +64,13 @@ func DeviceBusy(ctx context.Context, q db.Querier, deviceID string) (bool, error
 	return b, err
 }
 
+// LiveSessionByDevice returns the device's newest pending or active session;
+// ErrNotFound when it is free.
+func LiveSessionByDevice(ctx context.Context, q db.Querier, deviceID string) (*Session, error) {
+	return scanSession(q.QueryRow(ctx, `SELECT `+sessionCols+sessionFrom+`
+		WHERE s.device_id = $1 AND s.state IN ('pending', 'active') ORDER BY s.created_at DESC LIMIT 1`, deviceID))
+}
+
 // MarkSessionActive transitions pending → active. ok=false when the session
 // was not pending (duplicate or late state message).
 func MarkSessionActive(ctx context.Context, q db.Querier, id, path, agentIP string) (ok bool, err error) {

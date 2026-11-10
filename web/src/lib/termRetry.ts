@@ -10,7 +10,7 @@ const TRANSIENT = new Set([
   "timeout",
   "server_restart",
   "device_offline",
-  "device_busy", // the dropped session is still closing on the device
+  "device_busy", // the dropped session is still closing on the device (only once retrying)
   "agent_update",
   "agent_restart",
   "device_restart",
@@ -32,5 +32,8 @@ export function shouldRetry(
   now: number,
 ): boolean {
   if (!TRANSIENT.has(reason)) return false;
+  // A first attempt refused as busy is someone else's session: the pane
+  // offers to take it over instead of waiting.
+  if (reason === "device_busy" && !tries) return false;
   return !tries || now - tries.since < GIVE_UP_MS;
 }
